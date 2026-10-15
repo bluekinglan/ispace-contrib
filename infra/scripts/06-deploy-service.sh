@@ -57,6 +57,13 @@ if [ ! -f ~/.ispace/session.env ]; then
 fi
 set -a; . ~/.ispace/session.env; set +a
 
+# 1024 参赛附件目录。先建好再 up：交给 Docker 自动创建的话属主是 root，
+# 而容器以 1000 运行，第一次上传就 EACCES——且失败发生在用户点「上传」的
+# 那一刻，不是部署时，排查起来要绕一圈。
+# 用 || true 兜住非特权环境：目录已存在且属主正确时 chown 可能无权限。
+sudo -n mkdir -p /srv/event-files 2>/dev/null || mkdir -p /srv/event-files || true
+sudo -n chown "$(id -u):$(id -g)" /srv/event-files 2>/dev/null || true
+
 mkdir -p ~/ispace-deploy
 cp ~/ispace-src/infra/dokploy/deploy-service.compose.yml ~/ispace-deploy/
 cd ~/ispace-deploy

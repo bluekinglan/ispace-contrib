@@ -1,4 +1,7 @@
-import type { App, AppGroup, AuditLog, Quota, Release, User } from '@ispace/contracts';
+import type {
+  App, AppGroup, AuditLog, EventAdminInput, EventIdeasResponse, EventRankRow,
+  EventResponse, EventSummary, Quota, Release, User,
+} from '@ispace/contracts';
 
 const BASE = '/deploy/api';
 
@@ -533,6 +536,27 @@ export const api = {
   // 导出走浏览器直接下载：响应是 CSV 附件，不能用 fetch 后再解析
   exportUsersUrl: () => `${BASE}/admin/users/export`,
   exportAuditUrl: () => `${BASE}/admin/audit/export`,
+
+  // ── 1024 赛事管理 ─────────────────────────────────────────────────
+  /**
+   * 活动详情。这一条**不要求管理员**（活动页免登录），控制台拿它是为了
+   * 当前阶段、评委名单和各项计数——与活动页看到的是同一份数据。
+   */
+  event: (slug: string) => req<EventResponse>(`/events/${slug}`),
+  /** 本届全部创意。只有管理员能取——初筛前创意不对外。 */
+  eventIdeas: (slug: string) => req<EventIdeasResponse>(`/events/${slug}/ideas`),
+  /** 颁奖前核对用的汇总排名。judged 不足全员时名次只是暂定的。 */
+  eventRanking: (slug: string) => req<{ ranking: EventRankRow[] }>(`/events/${slug}/ranking`),
+  /**
+   * 推进阶段、定入围名单、设评委。
+   *
+   * 只传要改的那几个键：`finalists` 与 `judges` 都是**整批替换**，顺手带上
+   * 一个空数组就等于把名单清空了。`phase: null` 是有意义的值——交还给时钟。
+   */
+  patchEvent: (slug: string, input: EventAdminInput) =>
+    req<{ event: EventSummary }>(`/events/${slug}`, {
+      method: 'PATCH', body: JSON.stringify(input),
+    }),
 
   provision: (input: { username: string; displayName: string; email?: string; identity?: string }) =>
     req<{ user: User; schemaName: string; spaceUrl: string }>('/provision', {

@@ -6,7 +6,10 @@ import {
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Updates from 'expo-updates';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { channelNameFor, type AppJson } from '@ispace/contracts';
+import {
+  channelNameFor, CURRENT_EVENT_SLUG as EVENT_SLUG, EVENT_PATH,
+  type AppJson,
+} from '@ispace/contracts';
 import { ShellChrome, UpdateCard, IncompatibleScreen } from './src/shell/ShellChrome';
 import { NavContainer, parseAppJson } from './src/shell/NavContainer';
 import { Settings, type SettingKey } from './src/shell/Settings';
@@ -96,6 +99,57 @@ type ShellView =
   | { kind: 'chat' }
   | { kind: 'me' };
 
+/** 活动接口里横幅用得上的那几项。只取用到的，不复刻整个响应类型。 */
+type EventPayload = {
+  event: { phase: string; config: { deadlines: Record<string, string>; voteLimit: number } };
+  stats: { ideaCount: number };
+  finalists: unknown[];
+  me: { idea: { name: string; finalist: boolean } | null } | null;
+};
+
+type EventBannerData = { phase: string; title: string; desc: string };
+
+/** 10.19 */
+function eventMd(iso: string | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * 把活动接口的响应拍成横幅那三句话。
+ *
+ * 与网页端 portal 的 Banner.tsx 是同一套措辞，刻意没有抽成共享模块：
+ * 一边是 React DOM、一边是 React Native，能共享的只有这几个字符串，
+ * 为它们建一个包不划算；真要改文案，两处一起改，各自都只有一个函数。
+ */
+function eventBannerData(r: EventPayload): EventBannerData {
+  const d = r.event.config?.deadlines ?? {};
+  const idea = r.me?.idea ?? null;
+  switch (r.event.phase) {
+    case 'signup':
+      return idea
+        ? { phase: '报名中', title: `已交创意「${idea.name}」`, desc: `${eventMd(d.idea)} 12:00 截止前可以改。` }
+        : { phase: '报名中', title: '1024 程序员节 · 交创意报名', desc: `提交创意即可参赛，${eventMd(d.idea)} 截止。` };
+    case 'screening':
+      return { phase: '评委初筛', title: '创意已截止，评委初筛中', desc: `${eventMd(d.screening)} 公布入围名单。` };
+    case 'building':
+      return idea?.finalist
+        ? { phase: '入围制作', title: `「${idea.name}」入围了`, desc: `${eventMd(d.work)} 前提交作品。` }
+        : { phase: '入围制作', title: `${r.finalists.length} 个项目入围`, desc: `${eventMd(d.award)} 上午现场路演。` };
+    case 'demo':
+      return {
+        phase: '今天路演',
+        title: '今天路演，扫码投票',
+        desc: `${r.finalists.length} 个项目现场演示，每人 ${r.event.config?.voteLimit ?? 3} 票。`,
+      };
+    case 'result':
+      return { phase: '已公布', title: '获奖名单已公布', desc: '点开看完整获奖名单。' };
+    default:
+      return { phase: '进行中', title: '1024 程序员节', desc: '点开看活动详情。' };
+  }
+}
+
 function Root() {
   const [me, setMe] = useState<Me | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -105,6 +159,12 @@ function Root() {
   const [view, setView] = useState<ShellView>({ kind: 'home' });
   const [webApps, setWebApps] = useState<LaunchItem[]>([]);
   const [loadingApps, setLoadingApps] = useState(false);
+  /**
+   * 1024 活动横幅。null = 没有在办的活动（接口拿不到、或已结束），整块不显示。
+   *
+   * 与 webApps 分开拉：活动接口免登录，而且它挂了不该连带让页面墙空着。
+   */
+  const [eventBanner, setEventBanner] = useState<EventBannerData | null>(null);
   const [kbUp, setKbUp] = useState(false);
   /*
     横幅收起只对本次启动生效，不落盘：用户按 ✕ 是"现在别烦我"，
@@ -249,6 +309,35 @@ function Root() {
 
   useEffect(() => { void loadWebApps(); }, [loadWebApps]);
 
+  /*
+    活动横幅。带上令牌是为了拿到「我交没交创意」那一块；没有令牌也能拉到
+    活动本身（接口免登录），所以这一下不等登录完成。
+
+    任何失败都当作「没有活动」：横幅是锦上添花，不该因为它让首屏出错。
+  */
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/deploy/api/events/${EVENT_SLUG}`, {
+          headers: token ? { authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const r = (await res.json()) as {
+          event: { phase: string; config: { deadlines: Record<string, string>; voteLimit: number } };
+          stats: { ideaCount: number };
+          finalists: unknown[];
+          me: { idea: { name: string; finalist: boolean } | null } | null;
+        };
+        if (!alive) return;
+        setEventBanner(r.event.phase === 'ended' ? null : eventBannerData(r));
+      } catch {
+        if (alive) setEventBanner(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, [token]);
+
   /**
    * 更新检查：回到前台时补一次。
    *
@@ -349,6 +438,13 @@ function Root() {
           homeKey={homeKey}
           onRefresh={() => void loadWebApps()}
           onOpen={openItem}
+          {...(eventBanner ? {
+            event: eventBanner,
+            /* 活动页是网页，壳里用 WebView 打开，和打开任何一个页面同一条路 */
+            onOpenEvent: () => setView({
+              kind: 'web', target: { path: EVENT_PATH, title: '1024 程序员节' },
+            }),
+          } : {})}
           onNew={() => { setEditTarget(null); setView({ kind: 'chat' }); }}
           onSetHome={(it) => {
             const next = homeKey === it.key ? null : it.key;

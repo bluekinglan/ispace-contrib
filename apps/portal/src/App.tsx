@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { MARKETPLACE_CATEGORIES, type App as AppEntity, type AppGroup } from '@ispace/contracts';
+import {
+  EVENT_PATH, MARKETPLACE_CATEGORIES,
+  type App as AppEntity, type AppGroup,
+} from '@ispace/contracts';
+import { Activity } from './event/Activity';
+import { Judge } from './event/Judge';
+import { Screen } from './event/Screen';
+import { EventBanner } from './event/Banner';
 import {
   AppIcon, Avatar, AvatarMenu, Badge, Button, Card, CoverBanner, Dialog, fmtBytes, fmtDate,
   GlobalKeyframes, Greeting, Icon, Input, SectionLabel, ShareDialog, StatusDot,
@@ -39,11 +46,13 @@ function safeRedirect(): string | null {
 }
 
 export function App() {
+  const path = location.pathname.replace(/\/$/, '');
+
   /*
     重置密码页在最前面分流：它按定义就是「登不进去的人」才会走到，
     先去拉 /me 只会拿到 401 然后落到未登录引导页，令牌就白发了。
   */
-  if (location.pathname.replace(/\/$/, '') === '/reset') {
+  if (path === '/reset') {
     return (
       <ToneProvider tone="business">
         <GlobalKeyframes />
@@ -51,6 +60,25 @@ export function App() {
       </ToneProvider>
     );
   }
+
+  /*
+    1024 程序员节。三条路径都在 Space 之前分流，理由各不相同：
+
+      /1024         活动详情**不要求登录**。走 Space 的话会先拉 /me，
+                    401 之后落到登录引导页——而这一页的全部意义就是
+                    「没登录也能看」。
+      /1024/screen  会议室大屏，同样免登录（投屏的那台机器不会有人登录）。
+      /1024/judge   要登录且要是评委，但那层判断由它自己向服务端要，
+                    拿到 401 时显示「登录」而不是整页换成登录表单——
+                    评委是从活动页点进来的，不该丢失上下文。
+
+    `1024` 已加进 RESERVED_PATHS 与 Caddyfile 的排除列表，所以
+    /1024/judge 不会被网关当成 `/{user}/{app}/` 去 /srv/sites 找文件。
+  */
+  if (path === EVENT_PATH) return <Activity />;
+  if (path === `${EVENT_PATH}/judge`) return <Judge />;
+  if (path === `${EVENT_PATH}/screen`) return <Screen />;
+
   return <Space />;
 }
 
@@ -603,6 +631,13 @@ function MyPages({
       {shares.map((s) => (
         <ShareCard key={s.id} share={s} onDone={() => onShareResponded(s.id)} />
       ))}
+
+      {/*
+        1024 横幅。排在待接受的分享之后、问候语之前——分享是别人在等你回应，
+        优先级高于一个活动入口；而活动比自己的页面墙更有时效性。
+        活动结束后它自己不再渲染，不用回来改这里。
+      */}
+      {isOwner && <EventBanner />}
 
       <div style={{ margin: 'var(--space-16) 0 var(--space-12)' }}>
         <Greeting>Happy Working</Greeting>

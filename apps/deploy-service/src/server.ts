@@ -67,6 +67,7 @@ import { registerAuthzRoutes } from './routes/authz.js';
 import { registerSvcProxy } from './routes/svc-proxy.js';
 import { registerConnectorRoutes } from './routes/connectors.js';
 import { registerVisitRoutes } from './routes/visits.js';
+import { registerEventRoutes } from './routes/events.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -404,6 +405,25 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
       throw new IspaceError(ERROR_CODES.FORBIDDEN, '需要管理员权限');
     }
     return user;
+  };
+
+  /**
+   * 「有会话就告诉我是谁，没有也不要紧」。
+   *
+   * 给那些**本身不要求登录、但登录后能多显示点东西**的接口用：1024 活动
+   * 详情页免登录可看，登录了才知道「我交没交创意」。
+   *
+   * 吞掉的是 requireAuth 的全部拒绝理由（没凭据、令牌被撤销、账号已归档），
+   * 对调用方一视同仁地等于「匿名」——这正是这些接口想要的语义，它们对匿名
+   * 访客有完整的降级显示。真正需要区分「没登录」与「登录了但没权限」的接口
+   * 不该用这个。
+   */
+  const optionalAuth = async (req: FastifyRequest) => {
+    try {
+      return await requireAuth(req);
+    } catch {
+      return null;
+    }
   };
 
   // ── 健康检查 ────────────────────────────────────────────────────
@@ -933,6 +953,13 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── 语音转写 ────────────────────────────────────────────────────
   registerVoiceRoutes(app, { requireAuth });
+
+  // ── 1024 程序员节 ──────────────────────────────────────────────
+  // 详情页免登录（optionalAuth），报名与打分要登录（requireAuth）。
+  registerEventRoutes(app, {
+    sql, requireAuth, optionalAuth, requireAdmin,
+    filesRoot: process.env.ISPACE_EVENT_FILES_ROOT ?? '/srv/event-files',
+  });
 
   // ── 数据空间：表清单与连接信息 ──────────────────────────────────
   registerDataSpaceRoutes(app, { sql, requireAuth, publicBase: PUBLIC_BASE });

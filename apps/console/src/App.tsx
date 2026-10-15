@@ -23,6 +23,7 @@ import { AdminResources } from './screens/AdminResources';
 import { AdminAudit } from './screens/AdminAudit';
 import { AdminInspection } from './screens/AdminInspection';
 import { AdminApps } from './screens/AdminApps';
+import { AdminEvent } from './screens/AdminEvent';
 
 /**
  * 控制台（设计稿：员工 8 屏 + 管理员 5 屏）。
@@ -42,7 +43,8 @@ type EmployeeScreen =
 type AdminScreen =
   | 'a-overview' | 'a-users' | 'a-tokens'
   | 'a-connectors' | 'a-apps'
-  | 'a-resources' | 'a-settings' | 'a-audit' | 'a-inspection';
+  | 'a-resources' | 'a-settings' | 'a-audit' | 'a-inspection'
+  | 'a-event';
 type Screen = EmployeeScreen | AdminScreen;
 
 const EMPLOYEE_NAV: { group: string; items: { key: EmployeeScreen; label: string; icon: IconName }[] }[] = [
@@ -77,6 +79,14 @@ const ADMIN_NAV: { group: string; items: { key: AdminScreen; label: string; icon
       { key: 'a-users', label: '员工与开通', icon: 'userPlus' },
       { key: 'a-tokens', label: '访问令牌', icon: 'key' },
       { key: 'a-connectors', label: '平台连接器', icon: 'zap' },
+    ],
+  },
+  {
+    // 赛事单独一组：它一年用一次，和日常治理（巡查、配额、审计）不是一类事，
+    // 混进去只会让那一组变成"杂项"。
+    group: '活动',
+    items: [
+      { key: 'a-event', label: '1024 赛事', icon: 'sparkles' },
     ],
   },
   {
@@ -186,6 +196,7 @@ function Screens({ screen, me }: { screen: Screen; me: Me }) {
     case 'a-settings':   return <AdminSettings />;
     case 'a-audit':      return <AdminAudit />;
     case 'a-inspection': return <AdminInspection />;
+    case 'a-event':      return <AdminEvent />;
     default:             return <SpaceOverview me={me} />;
   }
 }

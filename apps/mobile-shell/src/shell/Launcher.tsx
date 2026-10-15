@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Animated, Easing, Image, Pressable, RefreshControl,
+  ActivityIndicator, Animated, Easing, Image, Platform, Pressable, RefreshControl,
   ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +24,19 @@ export type LaunchItem =
   | { kind: 'web'; key: string; path: string; name: string; letter: string; owner?: string; cover?: string | null }
   | { kind: 'market'; key: 'market'; name: string; letter: string };
 
+/**
+ * 活动横幅要显示的三句话。
+ *
+ * 壳里不重算赛程——阶段、文案、计数都由 App.tsx 从活动接口拿到后拍扁成
+ * 这三个字段。启动器只负责把它画出来，不认识「初筛」「入围」是什么。
+ */
+export interface EventBanner {
+  /** 报名中 / 入围制作 / 今天路演 … */
+  phase: string;
+  title: string;
+  desc: string;
+}
+
 export function Launcher({
   items,
   loading,
@@ -33,6 +46,8 @@ export function Launcher({
   homeKey,
   onSetHome,
   onNew,
+  event,
+  onOpenEvent,
 }: {
   items: LaunchItem[];
   loading: boolean;
@@ -45,6 +60,9 @@ export function Launcher({
   onSetHome?: (it: LaunchItem) => void;
   /** 跟 AI 说做个新的。对话没有 tab 了，这里是它的入口之一。 */
   onNew?: () => void;
+  /** 在办的活动。没有就不传，整块不出现——活动结束后无需改这里。 */
+  event?: EventBanner;
+  onOpenEvent?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const mine = items.filter((i) => i.kind !== 'market' && !('owner' in i && i.owner));
@@ -73,6 +91,22 @@ export function Launcher({
       <Text style={s.helloSub}>
         {mine.length + shared.length} 个页面 · 下拉刷新
       </Text>
+
+      {/*
+        活动横幅。排在最上面是因为它有时效——10.19 之后再看到「去报名」
+        已经没用了，而页面墙什么时候看都一样。
+      */}
+      {event && onOpenEvent && (
+        <Pressable style={s.evt} onPress={onOpenEvent}>
+          <Text style={s.evtMark} allowFontScaling={false}>1024</Text>
+          <View style={s.evtPhase}><Text style={s.evtPhaseText}>{event.phase}</Text></View>
+          <View style={s.evtBody}>
+            <Text style={s.evtTitle}>{event.title}</Text>
+            <Text style={s.evtDesc}>{event.desc}</Text>
+          </View>
+          <Text style={s.evtGo}>活动详情 →</Text>
+        </Pressable>
+      )}
 
       {/*
         对话的入口做成一行"输入框"的样子而不是一个按钮：它要说明的是
@@ -256,6 +290,30 @@ export function LauncherLoading() {
 
 const s = StyleSheet.create({
   helloSub: { fontSize: 12.5, color: '#909599', marginBottom: 16 },
+
+  // ── 1024 活动横幅 ───────────────────────────────────────────────
+  // 橙底深字，与网页端活动页同一套配色（--tabby-orange / --text-heading），
+  // 点进去就是那一页，视觉上要接得上。
+  evt: {
+    backgroundColor: '#fb923c', borderRadius: 16,
+    paddingHorizontal: 16, paddingVertical: 14, marginBottom: 18,
+  },
+  evtMark: {
+    fontSize: 30, fontWeight: '800', color: '#001217',
+    letterSpacing: -1, lineHeight: 32,
+    // 等宽字体在壳里没有预装，退回系统等宽；字重与字距已经撑起了标识感
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  evtPhase: {
+    position: 'absolute', right: 16, top: 16,
+    backgroundColor: '#001217', borderRadius: 100,
+    paddingHorizontal: 9, paddingVertical: 3,
+  },
+  evtPhaseText: { fontSize: 11, fontWeight: '600', color: '#ffffff' },
+  evtBody: { marginTop: 6, gap: 3 },
+  evtTitle: { fontSize: 15, fontWeight: '700', color: '#001217' },
+  evtDesc: { fontSize: 12, lineHeight: 18, color: '#001217', opacity: 0.82 },
+  evtGo: { marginTop: 10, fontSize: 13, fontWeight: '700', color: '#001217' },
   groupTitle: {
     fontSize: 13, fontWeight: '700', color: '#545659',
     marginTop: 26, marginBottom: 12, letterSpacing: 1,

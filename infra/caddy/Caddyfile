@@ -93,7 +93,7 @@
 	# 该列表必须与 packages/contracts 的 RESERVED_PATHS 保持一致。
 	@userapp {
 		path_regexp ua ^/([a-z0-9][a-z0-9-]{0,30})/([a-z0-9][a-z0-9-]{0,30})(/.*)?$
-		not path_regexp ^/(console|deploy|dist|updates|platform|supabase|svc|api|assets|static|admin|login|logout|health|reset|_)(/|$)
+		not path_regexp ^/(1024|console|deploy|dist|updates|platform|supabase|svc|api|assets|static|admin|login|logout|health|reset|_)(/|$)
 	}
 	handle @userapp {
 		# ⚠️ 必须用 route 而不是裸写指令。

@@ -1,6 +1,6 @@
 {
   "name": "@ispace/console", "version": "0.1.0", "private": true, "type": "module",
-  "scripts": { "build": "vite build", "dev": "vite", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "scripts": { "build": "vite build", "dev": "vite", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
   "dependencies": {
     "@ispace/contracts": "workspace:*", "@ispace/copy": "workspace:*", "@ispace/ui": "workspace:*",
     "react": "^19.0.0", "react-dom": "^19.0.0"

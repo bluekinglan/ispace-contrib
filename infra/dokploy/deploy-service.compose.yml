@@ -44,6 +44,10 @@ services:
       ISPACE_RELEASES_ROOT: /srv/releases
       ISPACE_BUNDLE_ROOT: /srv/bundles
       ISPACE_WORKSPACE_ROOT: /srv/workspaces
+      # 1024 活动的参赛附件（效果图、硬件作品的照片/视频）。
+      # 读写都经过本服务——初筛结束前创意只有评委能看到，交给网关直出
+      # 就只剩「文件名猜不到」这一层，那不是访问控制。
+      ISPACE_EVENT_FILES_ROOT: /srv/event-files
       # Coding Agent 的模型通道。缺失时 Agent 端点返回"未配置"，其余功能不受影响。
       # 不用 codex 专用模型：实测其工具调用 arguments 恒为空，无法驱动 Agent。
       AGENT_BASE_URL: ${AGENT_BASE_URL:-}
@@ -67,6 +71,9 @@ services:
       - /srv/bundles:/srv/bundles
       # Agent 的工作区：每用户一个目录，工具集限定在其中
       - /srv/workspaces:/srv/workspaces
+      # 1024 参赛附件。不挂进 Caddy——这些文件的可见性随赛程变化，
+      # 由 routes/events.ts 逐个判断后再出字节。
+      - /srv/event-files:/srv/event-files
       # Dokploy 的部署日志。只读，且只为一件事：后端应用起不来时，
       # 把真正的原因（镜像拉不到、构建报错…）拿给用户看，而不是让
       # 界面上只剩一个「启动失败」。

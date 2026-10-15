@@ -1,4 +1,7 @@
-import type { App, AppGroup, Quota, User } from '@ispace/contracts';
+import type {
+  App, AppGroup, Quota, User,
+  EventFile, EventJudgeResponse, EventResponse, IdeaInput, ScoreInput, WorkInput,
+} from '@ispace/contracts';
 
 /**
  * portal 的 API 客户端。
@@ -260,6 +263,38 @@ export const api = {
   adminUnlist: (appId: string) => del<{ ok: boolean }>(`/admin/marketplace/${appId}`),
   loginUrl: (redirect: string) =>
     `${BASE}/auth/login?redirect=${encodeURIComponent(redirect)}`,
+
+  // ── 1024 程序员节 ──────────────────────────────────────────────
+  /**
+   * 活动详情。**不要求登录**——没有会话时服务端返回的 `me` 是 null，
+   * 页面照常显示，只是不知道「我」交没交创意。
+   */
+  event: (slug: string) => get<EventResponse>(`/events/${slug}`),
+  putIdea: (slug: string, input: IdeaInput) =>
+    send<{ ok: boolean; ideaId: string }>('PUT', `/events/${slug}/idea`, input),
+  putWork: (slug: string, input: WorkInput) =>
+    send<{ ok: boolean; workId: string; appVersion: number | null }>('PUT', `/events/${slug}/work`, input),
+  /** 投票是开关：投过再点就是撤回。remaining 是服务端算的真实剩余票数。 */
+  toggleVote: (slug: string, ideaId: string) =>
+    post<{ ok: boolean; voted: boolean; remaining: number }>(`/events/${slug}/votes/${ideaId}`),
+  judgeBoard: (slug: string) => get<EventJudgeResponse>(`/events/${slug}/judge`),
+  putScore: (slug: string, ideaId: string, input: ScoreInput) =>
+    send<{ ok: boolean; total: number; submitted: boolean }>('PUT', `/events/${slug}/scores/${ideaId}`, input),
+  /**
+   * 附件上传。走 multipart，不能用上面那几个 JSON 辅助函数。
+   * 故意不设 content-type：浏览器会自己带上 multipart 的 boundary，
+   * 手写会把 boundary 弄丢，服务端解析不出字段。
+   */
+  uploadEventFile: async (slug: string, file: File): Promise<EventFile> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/events/${slug}/files`, {
+      method: 'POST', credentials: 'same-origin', body: form,
+    });
+    const body = (await res.json()) as { file: EventFile } & Partial<ApiError>;
+    if (!res.ok) throw Object.assign(new Error(body.message ?? '上传失败'), { code: body.code });
+    return body.file;
+  },
 };
 
 /** 从当前路径解析出空间归属者。`/` 表示还没落到具体空间。 */

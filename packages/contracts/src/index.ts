@@ -6,3 +6,4 @@ export * from './mcp.js';
 export * from './mobile.js';
 export * from './agent.js';
 export * from './connectors.js';
+export * from './event.js';

@@ -1,0 +1,425 @@
+import { z } from 'zod';
+
+/**
+ * 1024 程序员节的赛事契约。
+ *
+ * 一句话概括这件事的形状：**一个人交一个创意 → 评委初筛出八个 → 入围者交
+ * 作品 → 现场路演，评委打分 + 全员投票 → 按汇总排名颁奖**。下面的类型就是
+ * 这条链上每一环的数据。
+ *
+ * 文案与参数（规则、奖项、评分维度、日程、各截止时间）全在 `EventConfig`
+ * 里，落库为 events.config 的 jsonb。它们一年改一次、只被活动页读，
+ * 拆成表只会让「改个奖金数额」变成一次数据库迁移。
+ */
+
+/** 当届的 slug。/1024 这个路径解析到它——印在横幅和海报上的是 1024，不是年份。 */
+export const CURRENT_EVENT_SLUG = '1024-2026';
+
+/** 活动页的公开路径。与 RESERVED_PATHS 的 '1024' 是同一个东西。 */
+export const EVENT_PATH = '/1024';
+
+// ── 阶段 ──────────────────────────────────────────────────────────────
+/**
+ * 阶段决定活动页显示什么、哪个按钮能按。
+ *
+ * 顺序即时间顺序，`PHASE_ORDER` 让「至少到了某个阶段」可以直接比大小，
+ * 省掉散落各处的 `phase === 'demo' || phase === 'result'`。
+ */
+export const EVENT_PHASES = [
+  'signup',     // 报名中：可交创意
+  'screening',  // 评委初筛：创意已截止，等入围名单
+  'building',   // 入围制作：入围者交作品
+  'demo',       // 展示答辩：现场路演，可投票
+  'result',     // 结果公布：获奖名单
+  'ended',      // 已结束：页面下线，横幅不再出现
+] as const;
+export type EventPhase = (typeof EVENT_PHASES)[number];
+
+export const eventPhaseSchema = z.enum(EVENT_PHASES);
+
+const PHASE_INDEX: Record<EventPhase, number> = {
+  signup: 0, screening: 1, building: 2, demo: 3, result: 4, ended: 5,
+};
+
+/** `at` 是否已到达 `least` 这个阶段。 */
+export function phaseAtLeast(at: EventPhase, least: EventPhase): boolean {
+  return PHASE_INDEX[at] >= PHASE_INDEX[least];
+}
+
+/**
+ * 按 `config.deadlines` 推导当前阶段。人工覆盖（events.phase）在服务端优先，
+ * 这里只负责「时钟说现在是哪一阶段」。
+ *
+ * 为什么放在契约里：服务端用它决定「现在能不能交创意」，控制台的赛事管理屏
+ * 用它回答「把阶段交还给时钟会落回哪一阶段」。两边各算一遍迟早会算得不一样，
+ * 而那时组织者会照屏上写的去撤掉覆盖，然后发现落到了别的阶段。
+ *
+ * 判断依然只在服务端生效——客户端时钟不可信。控制台传进来的 `now` 是服务端
+ * 随 EventSummary 带回的那个时刻，不是浏览器本地时间。
+ */
+export function derivePhase(
+  deadlines: EventConfig['deadlines'] | undefined,
+  now: Date,
+): EventPhase {
+  if (!deadlines) return 'signup';
+  const t = now.getTime();
+  if (t < Date.parse(deadlines.idea)) return 'signup';
+  if (t < Date.parse(deadlines.screening)) return 'screening';
+  if (t < Date.parse(deadlines.work)) return 'building';
+  if (t < Date.parse(deadlines.award)) return 'demo';
+  if (t < Date.parse(deadlines.end)) return 'result';
+  return 'ended';
+}
+
+// ── config ────────────────────────────────────────────────────────────
+
+/** 一条参赛须知。`n` 是设计稿上那个 0x 编号，由前端按序号生成，不落库。 */
+export interface EventHowStep {
+  /** lucide 图标名，与 UI 的 Icon 组件对齐 */
+  icon: string;
+  title: string;
+  /** 「10.16 – 10.19」这样的人读日期，与 deadlines 的机器时间分开 */
+  date: string;
+  desc: string;
+}
+
+export interface EventPrize {
+  name: string;
+  count: string;
+  money: string;
+  how: string;
+  /** 卡片配色档位。设计稿里一等奖是橙底、人气奖是深底，其余白底。 */
+  tone: 'brand' | 'dark' | 'subtle' | 'plain';
+}
+
+/** 评分维度。`max` 之和必须是 100——服务端在写分时据此校验。 */
+export interface EventCriterion {
+  key: string;
+  desc: string;
+  max: number;
+}
+
+export interface EventScheduleRow {
+  time: string;
+  icon: string;
+  title: string;
+  desc: string;
+}
+
+export interface EventScheduleBlock {
+  label: string;
+  time: string;
+  rows: EventScheduleRow[];
+}
+
+/**
+ * 奖项的评定规则——**怎么算出获奖者**，与 `prizes`（怎么展示奖项列表）分开。
+ *
+ * by='judge' 按评委平均分名次，by='votes' 按得票数名次，by='finalist' 是
+ * 入围即得。rank 从 1 起；by='finalist' 时忽略 rank。
+ */
+export interface EventAwardRule {
+  key: string;
+  name: string;
+  money: string;
+  by: 'judge' | 'votes' | 'finalist';
+  rank: number;
+}
+
+export interface EventConfig {
+  /** 灵感上线・AI 不设限 */
+  tagline: string;
+  /** 10.23 周五 10:00 – 17:00 */
+  dateLabel: string;
+  /** 活动有问题找谁 */
+  contact: string;
+  /**
+   * 各阶段的切换时刻（ISO）。events.phase 为空时由它推导当前阶段，
+   * 也用于「还有几天截止」的倒数和「截止前可以改」的判断。
+   *
+   * 判断是**服务端**做的（routes/events.ts）：客户端时钟不可信，
+   * 把 10.19 12:00 的截止交给浏览器本地时间等于没有截止。
+   */
+  deadlines: {
+    /** 交创意截止 */
+    idea: string;
+    /** 入围名单公布 */
+    screening: string;
+    /** 交作品截止 */
+    work: string;
+    /** 投票与打分锁定 */
+    vote: string;
+    /** 颁奖（结果公布） */
+    award: string;
+    /** 活动整体结束，页面与横幅下线 */
+    end: string;
+  };
+  /** 每人几票（人气奖）。设计稿是 3。 */
+  voteLimit: number;
+  rules: string[];
+  how: EventHowStep[];
+  prizes: EventPrize[];
+  criteria: EventCriterion[];
+  schedule: EventScheduleBlock[];
+  awardRules: EventAwardRule[];
+}
+
+// ── 响应 ──────────────────────────────────────────────────────────────
+
+export interface EventSummary {
+  slug: string;
+  title: string;
+  subtitle: string | null;
+  edition: string | null;
+  venue: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  /** 已解析的当前阶段：人工覆盖优先，否则按 deadlines 推导 */
+  phase: EventPhase;
+  /** 该阶段是否由人工钉死。给管理员看，普通用户不关心。 */
+  phasePinned: boolean;
+  config: EventConfig;
+  /** 服务端此刻的时间。前端的倒数以它为基准，不信本机时钟。 */
+  now: string;
+}
+
+export interface EventJudgeInfo {
+  username: string;
+  displayName: string;
+}
+
+export interface EventStats {
+  ideaCount: number;
+  finalistCount: number;
+  workCount: number;
+  voteTotal: number;
+  /** 已提交打分的评委数 / 评委总数。活动当天给主持人和评委看进度。 */
+  judgeCount: number;
+}
+
+/**
+ * 入围作品的公开视图。
+ *
+ * 初筛结束前**不返回任何创意**（规则：「初筛结束前，创意只有评委能看到」），
+ * 所以这个列表在 signup/screening 阶段是空的。
+ */
+export interface EventFinalist {
+  ideaId: string;
+  /** 入围编号，也是路演顺序。NO.04 里的 04。 */
+  no: string;
+  name: string;
+  desc: string;
+  /** 作者展示名 */
+  who: string;
+  ownerUsername: string;
+  /** 'page' 的作品可以点开看；'other' 是硬件，只有照片 */
+  kind: 'page' | 'other' | null;
+  /** kind='page' 时的公开地址 */
+  url: string | null;
+  /** 已交作品 / 制作中 */
+  submitted: boolean;
+  /** 得票数。只在 demo 之后返回——投票期间实时票数会影响投票行为。 */
+  votes: number | null;
+}
+
+export interface EventAward {
+  key: string;
+  name: string;
+  money: string;
+  no: string;
+  ideaName: string;
+  who: string;
+  url: string | null;
+  /** 评委平均分，一位小数。by='votes' 的奖项为 null。 */
+  judgeScore: number | null;
+  votes: number;
+  /** 评委留的一句话评语，取已提交评语中的一条 */
+  comment: string | null;
+}
+
+/** 登录者自己的状态。未登录时整块为 null——页面照常显示，只是不知道「我」。 */
+export interface EventMe {
+  username: string;
+  displayName: string;
+  idea: {
+    id: string;
+    name: string;
+    problem: string;
+    plan: string;
+    form: string;
+    files: EventFile[];
+    finalist: boolean;
+    no: string | null;
+  } | null;
+  work: {
+    id: string;
+    kind: 'page' | 'other';
+    name: string;
+    pitch: string | null;
+    appSlug: string | null;
+    appVersion: number | null;
+    files: EventFile[];
+  } | null
+  /** 我投过票的 ideaId */
+  votes: string[];
+  isJudge: boolean;
+  isAdmin: boolean;
+}
+
+export interface EventFile {
+  name: string;
+  size: number;
+  url: string;
+}
+
+export interface EventResponse {
+  event: EventSummary;
+  judges: EventJudgeInfo[];
+  stats: EventStats;
+  finalists: EventFinalist[];
+  awards: EventAward[] | null;
+  me: EventMe | null;
+}
+
+// ── 管理员视图 ────────────────────────────────────────────────────────
+
+/**
+ * 一条创意在组织者眼里的样子。
+ *
+ * 比公开的 `EventFinalist` 多了 `problem`（想解决什么问题）与附件：初筛那天
+ * 八个评委围着一块屏看的就是这些，少一样都得回去翻库。
+ */
+export interface EventAdminIdea {
+  id: string;
+  name: string;
+  problem: string;
+  plan: string;
+  form: string;
+  files: EventFile[];
+  /** 作者展示名 */
+  who: string;
+  username: string;
+  finalist: boolean;
+  /** 入围编号 = 路演顺序。没入围是 null。 */
+  no: string | null;
+  /** 已交作品 */
+  submitted: boolean;
+  createdAt: string;
+}
+
+/**
+ * 本届全部创意。
+ *
+ * 公开接口在初筛结束前刻意一个创意都不返回（规则：初筛前创意只有评委和作者
+ * 能看到），而定入围名单的人恰恰要在那之前看全部——所以单开一条管理员接口，
+ * 而不是给公开接口加个开关。
+ */
+export interface EventIdeasResponse {
+  ideas: EventAdminIdea[];
+}
+
+// ── 评委视图 ──────────────────────────────────────────────────────────
+
+/**
+ * 评委打分页的数据。
+ *
+ * 刻意**不包含别人的分数**：设计稿上那句「评委之间互相看不到分数」是
+ * 规则，不是界面措辞。因此这里只给自己的分，加上一个「其他评委几人已提交」
+ * 的计数——计数不泄露任何一个人的判断。
+ */
+export interface EventJudgeItem {
+  ideaId: string;
+  no: string;
+  name: string;
+  who: string;
+  desc: string;
+  kind: 'page' | 'other' | null;
+  url: string | null;
+  /** 我给它打的分；没打过是 null */
+  mine: { dims: (number | null)[]; total: number; note: string; submitted: boolean } | null;
+  /** 其他评委已提交的人数（不含我）。只是个数，看不出谁打了多少。 */
+  othersSubmitted: number;
+}
+
+export interface EventJudgeResponse {
+  event: EventSummary;
+  criteria: EventCriterion[];
+  /** 评委总数 - 1，即「其他评委」的分母 */
+  otherJudges: number;
+  /** 打分是否已锁定（过了 deadlines.vote，或阶段已到 result） */
+  locked: boolean;
+  items: EventJudgeItem[];
+}
+
+/** 汇总排名。评委打分的去处——这就是「分数汇总到项目上」的那张表。 */
+export interface EventRankRow {
+  ideaId: string;
+  no: string;
+  name: string;
+  who: string;
+  /** 评委平均分（只计已提交），一位小数 */
+  judgeScore: number | null;
+  /** 给出分数的评委数。不足全员时名次是暂定的。 */
+  judged: number;
+  votes: number;
+  /** 按评委平均分的名次，1 起。无人打分时为 null。 */
+  rank: number | null;
+}
+
+// ── 写入载荷 ──────────────────────────────────────────────────────────
+
+const fileSchema = z.object({
+  name: z.string().min(1).max(200),
+  size: z.number().int().nonnegative(),
+  url: z.string().max(2000),
+});
+
+export const ideaInputSchema = z.object({
+  name: z.string().trim().min(1, '创意名称要写').max(60),
+  problem: z.string().trim().min(1, '想解决什么问题要写').max(2000),
+  plan: z.string().trim().min(1, '打算怎么做要写').max(2000),
+  form: z.string().trim().min(1).max(40).default('iSpace 页面'),
+  files: z.array(fileSchema).max(5, '最多 5 个文件').default([]),
+});
+export type IdeaInput = z.infer<typeof ideaInputSchema>;
+
+/**
+ * 交作品。两种 kind 要求的字段不同，用 discriminatedUnion 让
+ * 「页面作品没选页面」这类错在解析期就被挡住，而不是落到库的 CHECK。
+ */
+export const workInputSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('page'),
+    /** 平台上自己的页面 slug */
+    appSlug: z.string().min(2).max(31),
+    pitch: z.string().trim().max(200).optional(),
+  }),
+  z.object({
+    kind: z.literal('other'),
+    name: z.string().trim().min(1, '先写作品名称').max(60),
+    pitch: z.string().trim().max(200).optional(),
+    files: z.array(fileSchema).min(1, '至少一张照片或一段视频').max(9),
+  }),
+]);
+export type WorkInput = z.infer<typeof workInputSchema>;
+
+export const scoreInputSchema = z.object({
+  /** 按 config.criteria 的顺序给分。长度必须与维度数一致。 */
+  dims: z.array(z.number().int().nonnegative()),
+  note: z.string().trim().max(300).optional(),
+  /** true = 提交（进汇总），false = 存草稿 */
+  submit: z.boolean().default(false),
+});
+export type ScoreInput = z.infer<typeof scoreInputSchema>;
+
+/** 管理员：推进阶段、定入围名单、设评委。 */
+export const eventAdminSchema = z.object({
+  /** null = 回到按时间自动推导 */
+  phase: eventPhaseSchema.nullable().optional(),
+  /** 入围名单：按顺序给 ideaId，编号自动按 01、02… 生成 */
+  finalists: z.array(z.string().uuid()).max(64).optional(),
+  /** 评委名单：用户名 */
+  judges: z.array(z.string().min(2).max(31)).max(32).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+});
+export type EventAdminInput = z.infer<typeof eventAdminSchema>;
