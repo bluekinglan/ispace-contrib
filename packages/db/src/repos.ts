@@ -124,6 +124,27 @@ export async function findUserById(sql: Sql, id: string): Promise<User | null> {
   return rows[0] ? toUser(rows[0]) : null;
 }
 
+/**
+ * 鉴权用：一次查询取回用户和他的令牌世代号。
+ *
+ * 世代号**不进** User 类型：User 会被原样发给前端（/me、分享列表、管理员
+ * 用户表），而这是个纯鉴权内部量，多一个字段就多一处要解释"这是什么"。
+ * 单独返回，调用方只有 requireAuth 一个。
+ *
+ * 不复用 findUserById 再补一次查询：鉴权在每个请求上都跑，多一次往返就是
+ * 全站多一次。
+ */
+export async function findUserForAuth(
+  sql: Sql,
+  id: string,
+): Promise<{ user: User; tokenEpoch: number } | null> {
+  const rows = await sql`
+    SELECT ${USER_COLS(sql)}, u.token_epoch FROM ${USER_FROM(sql)} WHERE u.id = ${id}
+  `;
+  const r = rows[0];
+  return r ? { user: toUser(r), tokenEpoch: Number(r.token_epoch ?? 0) } : null;
+}
+
 export async function createUser(
   sql: Sql,
   input: {

@@ -159,3 +159,49 @@ describe('cookie 属性', () => {
     expect(sessionCookie('a;b=c', 60)).toContain(encodeURIComponent('a;b=c'));
   });
 });
+
+/**
+ * 令牌世代号。
+ *
+ * 它是"改密码能把别处的登录踢下线"的全部实现——这里只能验签发与解析这一
+ * 半（比对在 deploy-service 的 requireAuth 里，那边另有测试）。盯的是
+ * 「字段悄悄丢了」这类坏法：epoch 是可选的，丢了不会报错，只会让所有令牌
+ * 永远停在第 0 代，于是改密码再也踢不掉任何人，而且一声不吭。
+ */
+describe('令牌世代号', () => {
+  const svc = new SessionService(SECRET);
+
+  it('签发时写进去，校验时原样取回', async () => {
+    const token = await svc.issue({ ...CLAIMS, epoch: 7 });
+    expect((await svc.verify(token)).epoch).toBe(7);
+  });
+
+  it('不带 epoch 的旧令牌仍然验得过，取回 undefined', async () => {
+    // 上线那一刻在用的令牌都是这样的。拒掉它们等于把全公司一起踢下线，
+    // 而他们什么也没做错——调用方把 undefined 当第 0 代处理。
+    const token = await svc.issue(CLAIMS);
+    const claims = await svc.verify(token);
+    expect(claims.epoch).toBeUndefined();
+    expect(claims.uid).toBe(CLAIMS.uid);
+  });
+
+  it('epoch 为 0 要原样保留，不能被当成"没有"', async () => {
+    // 0 和 undefined 在比对时都算第 0 代，但它们经过 JSON 之后必须还能
+    // 分得清——写成 `claims.epoch || undefined` 这类手滑就会在这里现形。
+    const claims = await svc.verify(await svc.issue({ ...CLAIMS, epoch: 0 }));
+    expect(claims.epoch).toBe(0);
+  });
+
+  it('负数和小数拒收——世代号只会由 +1 产生', async () => {
+    const bad = async (epoch: number) => {
+      const token = await new SignJWT({ ...CLAIMS, epoch })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt().setIssuer('ispace').setAudience('ispace-platform')
+        .setExpirationTime('1h')
+        .sign(new TextEncoder().encode(SECRET));
+      await expect(svc.verify(token)).rejects.toBeInstanceOf(IspaceError);
+    };
+    await bad(-1);
+    await bad(1.5);
+  });
+});

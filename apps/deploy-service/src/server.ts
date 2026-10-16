@@ -21,7 +21,7 @@ import {
   createDb,
   createUser,
   dbConfigFromEnv,
-  findUserById,
+  findUserForAuth,
   findUserBySso,
   findUserByUsername,
   getPlatformPolicy,
@@ -256,6 +256,20 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
    * 缓存的代价是管理员改完设置要等重启才生效。
    * 这是一次主键查询，比签一次 JWT 便宜得多。
    */
+  /**
+   * 取某人当前的令牌世代号，写进新签发的 claims。
+   *
+   * 每次签发都现读，不缓存：签发点一共三处，而改密码会在别处把它 +1，
+   * 缓存意味着「刚改完密码又登录一次，拿到的还是旧世代」——那张令牌一到
+   * 鉴权就被自己判废，表现为"登录成功但立刻又被登出"。
+   */
+  const tokenEpochOf = async (userId: string): Promise<number> => {
+    const [r] = await sql<{ token_epoch: number }[]>`
+      SELECT token_epoch FROM ispace.users WHERE id = ${userId}
+    `;
+    return Number(r?.token_epoch ?? 0);
+  };
+
   const sessionTtl = async (): Promise<number> => {
     try {
       const { sessionDays } = await getPlatformPolicy(sql);
@@ -376,6 +390,8 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
     if (!raw) throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '请先登录');
 
     let userId: string;
+    /** 会话令牌签发时的世代号；个人访问令牌没有这个概念，见下。 */
+    let claimEpoch: number | null = null;
     if (raw.startsWith('isp_')) {
       const found = await findUserByAccessToken(sql, raw);
       if (!found) {
@@ -389,14 +405,32 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
       const claims = await sessions.verify(raw);
       req.session = claims;
       userId = claims.uid;
+      claimEpoch = claims.epoch ?? 0;
     }
 
-    // 每次都查库：令牌无状态，靠这里的 status 检查实现即时冻结
-    const user = await findUserById(sql, userId);
-    if (!user || user.status !== 'active') {
+    // 每次都查库：令牌无状态，靠这里的检查实现即时冻结与即时作废
+    const found = await findUserForAuth(sql, userId);
+    if (!found || found.user.status !== 'active') {
       throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '账号不可用');
     }
-    return user;
+
+    /*
+      世代号对不上 = 这张令牌是上一次改密码之前签的。
+
+      只卡会话令牌，不卡个人访问令牌（isp_）：那套本来就能在控制台逐个
+      撤销，是另一条独立的生命周期。改个密码把同事 CI 里的令牌一起弄失效，
+      既不是他要的，也会让人完全摸不着头脑。
+
+      文案单独写一句，不混进上面的"账号不可用"：这两种情况对用户意味着
+      完全不同的下一步——一个是去找管理员，一个是重新登录就好。
+    */
+    if (claimEpoch !== null && claimEpoch !== found.tokenEpoch) {
+      throw new IspaceError(
+        ERROR_CODES.UNAUTHENTICATED,
+        '密码改过了，这台设备上的登录已失效，请重新登录。',
+      );
+    }
+    return found.user;
   };
 
   const requireAdmin = async (req: FastifyRequest) => {
@@ -558,6 +592,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     const ttl = await sessionTtl();
     const token = await sessions.issue({
       uid: user.id, username: user.username, role: user.role, identity: user.identity,
+      epoch: await tokenEpochOf(user.id),
     }, ttl);
     // cookie 的 Max-Age 必须与令牌的 exp 一致：cookie 先过期会让人莫名
     // 被登出，令牌先过期则会让人拿着一个已失效的 cookie 一路 401
@@ -642,6 +677,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     const ttl = await sessionTtl();
     const token = await sessions.issue({
       uid: user.id, username: user.username, role: user.role, identity: user.identity,
+      epoch: await tokenEpochOf(user.id),
     }, ttl);
     nativeCodes.set(code, { token, expiresAt: Date.now() + NATIVE_CODE_TTL_MS });
     await writeAudit(sql, {
@@ -988,6 +1024,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     sql, requireAuth, requireAdmin,
     issueSession: async (u) => sessions.issue({
       uid: u.id, username: u.username, role: u.role, identity: u.identity,
+      epoch: await tokenEpochOf(u.id),
     }, await sessionTtl()),
     setSessionCookie: async (reply, token) => {
       // 调用方会 await——见 account.ts 里那段注释：不 await 的话

@@ -16,7 +16,7 @@ import {
 import {
   createUser,
   findApp,
-  findUserById,
+  findUserForAuth,
   findUserByUsername,
   getQuota,
   listAppsByOwner,
@@ -94,6 +94,8 @@ export async function registerMcp(app: FastifyInstance, deps: McpDeps): Promise<
     }
     const raw = authHeader.slice(7);
     let userId: string;
+    /** 会话令牌签发时的世代号；个人访问令牌没有这个概念。 */
+    let claimEpoch: number | null = null;
     if (raw.startsWith('isp_')) {
       const found = await findUserByAccessToken(sql, raw);
       if (!found) {
@@ -104,13 +106,26 @@ export async function registerMcp(app: FastifyInstance, deps: McpDeps): Promise<
       }
       userId = found.userId;
     } else {
-      userId = (await sessions.verify(raw)).uid;
+      const claims = await sessions.verify(raw);
+      userId = claims.uid;
+      claimEpoch = claims.epoch ?? 0;
     }
-    const user = await findUserById(sql, userId);
-    if (!user || user.status !== 'active') {
+    const found = await findUserForAuth(sql, userId);
+    if (!found || found.user.status !== 'active') {
       throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '账号不可用');
     }
-    return user;
+    /*
+      和 REST 的 requireAuth 同一条规则，必须一起加：这个入口也收会话令牌
+      （上面那个 else 分支），只在 REST 那边比世代号的话，改完密码后旧令牌
+      打 MCP 照样通——"踢下线"就只是看起来踢掉了。
+    */
+    if (claimEpoch !== null && claimEpoch !== found.tokenEpoch) {
+      throw new IspaceError(
+        ERROR_CODES.UNAUTHENTICATED,
+        '密码改过了，这个登录已失效，请重新登录后再试。',
+      );
+    }
+    return found.user;
   };
 
   const toolList = MCP_TOOL_NAMES.map((name) => ({

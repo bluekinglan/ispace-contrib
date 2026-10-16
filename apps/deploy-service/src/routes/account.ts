@@ -341,7 +341,7 @@ export function registerAccountRoutes(
   });
 
   // ── 改密码（本人）────────────────────────────────────────────────
-  app.post(`${API_BASE}/auth/password`, async (req) => {
+  app.post(`${API_BASE}/auth/password`, async (req, reply) => {
     const me = await requireAuth(req);
     const { current, next } = z.object({
       current: z.string().min(1),
@@ -361,9 +361,27 @@ export function registerAccountRoutes(
     const weak = checkPasswordStrength(next, passwordMinLength);
     if (weak) throw new IspaceError(ERROR_CODES.INVALID_INPUT, weak);
 
+    /*
+      世代号 +1，把这个人之前登录过的所有设备踢下线。
+
+      自己改密码也踢，而不是只在管理员重置时踢：改密码最常见的动机就是
+      「怕是被别人看到了」，那时还留着别处的登录，等于改了个寂寞。
+    */
     await sql`
-      UPDATE ispace.users SET password_hash = ${await hashPassword(next)} WHERE id = ${me.id}
+      UPDATE ispace.users
+         SET password_hash = ${await hashPassword(next)}, token_epoch = token_epoch + 1
+       WHERE id = ${me.id}
     `;
+    /*
+      ……但不包括他正在用的这一台：上面那一句刚把他自己的 cookie 也作废了，
+      不补一张新的，他改完密码点任何东西都是 401，看起来像"改密码把账号
+      弄坏了"。
+
+      issueSession 内部现读 token_epoch，而递增已经在上一句落库，所以这里
+      自然拿到新世代号——别处那些仍然是废的。顺序反过来就不成立了。
+    */
+    await setSessionCookie(reply, await issueSession(me));
+
     await writeAudit(sql, {
       actorId: me.id, action: 'user.password_change', targetType: 'user', targetId: me.id,
       source: 'console', result: 'success', ip: req.ip,
@@ -530,8 +548,16 @@ export function registerAccountRoutes(
     const bad = checkPasswordStrength(password, policy.passwordMinLength);
     if (bad) throw new IspaceError(ERROR_CODES.INVALID_INPUT, bad);
 
+    /*
+      +1，把这个人所有设备踢下线，不补签。
+
+      管理员走这条路多半就是因为这个账号出了问题，"把当前还连着的都断掉"
+      正是要的结果——哪怕其中一台是本人正在用的。
+    */
     await sql`
-      UPDATE ispace.users SET password_hash = ${await hashPassword(password)} WHERE id = ${id}
+      UPDATE ispace.users
+         SET password_hash = ${await hashPassword(password)}, token_epoch = token_epoch + 1
+       WHERE id = ${id}
     `;
     /*
       作废这个人手上所有还没用的重置链接。
@@ -590,8 +616,14 @@ export function registerAccountRoutes(
       );
     }
 
+    /*
+      同样 +1。这条路是在未登录状态下走的（手里只有一条链接），所以不补签：
+      改完跳登录页重新登录，而且这正是「账号可能被盗、管理员发链接让我重设」
+      的那条路，更要把别处的登录一起断掉。
+    */
     await sql`
-      UPDATE ispace.users SET password_hash = ${await hashPassword(password)}
+      UPDATE ispace.users
+         SET password_hash = ${await hashPassword(password)}, token_epoch = token_epoch + 1
        WHERE id = ${row.user_id}
     `;
     // 重置成功即解锁：本人刚证明了自己的身份，没理由继续把他挡在门外

@@ -9,8 +9,14 @@ import { ERROR_CODES, IspaceError } from '@ispace/contracts';
  * 无状态令牌让三个入口（浏览器 / CLI / MCP）共用一套鉴权，不必为 CLI
  * 另做一套 token 体系。
  *
- * 代价是撤销需要等过期。对内部平台可接受；真要立即失效，配合
- * users.status='archived' 的检查即可——鉴权中间件每次都会查用户状态。
+ * 无状态的代价本来是「撤销只能等过期」。现在有两条即时失效的路，都靠
+ * 鉴权中间件每次查用户行实现，仍然不需要会话表：
+ *   users.status='archived'  —— 归档立刻失去全部访问权
+ *   users.token_epoch        —— 改密码后 +1，之前签出去的令牌全部作废
+ *
+ * 剩下的仍然撤不掉的是「单独踢掉某一台设备」：世代号是按人算的，动它会
+ * 把这个人所有设备一起踢下线。要做到那个粒度就得记住每个令牌，也就回到
+ * 会话表了——目前没有这个需求。
  */
 
 export const sessionClaimsSchema = z.object({
@@ -19,6 +25,24 @@ export const sessionClaimsSchema = z.object({
   username: z.string(),
   role: z.enum(['employee', 'admin']),
   identity: z.enum(['user', 'developer']),
+  /**
+   * 签发这一刻的 users.token_epoch。鉴权时与库里的值比，对不上就是
+   * 「改密码之后签发的这一代已经换了」，令牌作废。
+   *
+   * ┌─ 为什么是可选的 ──────────────────────────────────────────────┐
+   * │ 写成必填的话，这次上线瞬间所有在用的令牌都 parse 失败——会话    │
+   * │ 默认 30 天，等于把全公司一起踢下线，而他们什么也没做错。        │
+   * │                                                                │
+   * │ 可选 + 读不到当 0，正好对上 token_epoch 的默认值 0：旧令牌继续  │
+   * │ 用到自然过期，而从现在起任何一次改密码都会把它们作废。安全性   │
+   * │ 没有打折——伪造或篡改 epoch 都要有签名密钥，有密钥的话这套机制  │
+   * │ 本来就不设防。                                                 │
+   * │                                                                │
+   * │ 等最长会话（30 天）过完，在用的令牌就都带 epoch 了，那时可以把  │
+   * │ optional 去掉，让缺字段变成一个会报错的 bug 而不是悄悄降级。   │
+   * └────────────────────────────────────────────────────────────────┘
+   */
+  epoch: z.number().int().nonnegative().optional(),
 });
 export type SessionClaims = z.infer<typeof sessionClaimsSchema>;
 
