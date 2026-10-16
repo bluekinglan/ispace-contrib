@@ -126,7 +126,7 @@ export function Judge() {
     );
   }
 
-  const { items, criteria, locked, otherJudges } = data;
+  const { items, criteria, locked, lockReason, otherJudges } = data;
   const current = items.find((i) => i.ideaId === sel) ?? items[0] ?? null;
   const doneN = items.filter((i) => i.mine?.submitted).length;
 
@@ -210,8 +210,12 @@ export function Judge() {
       background: 'var(--warning-subtle)', border: '1px solid rgba(237,195,55,.4)',
     }}>
       <EIcon name="lock" size={14} />
+      {/*
+        原因由服务端给：不能打分有两种情形（路演还没开始 / 已经锁了），
+        前端自己编一句话就一定会在某一种下说错。
+      */}
       <span style={{ fontSize: 12, color: 'var(--text-heading)' }}>
-        已锁定，打分不能再改。系统正在按 {otherJudges + 1} 位评委的平均分排名。
+        {lockReason ?? '现在不能打分。'}
       </span>
     </div>
   );
@@ -277,6 +281,7 @@ export function Judge() {
                 criteria={criteria}
                 draft={readDraft(current)}
                 locked={locked}
+                lockReason={lockReason}
                 busy={busy}
                 otherJudges={otherJudges}
                 onChange={(p) => setDraft(current.ideaId, p)}
@@ -323,6 +328,7 @@ export function Judge() {
                 criteria={criteria}
                 draft={readDraft(current)}
                 locked={locked}
+                lockReason={lockReason}
                 busy={busy}
                 otherJudges={otherJudges}
                 onChange={(p) => setDraft(current.ideaId, p)}
@@ -395,12 +401,13 @@ function JudgeRow({
 }
 
 function Detail({
-  it, criteria, draft, locked, busy, otherJudges, onChange, onSave,
+  it, criteria, draft, locked, lockReason, busy, otherJudges, onChange, onSave,
 }: {
   it: EventJudgeItem;
   criteria: EventCriterion[];
   draft: Draft;
   locked: boolean;
+  lockReason: string | null;
   busy: boolean;
   otherJudges: number;
   onChange: (p: Partial<Draft>) => void;
@@ -525,7 +532,9 @@ function Detail({
           onClick={() => onSave(true)}
           disabled={locked || busy}
         >
-          {locked ? '已锁定' : submitted ? '更新打分' : '提交打分'}
+          {locked
+            ? (lockReason?.startsWith('路演') ? '还没开始' : '已锁定')
+            : submitted ? '更新打分' : '提交打分'}
         </Button>
       </div>
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from '@ispace/db';
 import type { EventConfig, EventPhase } from '@ispace/contracts';
-import { computeRanking, resolvePhase } from '../routes/events.js';
+import { computeRanking, resolvePhase, scoringWindow } from '../routes/events.js';
 
 /**
  * 阶段推导与名次汇总是这届活动里两件「算错了没人会立刻发现」的事：
@@ -79,6 +79,34 @@ describe('阶段按截止时间推导', () => {
   it('想提前下线：把阶段钉成 ended', () => {
     const during = at('2026-10-20T10:00:00+08:00');
     expect(resolvePhase({ phase: 'ended', config: cfg }, during)).toBe('ended');
+  });
+
+  /**
+   * 打分窗口两头都要有。
+   *
+   * 原先只判「锁了没有」，于是入围制作期（10.19–10.22）是不锁的——评委
+   * 在路演前四天就能把分打完，而那时作品还没交完、人也还没上台讲。
+   * 赛制写的是「现场打分」。
+   */
+  it.each<[string, boolean, string]>([
+    ['2026-10-16T09:00:00+08:00', false, '报名中：还没到'],
+    ['2026-10-19T13:00:00+08:00', false, '初筛中：还没到'],
+    ['2026-10-20T10:00:00+08:00', false, '入围制作：还没到——这条是修的那个 bug'],
+    ['2026-10-23T00:00:00+08:00', true,  '路演开始：开'],
+    ['2026-10-23T11:54:00+08:00', true,  '锁定前一分钟：还开着'],
+    ['2026-10-23T11:55:00+08:00', false, '锁定时刻：关'],
+    ['2026-10-23T16:00:00+08:00', false, '已出结果：关'],
+  ])('%s → 能打分=%s（%s）', (iso, open) => {
+    expect(scoringWindow({ phase: null, config: cfg }, at(iso)).open).toBe(open);
+  });
+
+  it('不能打分时要说清是哪一种，前端照着显示', () => {
+    const before = scoringWindow({ phase: null, config: cfg }, at('2026-10-20T10:00:00+08:00'));
+    expect(before.reason).toContain('路演');
+    const after = scoringWindow({ phase: null, config: cfg }, at('2026-10-23T12:30:00+08:00'));
+    expect(after.reason).toContain('锁定');
+    // 开着的时候不该有原因，否则前端会把它当成「不能打分」显示出来
+    expect(scoringWindow({ phase: null, config: cfg }, at('2026-10-23T10:00:00+08:00')).reason).toBeNull();
   });
 
   it('config 里没有 deadlines 时退回 signup，而不是崩掉', () => {

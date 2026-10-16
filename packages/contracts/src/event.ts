@@ -425,8 +425,16 @@ export interface EventJudgeResponse {
   criteria: EventCriterion[];
   /** 评委总数 - 1，即「其他评委」的分母 */
   otherJudges: number;
-  /** 打分是否已锁定（过了 deadlines.vote，或阶段已到 result） */
+  /**
+   * 现在不能打分。
+   *
+   * 两种原因都算：路演还没开始（入围制作期），或者已经过了 judgeLock。
+   * 原先只表示后者，于是评委在路演前四天就能把分打完——而赛制写的是
+   * 「现场打分」。具体是哪一种看 lockReason。
+   */
   locked: boolean;
+  /** locked 为真时说明原因，直接显示给评委。不锁时为 null。 */
+  lockReason: string | null;
   items: EventJudgeItem[];
 }
 

@@ -145,6 +145,49 @@ function isLocked(ev: EventRow, now: Date): boolean {
 }
 
 /**
+ * 打分窗口：什么时候能打分，不能打时为什么。
+ *
+ * ┌─ 和 isLocked 不是一回事 ──────────────────────────────────────────┐
+ * │ isLocked 只回答「是不是已经锁了」——11:55 之后、或者已经出结果。    │
+ * │ 它不管**还没开始**：入围制作期（10.19–10.22）它是 false，于是评委   │
+ * │ 在路演前四天就能把分打完，而那时作品还没交完、人也还没上台讲。      │
+ * │ 赛制写的是「现场打分」，那就该到现场那一刻才开。                    │
+ * │                                                                    │
+ * │ 所以窗口两头都要有：demo 阶段开始才开，judgeLock 一到就关。         │
+ * └────────────────────────────────────────────────────────────────────┘
+ *
+ * judgingLocked（活动页用来决定显不显示评委入口）仍然走 isLocked：路演前
+ * 评委就该能打开这一页看名单、读创意，只是还不能打分。
+ */
+/** 10.19 12:00。只用在给评委看的那几句提示里。 */
+function mdhm(iso: string | undefined): string {
+  if (!iso) return '时间未定';
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date(iso));
+  const g = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
+  return `${g('month')}.${g('day')} ${g('hour')}:${g('minute')}`;
+}
+
+export function scoringWindow(ev: EventRow, now: Date): { open: boolean; reason: string | null } {
+  if (isLocked(ev, now)) {
+    return { open: false, reason: '打分已锁定，分数不能再改。系统正在按评委的平均分排名。' };
+  }
+  const phase = resolvePhase(ev, now);
+  if (!phaseAtLeast(phase, 'demo')) {
+    const at = ev.config?.deadlines?.work;
+    return {
+      open: false,
+      reason: at
+        ? `路演 ${mdhm(at)} 开始，到时候这一页才能打分。现在可以先看名单和创意。`
+        : '路演开始后才能打分。现在可以先看名单和创意。',
+    };
+  }
+  return { open: true, reason: null };
+}
+
+/**
  * 人气奖投票窗口是否开着。
  *
  * **只看时刻，不看阶段**：本届投票 10.22 18:00 开放，而作品 10.23 00:00
@@ -579,7 +622,8 @@ export function registerEventRoutes(
       event: summary(ev, now),
       criteria,
       otherJudges: Math.max(0, Number(judgeCount[0]!.n) - 1),
-      locked: isLocked(ev, now),
+      locked: !scoringWindow(ev, now).open,
+      lockReason: scoringWindow(ev, now).reason,
       items,
     };
   });
@@ -592,8 +636,9 @@ export function registerEventRoutes(
     const now = new Date();
     const input = scoreInputSchema.parse(req.body);
 
-    if (isLocked(ev, now)) {
-      throw new IspaceError(ERROR_CODES.FORBIDDEN, '打分已锁定，分数不能再改');
+    const win = scoringWindow(ev, now);
+    if (!win.open) {
+      throw new IspaceError(ERROR_CODES.FORBIDDEN, win.reason ?? '现在不能打分');
     }
 
     const criteria = ev.config?.criteria ?? [];
@@ -662,17 +707,6 @@ export function registerEventRoutes(
    * 窗口之外仍然让评委**看**得到创意——提前读一遍是本来就该做的事，
    * 只是投不了。所以这里不拦读取，只在 open 上说明能不能投。
    */
-  /** 10.19 12:00。只用在给评委看的那句提示里。 */
-  const mdhm = (iso: string | undefined): string => {
-    if (!iso) return '截止时间未定';
-    const parts = new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    }).formatToParts(new Date(iso));
-    const g = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
-    return `${g('month')}.${g('day')} ${g('hour')}:${g('minute')}`;
-  };
-
   const screeningState = (ev: EventRow, now: Date) => {
     const phase = resolvePhase(ev, now);
     const limit = ev.config?.screeningVoteLimit ?? 0;
