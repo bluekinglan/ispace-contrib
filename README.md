@@ -514,7 +514,8 @@ cd android && ./gradlew assembleRelease && cd ../../..
 下载路径 `/dist/*` 免登录，这是刻意的：同事装 App 那一刻手上还没有会话。
 
 `ISPACE_APP_ID` 同时是**更新与覆盖安装的身份**：改了它，系统就认为这是另一个
-App，既有安装收不到更新，只能重装。仓库里的默认值是 `com.example.ispace`。
+App，既有安装收不到更新，只能重装。正因如此它**没有默认值**——不设就直接
+报错停下，而不是悄悄打出一个身份不对的包。
 
 ⚠️ `ISPACE_PUBLIC_BASE`（服务端）与 `EXPO_PUBLIC_ISPACE_BASE_URL`（壳构建期）
 **必须同 scheme**。不一致时更新会卡在「正在下载」且没有任何报错，原因和排查

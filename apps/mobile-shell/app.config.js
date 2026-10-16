@@ -33,8 +33,27 @@ const ALLOW_CLEARTEXT = BASE.startsWith('http://');
  * 注意它同时是**更新与覆盖安装的身份**：改了这个值，商店和系统就认为这是
  * 另一个 App，既有安装不会收到更新，只能重装。所以一个实例一旦发出去过，
  * 就别再改了。
+ *
+ * ┌─ 为什么没有默认值 ────────────────────────────────────────────────┐
+ * │ 这里原本是 `?? 'com.example.ispace'`。一个「发出去就不能再改」的      │
+ * │ 身份配上静默默认值，失败方式是这样的：某人在没设这个变量的机器上跑   │
+ * │ 一次 prebuild，包名悄悄变成 com.example.ispace，构建、上传、发布全部  │
+ * │ 正常，没有任何报错——直到同事点「更新」时装不上去，才发现手上这版和   │
+ * │ 线上那版在系统看来是两个 App，只能卸载重装。                        │
+ * │                                                                    │
+ * │ 这种错不该靠人记得导出环境变量来避免。缺了就当场停下，比事后让所有   │
+ * │ 人重装便宜得多。                                                    │
+ * └────────────────────────────────────────────────────────────────────┘
  */
-const APP_ID = process.env.ISPACE_APP_ID ?? 'com.example.ispace';
+const APP_ID = process.env.ISPACE_APP_ID;
+if (!APP_ID) {
+  throw new Error(
+    '缺少 ISPACE_APP_ID：它是 App 的身份（更新与覆盖安装都认它），没有默认值。\n'
+    + '  本机临时用：export ISPACE_APP_ID=com.yourcompany.ispace\n'
+    + '  长期用：写进仓库根目录的 .env（见 .env.example），再 set -a; . ./.env; set +a\n'
+    + '  ⚠️ 这个实例已经发出去过包的话，必须沿用原值，换了等于发了一个新 App。',
+  );
+}
 
 module.exports = ({ config }) => ({
   ...config,

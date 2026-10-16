@@ -24,7 +24,6 @@
     ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.example.ispace",
       "icon": {
         "light": "./assets/icon.png",
         "dark": "./assets/icon-ios-dark.png",
@@ -42,7 +41,6 @@
       }
     },
     "android": {
-      "package": "com.example.ispace",
       "icon": "./assets/icon-android.png",
       "permissions": [
         "CAMERA",

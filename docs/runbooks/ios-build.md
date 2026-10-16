@@ -59,7 +59,7 @@ xcodebuild -workspace ispace.xcworkspace -scheme ispace \
 1. **Apple Developer Program 账号**（企业内部分发要 Enterprise Program，
    或普通账号走 Ad Hoc / TestFlight）
 2. 把构建这台机器的 Apple ID 加进团队，角色至少 **Developer**
-3. 你的 Bundle ID（`ISPACE_APP_ID`，默认 `com.example.ispace`）在团队里注册
+3. 你的 Bundle ID（`ISPACE_APP_ID`，必填、无默认值）在团队里注册
 
 ### 拿到之后
 
