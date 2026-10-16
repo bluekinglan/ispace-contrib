@@ -6,6 +6,7 @@ import {
 import { api } from '../api';
 import { EVENT_JUDGES } from './judges';
 import { registerEventEffects } from './effects';
+import { LotteryStage, type LotteryHandle } from './Lottery';
 import {
   BinaryTen, Caret, DOTS_ON_SCREEN, DotMatrix, EIcon, EventKeyframes, Mark,
   type EventIconName,
@@ -39,11 +40,17 @@ const H = 1080;
 /**
  * 一步。顺序即仪式顺序：
  *
- *   背景墙 → 下午安排 → 开场 → 三等奖(铺垫/揭晓) → 二等奖 → 一等奖 → 总览 → 切蛋糕
+ *   背景墙 → 下午安排 → 开场 → 三等奖(铺垫/揭晓) → 二等奖 → 一等奖 → 总览
+ *   → 全员抽奖 → 切蛋糕
  *
  * 背景墙放在最前面，是因为这块屏在颁奖之前就已经挂在那儿了——主持人不必
  * 先开一个别的页面再切过来，到点按一下就进下午安排。
  * 切蛋糕放在最后，16:20 那个环节直接接着用。
+ *
+ * 抽奖夹在总览和切蛋糕之间，和下午的流程一致（颁奖 → 抽奖 → 切蛋糕）。
+ * 它和别的步骤不一样：别的步骤按一下就过，抽奖那一步要在原地按好几下
+ * （开始 / 停 / 下一轮，共五轮），所以主操作会先交给它，等它说「抽完了」
+ * 才继续往下走。见下面 advance()。
  */
 type Step =
   | { t: 'wall' }
@@ -51,6 +58,7 @@ type Step =
   | { t: 'intro' }
   | { t: 'award'; award: EventAward; reveal: boolean }
   | { t: 'end' }
+  | { t: 'lottery' }
   | { t: 'cake' };
 
 /** 每个奖的配色。三等奖米底、二等奖墨底、一等奖橙底——越往后越亮。 */
@@ -152,7 +160,7 @@ export function Award() {
       out.push({ t: 'award', award: a, reveal: false });
       out.push({ t: 'award', award: a, reveal: true });
     }
-    out.push({ t: 'end' }, { t: 'cake' });
+    out.push({ t: 'end' }, { t: 'lottery' }, { t: 'cake' });
     return out;
   }, [awards]);
 
@@ -161,17 +169,38 @@ export function Award() {
     [steps.length],
   );
 
+  const lottery = useRef<LotteryHandle>(null);
+  /** 当前这一步是不是抽奖。用 ref 读，免得把它塞进键盘 effect 的依赖里反复重挂。 */
+  const onLottery = useRef(false);
+  onLottery.current = steps[at]?.t === 'lottery';
+
+  /*
+    前进 / 后退。
+
+    抽奖那一步自己要吃掉好几下按键（开始、停、下一轮…），所以先问它：
+    它返回 true 表示「这一下我用了」，返回 false 才轮到典礼往下走一步。
+    后退同理——在抽奖里先退轮次，退到第一轮才退出这一屏。
+  */
+  const advance = useCallback(() => {
+    if (onLottery.current && lottery.current?.primary()) return;
+    setAt((n) => clamp(n + 1));
+  }, [clamp]);
+  const retreat = useCallback(() => {
+    if (onLottery.current && lottery.current?.back()) return;
+    setAt((n) => clamp(n - 1));
+  }, [clamp]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {
-        e.preventDefault(); setAt((n) => clamp(n + 1));
+        e.preventDefault(); advance();
       } else if (e.key === 'ArrowLeft' || e.key === 'Backspace') {
-        e.preventDefault(); setAt((n) => clamp(n - 1));
+        e.preventDefault(); retreat();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [clamp]);
+  }, [advance, retreat]);
 
   // 键盘要能用，焦点就得在舞台上；主持人多半是点一下然后用遥控笔翻页
   useEffect(() => { stage.current?.focus(); }, []);
@@ -198,11 +227,12 @@ export function Award() {
   }
 
   const step = steps[clamp(at)]!;
-  const theme = step.t === 'intro' || step.t === 'agenda' ? DARK_THEME
+  const theme = step.t === 'intro' || step.t === 'agenda' || step.t === 'lottery' ? DARK_THEME
     : step.t === 'wall' || step.t === 'end' || step.t === 'cake' ? ORANGE_THEME
     : THEME[step.award.key] ?? THEME.third!;
   /* 背景墙和切蛋糕是完整的一张画，顶上那条面包屑会碍事 */
-  const topOn = step.t !== 'wall' && step.t !== 'cake';
+  /* 抽奖自带顶栏（轮次胶囊 + 名单），再叠一条面包屑就重了 */
+  const topOn = step.t !== 'wall' && step.t !== 'cake' && step.t !== 'lottery';
   const isReveal = step.t === 'award' && step.reveal;
   const isChampionReveal = isReveal && step.t === 'award' && step.award.key === 'first';
 
@@ -215,7 +245,7 @@ export function Award() {
         tabIndex={0}
         role="button"
         aria-label="颁奖大屏，点击或按右方向键继续"
-        onClick={() => setAt((n) => clamp(n + 1))}
+        onClick={advance}
         style={{
           position: 'absolute', left: '50%', top: '50%',
           width: W, height: H,
@@ -231,8 +261,8 @@ export function Award() {
           transition: 'background-color .6s ease, color .6s ease',
         }}
       >
-        {/* 背景大字：铺垫时是奖次，揭晓后换成作品编号 */}
-        <span aria-hidden="true" className="mono" style={{
+        {/* 背景大字：铺垫时是奖次，揭晓后换成作品编号。抽奖那屏自己铺满，不要它 */}
+        {step.t !== 'lottery' && <span aria-hidden="true" className="mono" style={{
           position: 'absolute', right: -70, bottom: -230, fontWeight: 800, fontSize: 1180,
           lineHeight: 1, letterSpacing: '-.08em', color: theme.wm,
           whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
@@ -240,7 +270,7 @@ export function Award() {
           {step.t === 'award'
             ? (step.reveal ? step.award.no : AWARD_META[step.award.key]?.wm ?? '1024')
             : '1024'}
-        </span>
+        </span>}
 
         {/* 顶栏。背景墙与切蛋糕自带完整版式，不要这条。 */}
         {topOn && (
@@ -271,6 +301,7 @@ export function Award() {
         {step.t === 'wall' && <Backdrop edition={data.event.edition} title={data.event.title} subtitle={data.event.subtitle} />}
         {step.t === 'agenda' && <Agenda cfg={data.event.config} now={data.event.now} />}
         {step.t === 'cake' && <Cake step={at} />}
+        {step.t === 'lottery' && <LotteryStage ref={lottery} />}
         {step.t === 'intro' && (
           <Intro
             fg={theme.fg}
@@ -320,11 +351,18 @@ export function Award() {
             }} />
           ))}
         </div>
-        <span style={{
-          position: 'absolute', right: 96, bottom: 52, fontSize: 18, opacity: 0.5,
-        }}>
-          点击或按 → 继续
-        </span>
+        {/*
+          抽奖那一步不要这句：在那儿 → 是「开始 / 停 / 下一轮」而不是「继续」，
+          写着「继续」会让主持人以为按下去就跳过抽奖了；而且它正压在抽奖
+          自己那颗角落按钮上。抽奖屏左下角有自己的键位说明。
+        */}
+        {step.t !== 'lottery' && (
+          <span style={{
+            position: 'absolute', right: 96, bottom: 52, fontSize: 18, opacity: 0.5,
+          }}>
+            点击或按 → 继续
+          </span>
+        )}
       </div>
     </div>
   );
