@@ -28,6 +28,7 @@ import {
 import {
   deviceId, getDefaultHome, session, setDefaultHome, unlockWithBiometrics,
 } from './src/runtime/bridge';
+import appJson from './app.json';
 
 /**
  * 壳的入口。
@@ -54,8 +55,12 @@ import {
  * 壳版本回答「你手上这个 App 是哪一版」。登录页把两个都显示出来，
  * 排查「同事的能用我的不能用」时第一眼就能看出差在哪。
  * 之前两处都打印 runtimeVersion，等于白占一行。
+ *
+ * 直接 import 而不是手抄一份字面量：发布脚本取的是 app.json 的 version，
+ * 这里若另写一份，发版时漏改就会出现「下载页写 1.1.0、App 里显示 1.0.0」
+ * ——而这一行的用处恰恰是排查版本差异，它自己不准就没有意义了。
  */
-const SHELL_VERSION = '1.0.0';
+const SHELL_VERSION: string = appJson.expo.version;
 
 interface Me {
   user: { username: string; displayName: string; identity: 'user' | 'developer' };

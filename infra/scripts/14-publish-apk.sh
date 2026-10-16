@@ -23,7 +23,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOST="${TARGET_HOST:?需要设置 TARGET_HOST，形如 deploy@ispace.example.com}"
 KEY="${DEPLOY_KEY:-$HOME/.ssh/ispace_deploy}"
 BASE_URL="${ISPACE_BASE_URL:?需要设置 ISPACE_BASE_URL，形如 https://ispace.example.com}"
-SUDO_PW="${REMOTE_SUDO_PW:?需要设置 REMOTE_SUDO_PW 环境变量}"
+# sudo 口令只在**首次**发版时需要——那时 /srv/dist 还不存在。目录建好之后
+# 上传走普通用户身份，不再需要它，所以这里不强制要求：缺了就先探测目录，
+# 真需要创建时再报错。每发一次版都要输一遍 root 口令，只会让人把口令写进
+# 某个随手的脚本里，那比这里少一道校验危险得多。
+SUDO_PW="${REMOTE_SUDO_PW:-}"
 
 APK="${ISPACE_APK:-$REPO_ROOT/apps/mobile-shell/android/app/build/outputs/apk/release/app-release.apk}"
 REMOTE_DIR=/srv/dist
@@ -92,8 +96,13 @@ JSON
 
 # ── 2. 准备远端目录 ───────────────────────────────────────────────────
 echo "== 2. 准备远端目录 =="
-"$SCRIPT_DIR/remote.sh" \
-  "SUDO_PW='$SUDO_PW' DEPLOY_USER='${ISPACE_DEPLOY_USER:-${TARGET_HOST%%@*}}' bash -s" <<'REMOTE'
+# 已经建好且自己能写，就什么都不做——这一步是一次性的。
+if "$SCRIPT_DIR/remote.sh" "test -w /srv/dist" 2>/dev/null; then
+  "$SCRIPT_DIR/remote.sh" "ls -ld /srv/dist | sed 's/^/   /'"
+  echo "   已就绪，跳过创建"
+elif [ -n "$SUDO_PW" ]; then
+  "$SCRIPT_DIR/remote.sh" \
+    "SUDO_PW='$SUDO_PW' DEPLOY_USER='${ISPACE_DEPLOY_USER:-${TARGET_HOST%%@*}}' bash -s" <<'REMOTE'
 set -eu
 sudo_run() { echo "$SUDO_PW" | sudo -S -p "" "$@"; }
 sudo_run mkdir -p /srv/dist
@@ -102,6 +111,10 @@ sudo_run chown "$DEPLOY_USER:$DEPLOY_USER" /srv/dist
 sudo_run chmod 755 /srv/dist
 ls -ld /srv/dist | sed 's/^/   /'
 REMOTE
+else
+  echo "/srv/dist 不存在或当前用户写不了，首次创建需要 REMOTE_SUDO_PW。" >&2
+  exit 1
+fi
 
 # ── 3. 上传 ───────────────────────────────────────────────────────────
 echo "== 3. 上传（约 $((SIZE / 1048576)) MB）=="
