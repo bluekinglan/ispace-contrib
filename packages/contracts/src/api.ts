@@ -19,6 +19,17 @@ import { appSlugSchema, usernameSchema } from './reserved.js';
 
 export const API_BASE = '/deploy/api';
 
+/**
+ * 头像的读取地址。放在 API_BASE 旁边，而不是 entities.ts 里 User 的旁边：
+ * 那边放就得把 '/deploy/api' 再抄一遍（entities 不能 import 本文件，会循环）。
+ *
+ * `v` 是内容的 md5：换了头像地址就变，浏览器立刻取新的；没换就一直命中
+ * 缓存。没有它的话要么每次都重新下载，要么换了头像半天不生效。
+ */
+export function avatarUrlFor(username: string, etag: string | null | undefined): string | null {
+  return etag ? `${API_BASE}/users/${username}/avatar?v=${etag}` : null;
+}
+
 // ── 通用 ──────────────────────────────────────────────────────────────
 export const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -99,6 +110,24 @@ export const updateAppRequestSchema = z.object({
  *    → NOTIFY reload schema。若先改配置而 schema 不存在，PostgREST 会进入
  *    重连循环，/rest/v1/* 对全部用户返回 503。
  */
+// ── 个人资料 ──────────────────────────────────────────────────────────
+/**
+ * 自己能改的资料。
+ *
+ * ┌─ 为什么只有显示名 ────────────────────────────────────────────────┐
+ * │ username 是空间地址 `/{username}/`，所有已发布页面的链接都挂在     │
+ * │ 上面——改名等于把同事收藏的、分享出去的、嵌在别处的地址一起弄断。  │
+ * │ email 是登录和密码重置认的那一个，而平台没有邮件服务，验证不了新   │
+ * │ 地址；能随手改邮箱，等于多了一条绕过管理员的改身份的路。          │
+ * │                                                                    │
+ * │ 这两项不是「不能改」，是「不该自助改」：找管理员在控制台改。      │
+ * └────────────────────────────────────────────────────────────────────┘
+ */
+export const updateProfileRequestSchema = z.object({
+  displayName: z.string().trim().min(1).max(64),
+});
+export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;
+
 export const provisionRequestSchema = z.object({
   username: usernameSchema,
   displayName: z.string().min(1).max(64),
@@ -166,7 +195,9 @@ export const pendingSharesResponseSchema = z.object({
   shares: z.array(
     shareSchema.extend({
       app: appSchema,
-      fromUser: userSchema.pick({ id: true, username: true, displayName: true }),
+      fromUser: userSchema.pick({
+        id: true, username: true, displayName: true, avatarUrl: true,
+      }),
     }),
   ),
 });

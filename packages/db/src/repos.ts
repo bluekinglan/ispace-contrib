@@ -6,6 +6,7 @@ import {
   ERROR_CODES,
   IDLE_ARCHIVE_DAYS,
   IspaceError,
+  avatarUrlFor,
   type App,
   type AuditLog,
   type Quota,
@@ -37,6 +38,11 @@ const toUser = (r: any): User => ({
   status: r.status,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
+  /*
+    没 join user_avatars 的查询（createUser 的 RETURNING *）拿不到
+    avatar_etag，于是是 null——新建的用户本来也没有头像，结果是对的。
+  */
+  avatarUrl: avatarUrlFor(r.username, r.avatar_etag),
 });
 
 const toApp = (r: any): App => ({
@@ -87,18 +93,34 @@ const toQuota = (r: any): Quota => ({
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ── users ─────────────────────────────────────────────────────────────
+/*
+  三个查询都 join 上头像指纹，让 User 处处带得上 avatarUrl。
+  只取 etag 不取 bytes：bytea 被 Postgres TOAST 到行外，不选它就不会读，
+  这个 join 实质上是免费的。选了 bytes 才是每次鉴权都白读一张图。
+*/
+const USER_COLS = (sql: Sql) => sql`u.*, a.etag AS avatar_etag`;
+const USER_FROM = (sql: Sql) => sql`
+  ispace.users u LEFT JOIN ispace.user_avatars a ON a.user_id = u.id
+`;
+
 export async function findUserByUsername(sql: Sql, username: string): Promise<User | null> {
-  const rows = await sql`SELECT * FROM ispace.users WHERE username = ${username}`;
+  const rows = await sql`
+    SELECT ${USER_COLS(sql)} FROM ${USER_FROM(sql)} WHERE u.username = ${username}
+  `;
   return rows[0] ? toUser(rows[0]) : null;
 }
 
 export async function findUserBySso(sql: Sql, ssoSubject: string): Promise<User | null> {
-  const rows = await sql`SELECT * FROM ispace.users WHERE sso_subject = ${ssoSubject}`;
+  const rows = await sql`
+    SELECT ${USER_COLS(sql)} FROM ${USER_FROM(sql)} WHERE u.sso_subject = ${ssoSubject}
+  `;
   return rows[0] ? toUser(rows[0]) : null;
 }
 
 export async function findUserById(sql: Sql, id: string): Promise<User | null> {
-  const rows = await sql`SELECT * FROM ispace.users WHERE id = ${id}`;
+  const rows = await sql`
+    SELECT ${USER_COLS(sql)} FROM ${USER_FROM(sql)} WHERE u.id = ${id}
+  `;
   return rows[0] ? toUser(rows[0]) : null;
 }
 

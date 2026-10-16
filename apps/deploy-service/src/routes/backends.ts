@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  API_BASE, DEFAULT_QUOTAS, ERROR_CODES, IspaceError,
+  API_BASE, DEFAULT_QUOTAS, ERROR_CODES, IspaceError, avatarUrlFor,
   createBackendRequestSchema, type User,
 } from '@ispace/contracts';
 import { getPlatformPolicy, getQuota, writeAudit, type Sql } from '@ispace/db';
@@ -195,12 +195,19 @@ export function registerBackendRoutes(
     const { id } = req.params as { id: string };
     const own = await sql`SELECT 1 FROM ispace.backends WHERE id = ${id} AND owner_id = ${me.id}`;
     if (!own[0]) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个后端，或它不属于你。');
-    const rows = await sql<{ username: string; display_name: string }[]>`
-      SELECT u.username, u.display_name
+    const rows = await sql<{ username: string; display_name: string; avatar: string | null }[]>`
+      SELECT u.username, u.display_name, av.etag AS avatar
         FROM ispace.backend_shares s JOIN ispace.users u ON u.id = s.to_user_id
+        LEFT JOIN ispace.user_avatars av ON av.user_id = u.id
        WHERE s.backend_id = ${id} ORDER BY s.created_at DESC
     `;
-    return { shares: rows.map((r) => ({ username: r.username, displayName: r.display_name })) };
+    return {
+      shares: rows.map((r) => ({
+        username: r.username,
+        displayName: r.display_name,
+        avatarUrl: avatarUrlFor(r.username, r.avatar),
+      })),
+    };
   });
 
   app.post(`${API_BASE}/backends/:id/shares`, async (req) => {

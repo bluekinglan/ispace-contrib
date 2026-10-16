@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mergeMarketResults, type MarketItem } from './market-state';
 import {
   EVENT_PATH, MARKETPLACE_CATEGORIES,
-  type App as AppEntity, type AppGroup,
+  type App as AppEntity, type AppGroup, type User,
 } from '@ispace/contracts';
+import { ProfileDialog } from './Profile';
 import { Activity } from './event/Activity';
 import { Judge } from './event/Judge';
 import { Screen } from './event/Screen';
@@ -185,6 +186,7 @@ function Space() {
         onTab={setTab}
         q={q}
         onQ={setQ}
+        onUser={(u) => setMe((m) => (m ? { ...m, user: u } : m))}
       >
         {tab === 'pages' ? (
           <MyPages
@@ -210,14 +212,17 @@ function Space() {
 
 // ── 骨架 ──────────────────────────────────────────────────────────────
 function Shell({
-  me, tab, onTab, q, onQ, children,
+  me, tab, onTab, q, onQ, children, onUser,
 }: {
   me: MeResponse; tab: TabKey; onTab: (t: TabKey) => void;
   q: string; onQ: (v: string) => void; children: React.ReactNode;
+  /** 改完资料把新的 user 推回去，顶栏头像和名字立刻跟着变。 */
+  onUser: (u: User) => void;
 }) {
   const c = useCopy();
   const [qrOpen, setQrOpen] = useState(false);
   const [apkOpen, setApkOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const compact = useCompactHeader();
   const narrow = useMedia(NARROW_HEADER);
   const phone = useMedia(PHONE_HEADER);
@@ -336,8 +341,10 @@ function Shell({
         )}
         <AvatarMenu
           name={me.user.displayName}
+          src={me.user.avatarUrl}
           subtitle={`${location.host}/${me.user.username}`}
           items={[
+            { label: '个人资料', onClick: () => setProfileOpen(true) },
             { label: '我的空间', href: `/${me.user.username}/` },
             { label: '控制台', href: '/console' },
             /* 顶栏那颗按钮在手机档被收掉了，这里补上，功能不丢 */
@@ -371,6 +378,13 @@ function Shell({
       </main>
       {qrOpen && <QrLoginDialog onClose={() => setQrOpen(false)} />}
       {apkOpen && <AppDownloadDialog onClose={() => setApkOpen(false)} />}
+      {profileOpen && (
+        <ProfileDialog
+          user={me.user}
+          onUser={onUser}
+          onClose={() => setProfileOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -885,7 +899,8 @@ function BackendShareDialog({
   const loadPeers = useCallback(() => {
     void api.backendShares(backend.id)
       .then((r) => setPeers(r.shares.map((s) => ({
-        shareId: s.username, username: s.username, displayName: s.displayName, status: 'accepted' as const,
+        shareId: s.username, username: s.username, displayName: s.displayName,
+        avatarUrl: s.avatarUrl, status: 'accepted' as const,
       }))))
       .catch(() => setPeers([]));
   }, [backend.id]);
@@ -1196,7 +1211,7 @@ function ShareCard({ share, onDone }: { share: PendingShare; onDone: () => void 
       borderRadius: 'var(--radius-16)', padding: 'var(--space-10) var(--space-12)',
       marginBottom: 'var(--space-8)',
     }}>
-      <Avatar name={share.fromUser.displayName} size={36} />
+      <Avatar name={share.fromUser.displayName} size={36} src={share.fromUser.avatarUrl} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 'var(--weight-semibold)', fontSize: 'var(--text-md)' }}>
           {share.fromUser.displayName} {c('share.pendingTitle')}「{share.app.name}」

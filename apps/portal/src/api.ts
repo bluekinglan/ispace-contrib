@@ -75,6 +75,7 @@ export interface SharePeerInfo {
   shareId: string;
   username: string;
   displayName: string;
+  avatarUrl: string | null;
   status: 'pending' | 'accepted';
 }
 
@@ -90,7 +91,7 @@ export interface PendingShare {
   status: string;
   createdAt: string;
   app: App;
-  fromUser: { id: string; username: string; displayName: string };
+  fromUser: { id: string; username: string; displayName: string; avatarUrl: string | null };
 }
 
 export interface Listing {
@@ -210,6 +211,29 @@ export const api = {
   }) => post<{ user: User; token: string; spaceUrl: string }>('/auth/register', input),
 
   me: () => get<MeResponse>('/me'),
+
+  /** 改显示名。返回改完的 user，调用方直接拿去刷新本地状态。 */
+  updateProfile: (displayName: string) =>
+    patch<{ user: User }>('/auth/profile', { displayName }),
+  /**
+   * 传头像。和附件上传同理：走 multipart，不手写 content-type，
+   * 让浏览器自己带 boundary。
+   *
+   * 收 Blob 不收 File：调用方传进来的是 canvas 缩完图后导出的 Blob，
+   * 它没有文件名，所以这里补一个——服务端只看 mimetype，名字不重要，
+   * 但 FormData 不给名字的话有些服务端解析器会把它当普通字段。
+   */
+  uploadAvatar: async (blob: Blob): Promise<User> => {
+    const form = new FormData();
+    form.append('file', blob, 'avatar');
+    const res = await fetch(`${BASE}/auth/avatar`, {
+      method: 'POST', credentials: 'same-origin', body: form,
+    });
+    const body = (await res.json()) as { user: User } & Partial<ApiError>;
+    if (!res.ok) throw Object.assign(new Error(body.message ?? '上传失败'), { code: body.code });
+    return body.user;
+  },
+  removeAvatar: () => del<{ user: User }>('/auth/avatar'),
   apps: () => get<AppsResponse>('/apps'),
   pendingShares: () => get<{ shares: PendingShare[] }>('/shares/pending'),
   /** 把某个页面分享给同事。对方接受后能在自己的主页看到。 */
@@ -247,7 +271,9 @@ export const api = {
      「露出到空间」时就建好了，这里只补 portal 侧的客户端方法。后端没有
      「待接受」流程，授权即时生效，所以名单里的人一律当已接受。 */
   backendShares: (id: string) =>
-    get<{ shares: { username: string; displayName: string }[] }>(`/backends/${id}/shares`),
+    get<{ shares: { username: string; displayName: string; avatarUrl: string | null }[] }>(
+      `/backends/${id}/shares`,
+    ),
   setBackendVisibility: (id: string, visibility: 'private' | 'public' | 'shared') =>
     patch<{ ok: boolean }>(`/backends/${id}`, { visibility }),
   shareBackend: (id: string, toUsername: string) =>

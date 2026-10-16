@@ -38,8 +38,16 @@ export const userSchema = z.object({
   status: userStatusSchema,
   createdAt: ts,
   archivedAt: ts.nullable(),
+  /**
+   * 头像地址，没传过头像就是 null（由调用方回落到首字母底板）。
+   *
+   * 带的是地址而不是「有没有头像」的布尔：URL 里已经含内容指纹，
+   * 前端拿到就能直接塞进 <img>，不必各处自己拼一遍路径。
+   */
+  avatarUrl: z.string().nullable(),
 });
 export type User = z.infer<typeof userSchema>;
+
 
 // ── app_groups ───────────────────────────────────────────────────────
 /** 设计稿「我的页面」聚合页的分组：常用 / 日常 / 客户跟进 / 小工具。 */

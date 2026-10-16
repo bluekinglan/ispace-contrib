@@ -179,12 +179,38 @@ export function Badge({
 }
 
 // ── Avatar ────────────────────────────────────────────────────────────
-export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
+export function Avatar({ name, size = 28, src }: {
+  name: string;
+  size?: number;
+  /** 头像图。没有、或者加载不出来，就回落到首字母底板。 */
+  src?: string | null;
+}) {
+  /*
+    图挂了要退回首字母，而不是在界面上留一块碎图 icon——和 CoverBanner
+    同一个处理。src 换了（换了头像）要把失败状态清掉，否则换一张好图
+    之后还是显示字母：key 跟着 src 走，组件直接重建，省掉一个 effect。
+  */
+  const [failed, setFailed] = useState(false);
+  const common = {
+    width: size, height: size, borderRadius: '50%', flex: 'none' as const,
+  };
+  if (src && !failed) {
+    return (
+      <img
+        key={src}
+        src={src}
+        alt={name}
+        title={name}
+        onError={() => setFailed(true)}
+        style={{ ...common, objectFit: 'cover', display: 'block' }}
+      />
+    );
+  }
   return (
     <span
       title={name}
       style={{
-        width: size, height: size, borderRadius: '50%', flex: 'none',
+        ...common,
         background: 'var(--tabby-orange-subtle)', color: 'var(--tabby-orange-hover)',
         display: 'grid', placeItems: 'center',
         fontSize: size < 26 ? 'var(--text-xs)' : 'var(--text-sm)',
@@ -254,8 +280,11 @@ export function AppIcon({ letter, size = 40 }: { letter: string; size?: number }
  */
 export function AvatarMenu({
   name, subtitle, items, size = 28, placement = 'bottom', align = 'right', trigger,
+  src,
 }: {
   name: string;
+  /** 头像图，透传给 Avatar。 */
+  src?: string | null;
   /** 头像下方的小字，通常是空间地址或角色。 */
   subtitle?: string;
   items: {
@@ -316,7 +345,7 @@ export function AvatarMenu({
           textAlign: 'left', font: 'inherit', color: 'inherit',
         }}
       >
-        {trigger ?? <Avatar name={name} size={size} />}
+        {trigger ?? <Avatar name={name} size={size} src={src} />}
         {/* 小三角，明确"这里可以点开"——只有头像的话没人知道它是个菜单 */}
         <span aria-hidden="true" style={{
           width: 0, height: 0, marginRight: 2, flex: 'none',
@@ -397,7 +426,14 @@ export function Input({ style, ...rest }: React.InputHTMLAttributes<HTMLInputEle
       style={{
         height: 'var(--control-height)', padding: '0 var(--space-8)',
         border: '1px solid var(--border)', borderRadius: 'var(--radius-8)',
-        background: 'var(--surface-1)', color: 'var(--text-primary)',
+        /*
+          禁用时要一眼看得出来。原先禁用和可编辑长得一模一样，于是「这一格
+          我到底能不能改」只能靠点一下试试——个人资料页把用户名和邮箱摆出来
+          但不让改，正是撞在这上面。提交中的表单同理：看着还能打字。
+        */
+        background: rest.disabled ? 'var(--surface-2)' : 'var(--surface-1)',
+        color: rest.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+        cursor: rest.disabled ? 'not-allowed' : undefined,
         font: 'var(--weight-regular) var(--text-base)/1 var(--font-sans)',
         outline: 'none', width: '100%',
         ...style,

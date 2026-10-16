@@ -3,6 +3,7 @@ import {
   API_BASE,
   ERROR_CODES,
   IspaceError,
+  avatarUrlFor,
   createShareRequestSchema,
   respondShareRequestSchema,
   type User,
@@ -36,10 +37,11 @@ export function registerShareRoutes(
              a.type, a.status AS a_status, a.current_release_id, a.group_id,
              a.sort_order, a.visibility, a.size_bytes, a.last_accessed_at,
              a.created_at AS a_created, a.updated_at AS a_updated,
-             u.id AS u_id, u.username, u.display_name
+             u.id AS u_id, u.username, u.display_name, av.etag AS u_avatar
         FROM ispace.shares s
         JOIN ispace.apps  a ON a.id = s.app_id
         JOIN ispace.users u ON u.id = s.from_user_id
+        LEFT JOIN ispace.user_avatars av ON av.user_id = u.id
        WHERE s.to_user_id = ${me.id} AND s.status = 'pending'
        ORDER BY s.created_at DESC
     `;
@@ -59,7 +61,10 @@ export function registerShareRoutes(
           sizeBytes: Number(r.size_bytes), lastAccessedAt: r.last_accessed_at,
           createdAt: r.a_created, updatedAt: r.a_updated,
         },
-        fromUser: { id: r.u_id, username: r.username, displayName: r.display_name },
+        fromUser: {
+          id: r.u_id, username: r.username, displayName: r.display_name,
+          avatarUrl: avatarUrlFor(r.username, r.u_avatar),
+        },
       })),
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -179,12 +184,13 @@ export function registerShareRoutes(
     const { appId } = req.params as { appId: string };
 
     const peers = await sql<
-      { id: string; username: string; display_name: string; status: string }[]
+      { id: string; username: string; display_name: string; status: string; avatar: string | null }[]
     >`
-      SELECT s.id, u.username, u.display_name, s.status
+      SELECT s.id, u.username, u.display_name, s.status, av.etag AS avatar
         FROM ispace.shares s
         JOIN ispace.users u ON u.id = s.to_user_id
         JOIN ispace.apps  a ON a.id = s.app_id
+        LEFT JOIN ispace.user_avatars av ON av.user_id = u.id
        WHERE s.app_id = ${appId}
          AND a.owner_id = ${me.id}
          AND s.status IN ('pending','accepted')
@@ -195,6 +201,7 @@ export function registerShareRoutes(
         shareId: p.id,
         username: p.username,
         displayName: p.display_name,
+        avatarUrl: avatarUrlFor(p.username, p.avatar),
         status: p.status as 'pending' | 'accepted',
       })),
     };

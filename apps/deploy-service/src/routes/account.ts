@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  API_BASE, ERROR_CODES, IspaceError, isReservedPath, usernameSchema, type User,
+  API_BASE, ERROR_CODES, IspaceError, isReservedPath, updateProfileRequestSchema,
+  usernameSchema, type User,
 } from '@ispace/contracts';
 import {
-  createUser, getPlatformPolicy, provisionUserSchema, writeAudit, type Sql,
+  createUser, findUserById, getPlatformPolicy, provisionUserSchema, writeAudit, type Sql,
 } from '@ispace/db';
 import {
   PASSWORD_FLOOR, PASSWORD_MAX, checkPasswordStrength, hashPassword, verifyPassword,
@@ -40,6 +41,21 @@ function seedDomains(): string[] {
   return (process.env.ISPACE_EMAIL_DOMAINS ?? 'example.com')
     .split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
 }
+
+/**
+ * 头像上限。界面会先把图缩到 256 见方再传（几十 KB），这个数是给绕过界面
+ * 直接 POST 的情况兜底的——头像进的是数据库，不设上限就等于让人往库里塞
+ * 任意大小的二进制。
+ */
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 头像类型白名单。
+ *
+ * 和 1024 附件同一条理由：这些字节会被浏览器直接渲染，收了 svg 就等于让人
+ * 在平台域名下挂一段任意脚本。gif 也不收——头像不需要会动的。
+ */
+const AVATAR_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 /** 登录失败多少次后锁。 */
 const MAX_FAILS = 8;
@@ -313,7 +329,12 @@ export function registerAccountRoutes(
 
     await Promise.all([clearFails(byEmail), clearFails(byIp)]);
 
-    const full = await toUser(sql, row.id);
+    /*
+      用 db 层的 findUserById 而不是本文件再写一遍行映射：它 join 了头像，
+      少一处要跟着 users 表一起改的地方。登录这一步刚查过这一行，多一次
+      主键查询换掉一份重复代码是划算的。
+    */
+    const full = (await findUserById(sql, row.id))!;
     const token = await issueSession(full);
     await setSessionCookie(reply, token);
     return { user: full, token };
@@ -521,6 +542,119 @@ export function registerAccountRoutes(
   });
 
   /** 注册页要用：告诉前端哪些邮箱后缀可注册、密码要多长。 */
+  // ── 个人资料 ────────────────────────────────────────────────────
+  /**
+   * 改自己的显示名。
+   *
+   * 能改的只有这一项，为什么见 updateProfileRequestSchema 上那段。
+   */
+  app.patch(`${API_BASE}/auth/profile`, async (req) => {
+    const me = await requireAuth(req);
+    const { displayName } = updateProfileRequestSchema.parse(req.body);
+
+    if (displayName === me.displayName) return { user: me };
+
+    await sql`
+      UPDATE ispace.users SET display_name = ${displayName} WHERE id = ${me.id}
+    `;
+    await writeAudit(sql, {
+      actorId: me.id, action: 'user.profile.update', targetType: 'user', targetId: me.id,
+      source: 'console', result: 'success',
+      metadata: { from: me.displayName, to: displayName },
+      ip: req.ip,
+    });
+    return { user: (await findUserById(sql, me.id))! };
+  });
+
+  /**
+   * 传头像。
+   *
+   * 字节直接进库（见 0025 迁移里那段），所以这里 toBuffer 而不是落盘。
+   * 2 MB 的上限是给「绕过界面直接 POST」兜底的：界面会先在 canvas 里把图
+   * 缩到 256 见方再传，正常走下来是几十 KB。
+   */
+  app.post(`${API_BASE}/auth/avatar`, async (req) => {
+    const me = await requireAuth(req);
+
+    const part = await req.file({ limits: { fileSize: MAX_AVATAR_BYTES } });
+    if (!part) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '没有收到图片');
+    if (!AVATAR_TYPES.has(part.mimetype)) {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '头像只能是 PNG、JPG 或 WebP');
+    }
+
+    const bytes = await part.toBuffer();
+    /*
+      multipart 的 fileSize 是「截断」不是「报错」：超限时前面的字节照样
+      读得到，truncated 置位。不显式检查的话，用户会得到一张只有上半截的
+      头像，而且界面显示上传成功。和 1024 附件那条是同一个坑。
+    */
+    if (part.file.truncated) {
+      throw new IspaceError(
+        ERROR_CODES.INVALID_INPUT,
+        `图片超过 ${MAX_AVATAR_BYTES / 1024 / 1024} MB 上限`,
+      );
+    }
+    if (bytes.length === 0) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '图片是空的');
+
+    await sql`
+      INSERT INTO ispace.user_avatars (user_id, mime, bytes, updated_at)
+      VALUES (${me.id}, ${part.mimetype}, ${bytes}, now())
+      ON CONFLICT (user_id) DO UPDATE
+        SET mime = EXCLUDED.mime, bytes = EXCLUDED.bytes, updated_at = now()
+    `;
+    await writeAudit(sql, {
+      actorId: me.id, action: 'user.avatar.update', targetType: 'user', targetId: me.id,
+      source: 'console', result: 'success',
+      metadata: { size: bytes.length, mime: part.mimetype },
+      ip: req.ip,
+    });
+    return { user: (await findUserById(sql, me.id))! };
+  });
+
+  /** 撤掉头像，回落到首字母底板。 */
+  app.delete(`${API_BASE}/auth/avatar`, async (req) => {
+    const me = await requireAuth(req);
+    await sql`DELETE FROM ispace.user_avatars WHERE user_id = ${me.id}`;
+    await writeAudit(sql, {
+      actorId: me.id, action: 'user.avatar.remove', targetType: 'user', targetId: me.id,
+      source: 'console', result: 'success', ip: req.ip,
+    });
+    return { user: (await findUserById(sql, me.id))! };
+  });
+
+  /**
+   * 读头像。
+   *
+   * 要登录：头像是同事的脸，不该靠「地址猜不到」保护——平台刚补过一个正是
+   * 这样想出来的越权（见 routes/authz.ts）。登录之后彼此可见，因为头像本来
+   * 就显示在分享、协作者这些地方。
+   *
+   * 地址里带内容指纹（?v=md5），所以同一个地址的内容永不改变，可以让浏览器
+   * 长期缓存；换了头像就是另一个地址。private 是因为它要登录才拿得到，不能
+   * 进共享缓存。
+   */
+  app.get(`${API_BASE}/users/:username/avatar`, async (req, reply) => {
+    await requireAuth(req);
+    const { username } = req.params as { username: string };
+
+    const rows = await sql<{ mime: string; bytes: Buffer; etag: string }[]>`
+      SELECT a.mime, a.bytes, a.etag
+        FROM ispace.user_avatars a JOIN ispace.users u ON u.id = a.user_id
+       WHERE u.username = ${username}
+    `;
+    const row = rows[0];
+    if (!row) throw new IspaceError(ERROR_CODES.NOT_FOUND, '这位同事还没传头像');
+
+    const tag = `"${row.etag}"`;
+    reply
+      .header('etag', tag)
+      .header('cache-control', 'private, max-age=31536000, immutable')
+      /* 用户上传的字节，不让浏览器自己猜该怎么渲染 */
+      .header('x-content-type-options', 'nosniff');
+    if (req.headers['if-none-match'] === tag) return reply.code(304).send();
+    return reply.type(row.mime).send(row.bytes);
+  });
+
   app.get(`${API_BASE}/auth/policy`, async () => {
     const p = await getPlatformPolicy(sql);
     return {
@@ -541,19 +675,3 @@ export function registerAccountRoutes(
 const DUMMY_HASH =
   'scrypt$65536$8$1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
-/** 取完整用户行。登录成功后签发会话要用到 role/identity。 */
-async function toUser(sql: Sql, id: string): Promise<User> {
-  const [r] = await sql<Record<string, unknown>[]>`SELECT * FROM ispace.users WHERE id = ${id}`;
-  return {
-    id: r!.id as string,
-    ssoSubject: r!.sso_subject as string,
-    username: r!.username as string,
-    displayName: r!.display_name as string,
-    email: r!.email as string | null,
-    role: r!.role as 'employee' | 'admin',
-    identity: r!.identity as 'user' | 'developer',
-    status: r!.status as 'pending' | 'active' | 'archived',
-    createdAt: r!.created_at as Date,
-    archivedAt: r!.archived_at as Date | null,
-  };
-}

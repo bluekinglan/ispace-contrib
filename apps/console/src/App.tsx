@@ -303,7 +303,7 @@ function Sidebar({
               display: 'flex', alignItems: 'center', gap: 'var(--space-5)',
               flex: 1, minWidth: 0,
             }}>
-              <Avatar name={me.user.displayName} />
+              <Avatar name={me.user.displayName} src={me.user.avatarUrl} />
               <span style={{ minWidth: 0, textAlign: 'left' }}>
                 <span style={{ display: 'block', fontSize: 'var(--text-base)', fontWeight: 'var(--weight-medium)' }}>
                   {me.user.displayName}
