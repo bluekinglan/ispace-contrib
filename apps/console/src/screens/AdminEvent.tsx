@@ -206,7 +206,8 @@ function PhaseCard({
   const pinTo = async () => {
     const ok = await ask({
       title: `把阶段钉死在「${PHASE_LABEL[pick]}」`,
-      description: `活动页会立刻按这个阶段显示，并且不再跟着时间走——${PHASE_DESC[pick]}。结束后记得交还给时钟。`,
+      description: `活动页会立刻按这个阶段显示，并且不再跟着时间走——${PHASE_DESC[pick]}。`
+        + '结束后记得交还给时钟；真忘了也不会一直挂着，过了配置里的结束时刻会自动下线。',
       confirmLabel: '钉死',
     });
     if (!ok) return;

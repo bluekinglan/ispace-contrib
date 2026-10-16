@@ -56,6 +56,31 @@ describe('阶段按截止时间推导', () => {
     expect(resolvePhase({ phase: null, config: cfg }, early)).toBe('signup');
   });
 
+  /**
+   * 下线不能依赖有人记得解钉。
+   *
+   * 当天主持人为了等路演会把阶段钉住，活动一散场没人会再打开控制台。
+   * 覆盖若能盖过 end，首页横幅和 App 启动页上的 1024 就会一直挂着。
+   */
+  it.each<EventPhase>(['signup', 'demo', 'result'])(
+    '过了 end 之后，钉成 %s 也一律 ended',
+    (pinned) => {
+      const after = at('2026-11-02T10:00:00+08:00');
+      expect(resolvePhase({ phase: pinned, config: cfg }, after)).toBe('ended');
+    },
+  );
+
+  it('end 当天那一刻起就盖不住了', () => {
+    expect(resolvePhase({ phase: 'demo', config: cfg }, at(DEADLINES.end))).toBe('ended');
+    // 差一分钟还在活动期内，覆盖照常生效
+    expect(resolvePhase({ phase: 'demo', config: cfg }, at('2026-10-31T23:59:00+08:00'))).toBe('demo');
+  });
+
+  it('想提前下线：把阶段钉成 ended', () => {
+    const during = at('2026-10-20T10:00:00+08:00');
+    expect(resolvePhase({ phase: 'ended', config: cfg }, during)).toBe('ended');
+  });
+
   it('config 里没有 deadlines 时退回 signup，而不是崩掉', () => {
     expect(resolvePhase({ phase: null, config: {} as EventConfig }, new Date())).toBe('signup');
   });

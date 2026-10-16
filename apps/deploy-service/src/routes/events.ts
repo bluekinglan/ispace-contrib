@@ -89,12 +89,26 @@ interface EventRow {
  * 中午十二点整——指望有人准点去点一下，等于指望报名在 10.19 12:00 之后
  * 还开着。而活动当天主持人确实需要手动推进（路演延时是常态），所以保留
  * 覆盖：events.phase 非空就钉死，直到被设回 null。
+ *
+ * ┌─ 但覆盖盖不住下线 ────────────────────────────────────────────────┐
+ * │ `deadlines.end` 的契约写的是「活动整体结束，页面与横幅下线」，所以   │
+ * │ 过了这个时刻一律 'ended'，钉死也不例外。                            │
+ * │                                                                    │
+ * │ 理由是「解钉」这件事没有任何机制提醒：当天主持人为了等路演把阶段钉   │
+ * │ 住，活动一散场没人会再打开控制台，于是首页横幅和 App 启动页上的      │
+ * │ 1024 会一直挂着——而那时候它已经没有任何意义了。下线必须是到点自己   │
+ * │ 发生的事，不能依赖有人记得。                                        │
+ * │                                                                    │
+ * │ 想提前下线仍然可以：把 phase 钉成 'ended'（end 之前覆盖照常生效）。 │
+ * └────────────────────────────────────────────────────────────────────┘
  */
 export function resolvePhase(ev: Pick<EventRow, 'phase' | 'config'>, now: Date): EventPhase {
-  if (ev.phase) return ev.phase;
   /* 推导本身在 @ispace/contracts：控制台的赛事管理屏要用同一套规则回答
      「交还给时钟会落回哪一阶段」，两处各写一遍迟早会对不上。 */
-  return derivePhase(ev.config?.deadlines, now);
+  const derived = derivePhase(ev.config?.deadlines, now);
+  if (derived === 'ended') return 'ended';
+  if (ev.phase) return ev.phase;
+  return derived;
 }
 
 function summary(ev: EventRow, now: Date): EventSummary {
