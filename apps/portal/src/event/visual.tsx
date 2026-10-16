@@ -147,13 +147,24 @@ export function BinaryTen({ size, gap, color }: { size: number; gap: number; col
 }
 
 /** 闪烁的终端光标。跟在「程序员节」后面。 */
+/**
+ * 标题末尾那个闪烁的光标。
+ *
+ * 尺寸没照抄设计稿的 `height:1em; vertical-align:-.12em`——那是按设计工具
+ * 里的字体算的。我们这边中文落到 PingFang SC，汉字墨迹并不占满 1em：
+ * 46px 下实测字形是基线上 38.1px、基线下 5.1px，而 1em 的光标是上 40.5、
+ * 下 5.5，于是顶部多出 2.4px、底部只多 0.5px，看上去就是「光标偏上」。
+ *
+ * 这里按实测把它收成 .94em 并下移到 -.11em，上下沿与汉字对齐。用 em 而不是
+ * px，三处调用（活动页 46px、背景墙 168px、颁奖屏 180px）按比例一致。
+ */
 export function Caret({ color }: { color: string }) {
   return (
     <span
       aria-hidden="true"
       style={{
-        display: 'inline-block', width: '.4em', height: '1em', background: color,
-        borderRadius: '.05em', marginLeft: '.1em', verticalAlign: '-.12em',
+        display: 'inline-block', width: '.4em', height: '.94em', background: color,
+        borderRadius: '.05em', marginLeft: '.1em', verticalAlign: '-.11em',
         animation: 'blink 1.1s step-end infinite',
       }}
     />
