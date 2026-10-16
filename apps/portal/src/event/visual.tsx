@@ -92,11 +92,13 @@ export const DOTS_ON_SCREEN = {
   off: 'rgba(28,31,35,.18)',
 };
 
-export function DotMatrix({ size, gap, palette, radius }: {
+export function DotMatrix({ size, gap, palette, radius, solid = false }: {
   size: number;
   gap: number;
   palette: { on: [string, string, string]; off: string };
   radius: number;
+  /** 让每个方块都成为 confetti-pile 的地面，雪会一格一格堆在上面。 */
+  solid?: boolean;
 }) {
   return (
     <div
@@ -111,6 +113,7 @@ export function DotMatrix({ size, gap, palette, radius }: {
       {dots1024(palette).map((d, i) => (
         <span
           key={i}
+          data-solid={solid ? '0' : undefined}
           style={{
             width: size, height: size, borderRadius: radius, background: d.bg,
             animation: 'commit .45s cubic-bezier(.16,1,.3,1) both',
@@ -172,10 +175,14 @@ export function Caret({ color }: { color: string }) {
 }
 
 /** iSpace 的方块字标。深色版给大屏用，橙色版给活动页用。 */
-export function Mark({ size, tone = 'orange' }: { size: number; tone?: 'orange' | 'dark' }) {
+export function Mark({ size, tone = 'orange', solid = false }: {
+  size: number; tone?: 'orange' | 'dark';
+  /** 当 confetti-pile 的地面。 */
+  solid?: boolean;
+}) {
   const bg = tone === 'dark' ? '#1c1f23' : '#fb923c';
   return (
-    <svg viewBox="0 0 1024 1024" style={{ width: size, height: size, flex: 'none', borderRadius: size * 0.27 }} aria-hidden="true">
+    <svg viewBox="0 0 1024 1024" data-solid={solid ? '0' : undefined} style={{ width: size, height: size, flex: 'none', borderRadius: size * 0.27 }} aria-hidden="true">
       <rect width="1024" height="1024" rx="276" fill={bg} />
       <path d="M216 304Q216 280 239 272L464 208Q488 201 488 226V766Q488 787 468 794L239 858Q216 865 216 840Z" fill="#ffffff" />
       <path d="M280 350L424 309V711L280 752Z" fill={bg} />

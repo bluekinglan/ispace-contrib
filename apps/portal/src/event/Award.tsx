@@ -211,6 +211,7 @@ export function Award() {
       <EventKeyframes />
       <div
         ref={stage}
+        id="award-screen"
         tabIndex={0}
         role="button"
         aria-label="颁奖大屏，点击或按右方向键继续"
@@ -337,7 +338,17 @@ export function Award() {
  * 和 /1024/screen 那一页是同一套视觉，但这里是仪式里的一步：居中排版、
  * 没有底部那行活动信息，因为紧接着就要翻页了。
  */
-function WallFrame({ edition, children }: { edition: string | null; children: React.ReactNode }) {
+function WallFrame({ edition, children, solid = false }: {
+  edition: string | null;
+  children: React.ReactNode;
+  /**
+   * 把外框这几件东西标成 confetti-pile 的地面（切蛋糕那一屏用）。
+   *
+   * 只有切蛋糕下雪，背景墙不下，所以默认关着——给背景墙也挂上
+   * data-solid 不会出错，但那是写给读代码的人看的假线索。
+   */
+  solid?: boolean;
+}) {
   return (
     <>
       <span aria-hidden="true" style={{
@@ -354,17 +365,18 @@ function WallFrame({ edition, children }: { edition: string | null; children: Re
             <img
               src="/event-icon.png"
               alt=""
+              data-solid={solid ? '0' : undefined}
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
               style={{ width: 68, height: 68, borderRadius: 18, display: 'block' }}
             />
-            <span className="mono" style={{
+            <span className="mono" data-solid={solid ? '0' : undefined} style={{
               background: INK, color: '#fff', borderRadius: 100,
               padding: '10px 22px', fontSize: 24, fontWeight: 700,
             }}>{edition ?? '第 8 届 · 2026'}</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <Mark size={44} tone="dark" />
-            <span style={{
+            <Mark size={44} tone="dark" solid={solid} />
+            <span data-solid={solid ? 'text' : undefined} style={{
               fontFamily: 'var(--font-sans)', fontSize: 32, fontWeight: 800, letterSpacing: '-.03em',
             }}>iSpace</span>
           </div>
@@ -411,43 +423,40 @@ function Backdrop({ edition, title, subtitle }: {
 /**
  * 切蛋糕。16:20 那个环节直接停在这一屏。
  *
- * 彩带用 rain 模式：不停地下，而不是放一次就完。这一屏要挂着一段时间
- * 让大家拍照，一次性的爆点几秒钟就没了。
+ * 版面是整屏一张画：一个放大的 1024 点阵，底下一行字两端对齐到点阵的
+ * 宽度。没有标题、没有时间地点——这一屏挂着的时候人都在蛋糕那边，屏幕
+ * 是背景板不是说明书，字越少越像块装饰。
+ *
+ * 雪用 confetti-pile 而不是 confetti-burst：它会**堆**在点阵的每个方块
+ * 和每一笔字上，越堆越厚。这一屏要挂十几分钟给大家拍照，堆积能一直长，
+ * 而下雨只是一直重复同一秒。
  */
 function Cake({ step }: { step: number }) {
   return (
     <>
-      <confetti-burst
+      <WallFrame edition={null} solid>
+        {/* 这一层收成点阵的宽度，下面那行字才有「两端对齐到点阵」的参照 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+          <DotMatrix size={56} gap={13} radius={13} palette={DOTS_ON_SCREEN} solid />
+          <span data-solid="text" style={{
+            fontSize: 72, fontWeight: 800, lineHeight: 1.2,
+            textAlign: 'justify', textAlignLast: 'justify',
+          }}>
+            1024 主题蛋糕 · 全体大合影
+          </span>
+        </div>
+      </WallFrame>
+      {/*
+        放在 WallFrame 后面：雪要盖在点阵和字的上面。
+        key 跟着 step 走，翻回这一屏就重新开始积。
+      */}
+      <confetti-pile
         key={`cake-${step}`}
-        mode="rain"
+        scope="#award-screen"
+        rate="180"
         palette="#ffffff,#001217,#38bdf8,#f472b6,#facc15,#4ade80,#a78bfa"
         style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
       />
-      <WallFrame edition={null}>
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 40 }}>
-          <div style={{ padding: '0 0 10px' }}>
-            <DotMatrix size={30} gap={7} radius={7} palette={DOTS_ON_SCREEN} />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingBottom: 10 }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <span style={{
-                width: 40, height: 40, borderRadius: 12, background: INK, color: '#fb923c',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <EIcon name="cake" size={22} />
-              </span>
-              <span className="mono" style={{ fontSize: 28, fontWeight: 700 }}>16:20 · 大培训教室</span>
-            </span>
-            <span style={{
-              fontSize: 168, fontWeight: 900, lineHeight: 1,
-              letterSpacing: '-.02em', whiteSpace: 'nowrap',
-            }}>切蛋糕<Caret color={INK} /></span>
-          </div>
-        </div>
-        <span style={{ fontSize: 72, fontWeight: 800, lineHeight: 1.2, textAlign: 'center' }}>
-          1024 主题蛋糕 · 全体大合影
-        </span>
-      </WallFrame>
     </>
   );
 }
