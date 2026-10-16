@@ -15,3 +15,6 @@ apps/mobile-shell/android/
 apps/mobile-shell/ios/
 # expo 的图标/资源转换缓存，随时可重新生成
 apps/mobile-shell/.expo/
+.repo_memory/
+# 本地 agent 工具的会话状态，与项目无关
+.trigger-tree/
