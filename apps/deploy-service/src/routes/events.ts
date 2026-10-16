@@ -11,6 +11,7 @@ import {
   derivePhase, phaseAtLeast,
   type EventAdminIdea, type EventAward, type EventConfig, type EventFile, type EventFinalist,
   type EventIdeasResponse, type EventJudgeItem, type EventJudgeResponse, type EventPhase,
+  type EventScreeningResponse, type EventScreeningTallyRow,
   type EventRankRow, type EventResponse, type EventSummary, type User,
 } from '@ispace/contracts';
 import type { Sql } from '@ispace/db';
@@ -651,6 +652,183 @@ export function registerEventRoutes(
   // 规则），而定入围名单的人恰恰要在那之前把全部创意摊开看。给公开接口加个
   // 「我是管理员所以多给我一点」的开关，等于把免登录接口的返回形状做成
   // 随身份变化的——那是越权最容易藏身的地方。
+  // ── 初筛投票（评委）──────────────────────────────────────────────
+  /**
+   * 评委从全部创意里挑出他认为该入围的。
+   *
+   * 窗口是 screening 阶段：创意已截止、名单还没公布。之前创意还在改，
+   * 对着半成品投没意义；之后名单已经对外了，再改票也晚了。
+   *
+   * 窗口之外仍然让评委**看**得到创意——提前读一遍是本来就该做的事，
+   * 只是投不了。所以这里不拦读取，只在 open 上说明能不能投。
+   */
+  /** 10.19 12:00。只用在给评委看的那句提示里。 */
+  const mdhm = (iso: string | undefined): string => {
+    if (!iso) return '截止时间未定';
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(iso));
+    const g = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
+    return `${g('month')}.${g('day')} ${g('hour')}:${g('minute')}`;
+  };
+
+  const screeningState = (ev: EventRow, now: Date) => {
+    const phase = resolvePhase(ev, now);
+    const limit = ev.config?.screeningVoteLimit ?? 0;
+    if (limit <= 0) return { limit: 0, open: false, reason: '本届不走初筛投票' };
+    if (phase === 'signup') {
+      return {
+        limit,
+        open: false,
+        reason: `创意 ${mdhm(ev.config?.deadlines?.idea)} 截止，截止后才开始投票`,
+      };
+    }
+    if (phase !== 'screening') {
+      return { limit, open: false, reason: '入围名单已经公布，初筛投票已结束' };
+    }
+    return { limit, open: true, reason: null as string | null };
+  };
+
+  app.get(`${API_BASE}/events/:slug/judge/screening`, async (req): Promise<EventScreeningResponse> => {
+    const { slug } = req.params as { slug: string };
+    const ev = await loadEvent(slug);
+    const me = await requireJudge(req, ev.id);
+    const now = new Date();
+    const st = screeningState(ev, now);
+
+    const rows = await sql<{
+      id: string; name: string; problem: string; plan: string; form: string;
+      files: EventFile[] | null; who: string; owner_id: string; voted: boolean;
+    }[]>`
+      SELECT i.id, i.name, i.problem, i.plan, i.form, i.files,
+             u.display_name AS who, i.user_id AS owner_id,
+             (v.judge_id IS NOT NULL) AS voted
+        FROM ispace.event_ideas i
+        JOIN ispace.users u ON u.id = i.user_id
+        LEFT JOIN ispace.event_screening_votes v
+               ON v.event_id = i.event_id AND v.idea_id = i.id AND v.judge_id = ${me.id}
+       WHERE i.event_id = ${ev.id}
+       ORDER BY i.created_at
+    `;
+
+    return {
+      event: summary(ev, now),
+      limit: st.limit,
+      used: rows.filter((r) => r.voted).length,
+      open: st.open,
+      closedReason: st.reason,
+      items: rows.map((r) => ({
+        ideaId: r.id,
+        name: r.name,
+        problem: r.problem,
+        plan: r.plan,
+        form: r.form,
+        files: r.files ?? [],
+        who: r.who,
+        mine: r.owner_id === me.id,
+        voted: r.voted,
+      })),
+    };
+  });
+
+  /** 投/撤一票。和人气奖那颗按钮一样是开关：投过再点就是撤回。 */
+  app.post(`${API_BASE}/events/:slug/judge/screening/:ideaId`, async (req) => {
+    const { slug, ideaId } = req.params as { slug: string; ideaId: string };
+    const ev = await loadEvent(slug);
+    const me = await requireJudge(req, ev.id);
+    const st = screeningState(ev, new Date());
+
+    if (!st.open) throw new IspaceError(ERROR_CODES.FORBIDDEN, st.reason ?? '现在不能投票');
+
+    const [idea] = await sql<{ user_id: string }[]>`
+      SELECT user_id FROM ispace.event_ideas
+       WHERE id = ${ideaId} AND event_id = ${ev.id}
+    `;
+    if (!idea) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这条创意');
+    if (idea.user_id === me.id) {
+      throw new IspaceError(ERROR_CODES.FORBIDDEN, '不能投给自己的创意');
+    }
+
+    const countMine = async () => {
+      const [r] = await sql<{ n: number }[]>`
+        SELECT count(*) AS n FROM ispace.event_screening_votes
+         WHERE event_id = ${ev.id} AND judge_id = ${me.id}
+      `;
+      return Number(r!.n);
+    };
+
+    const [existing] = await sql<{ one: number }[]>`
+      SELECT 1 AS one FROM ispace.event_screening_votes
+       WHERE event_id = ${ev.id} AND idea_id = ${ideaId} AND judge_id = ${me.id}
+    `;
+    if (existing) {
+      await sql`
+        DELETE FROM ispace.event_screening_votes
+         WHERE event_id = ${ev.id} AND idea_id = ${ideaId} AND judge_id = ${me.id}
+      `;
+      return { ok: true, voted: false, remaining: st.limit - (await countMine()) };
+    }
+
+    /*
+      上限是跨行约束，库层面钉不住，只能在这里数——与人气奖那条同样的
+      取舍（见 /votes/:ideaId）：连点两下有可能双双通过检查而超投一票，
+      所以返回真实剩余票数，前端据此纠正显示。
+    */
+    if ((await countMine()) >= st.limit) {
+      throw new IspaceError(
+        ERROR_CODES.FORBIDDEN,
+        `${st.limit} 票已经投完了，想换就先撤回一票`,
+      );
+    }
+    await sql`
+      INSERT INTO ispace.event_screening_votes (event_id, idea_id, judge_id)
+      VALUES (${ev.id}, ${ideaId}, ${me.id})
+      ON CONFLICT DO NOTHING
+    `;
+    return { ok: true, voted: true, remaining: st.limit - (await countMine()) };
+  });
+
+  /**
+   * 初筛得票汇总（管理员）。定名单的依据，不是名单本身——平票、临时弃赛、
+   * 一个人占两个名额这类情况都要人来判断，所以最终仍由控制台提交。
+   */
+  app.get(`${API_BASE}/events/:slug/screening-tally`, async (req): Promise<{
+    rows: EventScreeningTallyRow[]; judgesVoted: number; judgeCount: number;
+  }> => {
+    const { slug } = req.params as { slug: string };
+    await requireAdmin(req);
+    const ev = await loadEvent(slug);
+
+    const [rows, voted, judges] = await Promise.all([
+      sql<{ id: string; name: string; who: string; votes: number; finalist: boolean }[]>`
+        SELECT i.id, i.name, u.display_name AS who, i.finalist,
+               (SELECT count(*) FROM ispace.event_screening_votes v
+                 WHERE v.event_id = ${ev.id} AND v.idea_id = i.id) AS votes
+          FROM ispace.event_ideas i
+          JOIN ispace.users u ON u.id = i.user_id
+         WHERE i.event_id = ${ev.id}
+         ORDER BY votes DESC, i.created_at
+      `,
+      sql<{ n: number }[]>`
+        SELECT count(DISTINCT judge_id) AS n FROM ispace.event_screening_votes
+         WHERE event_id = ${ev.id}
+      `,
+      sql<{ n: number }[]>`
+        SELECT count(*) AS n FROM ispace.event_judges WHERE event_id = ${ev.id}
+      `,
+    ]);
+
+    return {
+      rows: rows.map((r) => ({
+        ideaId: r.id, name: r.name, who: r.who,
+        votes: Number(r.votes), finalist: r.finalist,
+      })),
+      judgesVoted: Number(voted[0]!.n),
+      judgeCount: Number(judges[0]!.n),
+    };
+  });
+
   app.get(`${API_BASE}/events/:slug/ideas`, async (req): Promise<EventIdeasResponse> => {
     const { slug } = req.params as { slug: string };
     await requireAdmin(req);

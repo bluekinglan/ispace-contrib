@@ -6,6 +6,7 @@ import {
 import { Badge, Button, GlobalKeyframes, Toast, ToneProvider } from '@ispace/ui';
 import { api } from '../api';
 import { EIcon, EventKeyframes, Mark } from './visual';
+import { Screening } from './Screening';
 
 /**
  * 评委打分页（/1024/judge）。
@@ -27,7 +28,8 @@ import { EIcon, EventKeyframes, Mark } from './visual';
 
 const WIDE = 900;
 
-function useWide(): boolean {
+/** 初筛投票页也用同一个断点——两页是同一块屏上的同一件事，不该各有各的。 */
+export function useWide(): boolean {
   const [wide, setWide] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia(`(min-width:${WIDE}px)`).matches);
   useEffect(() => {
@@ -66,6 +68,25 @@ export function Judge() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  /*
+    初筛期这一页是「投票」，不是「打分」。
+
+    两件事都只有评委能做、都在同一个地址，但对象不同：初筛投的是**创意**
+    （还没有作品），打分打的是**入围作品**。按阶段分流而不是加个标签页：
+    任一时刻只有一件事是该做的，摆两个入口只会让人点错。
+
+    放在 err 之后：「不是本届评委」那层拦截两种形态共用，不必写两遍。
+  */
+  if (data && (data.event.phase === 'signup' || data.event.phase === 'screening')) {
+    return (
+      <ToneProvider tone="business">
+        <GlobalKeyframes />
+        <EventKeyframes />
+        <Screening />
+      </ToneProvider>
+    );
+  }
 
   if (err) {
     return (

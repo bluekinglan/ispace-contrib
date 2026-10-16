@@ -200,6 +200,14 @@ export interface EventConfig {
   /** 每人几票（人气奖）。本届 2 票。 */
   voteLimit: number;
   /**
+   * 初筛时每位评委有几票。本届 8。
+   *
+   * 和 voteLimit 分开：那个是人气奖，全员每人 2 票投作品；这个是评委挑
+   * 该入围的创意。两个数字没有关系，合成一个迟早会有人改错一边。
+   * 缺省时评委页不显示初筛投票。
+   */
+  screeningVoteLimit?: number;
+  /**
    * 「奖项与评选」小节末尾那段说明：名次怎么定、人气奖怎么投、有没有互斥。
    *
    * 落在 config 而不是写死在页面里：它逐字描述赛制，而赛制这一届就改过
@@ -420,6 +428,54 @@ export interface EventJudgeResponse {
   /** 打分是否已锁定（过了 deadlines.vote，或阶段已到 result） */
   locked: boolean;
   items: EventJudgeItem[];
+}
+
+/**
+ * 初筛投票页给评委看的一条创意。
+ *
+ * 不带任何别人的票数：评委之间互相看不到投给了谁，和打分一致。看得到
+ * 彼此的选择，先投的人就会影响后投的人——而初筛要的恰恰是八个独立判断。
+ */
+export interface EventScreeningItem {
+  ideaId: string;
+  name: string;
+  problem: string;
+  plan: string;
+  form: string;
+  files: EventFile[];
+  who: string;
+  /** 这条是不是我自己交的。自己的创意不能投。 */
+  mine: boolean;
+  /** 我投过它没有 */
+  voted: boolean;
+}
+
+export interface EventScreeningResponse {
+  event: EventSummary;
+  /** 每人几票 */
+  limit: number;
+  /** 我已经投掉几票 */
+  used: number;
+  /**
+   * 现在能不能投。
+   *
+   * 窗口是 screening 阶段——创意已截止、名单还没公布。之前创意还在改，
+   * 对着半成品投没有意义；之后名单已经对外了，再改票也晚了。
+   */
+  open: boolean;
+  /** 窗口没开时告诉评委为什么，以及什么时候能投 */
+  closedReason: string | null;
+  items: EventScreeningItem[];
+}
+
+/** 初筛得票汇总，只给管理员：定名单的依据。 */
+export interface EventScreeningTallyRow {
+  ideaId: string;
+  name: string;
+  who: string;
+  votes: number;
+  /** 已经被选进名单了没有 */
+  finalist: boolean;
 }
 
 /** 汇总排名。评委打分的去处——这就是「分数汇总到项目上」的那张表。 */

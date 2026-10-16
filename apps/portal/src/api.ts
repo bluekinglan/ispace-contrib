@@ -1,6 +1,7 @@
 import type {
   App, AppGroup, Quota, User,
-  EventFile, EventJudgeResponse, EventResponse, IdeaInput, ScoreInput, WorkInput,
+  EventFile, EventJudgeResponse, EventResponse, EventScreeningResponse,
+  IdeaInput, ScoreInput, WorkInput,
 } from '@ispace/contracts';
 
 /**
@@ -286,6 +287,14 @@ export const api = {
   toggleVote: (slug: string, ideaId: string) =>
     post<{ ok: boolean; voted: boolean; remaining: number }>(`/events/${slug}/votes/${ideaId}`),
   judgeBoard: (slug: string) => get<EventJudgeResponse>(`/events/${slug}/judge`),
+  /** 初筛投票：评委挑出他认为该入围的创意。 */
+  screeningBoard: (slug: string) =>
+    get<EventScreeningResponse>(`/events/${slug}/judge/screening`),
+  /** 投/撤一票。开关语义，和人气奖那颗按钮一致。 */
+  screeningVote: (slug: string, ideaId: string) =>
+    post<{ ok: boolean; voted: boolean; remaining: number }>(
+      `/events/${slug}/judge/screening/${ideaId}`,
+    ),
   putScore: (slug: string, ideaId: string, input: ScoreInput) =>
     send<{ ok: boolean; total: number; submitted: boolean }>('PUT', `/events/${slug}/scores/${ideaId}`, input),
   /**

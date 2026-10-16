@@ -382,6 +382,12 @@ export const api = {
   logout: () => req<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 
   // ── 管理端 ────────────────────────────────────────────────────────
+  /** 初筛得票汇总：定入围名单的依据。 */
+  screeningTally: (slug: string) =>
+    req<{
+      rows: { ideaId: string; name: string; who: string; votes: number; finalist: boolean }[];
+      judgesVoted: number; judgeCount: number;
+    }>(`/events/${slug}/screening-tally`),
   /** 本人从登录页发起的、还没处理的重置申请。 */
   passwordRequests: () =>
     req<{

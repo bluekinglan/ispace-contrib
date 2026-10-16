@@ -57,6 +57,10 @@ export function AdminEvent() {
   // "还没有人交创意"——把故障说成了正常。
   const [ideas, setIdeas] = useState<EventAdminIdea[] | null>(null);
   const [ranking, setRanking] = useState<EventRankRow[] | null>(null);
+  /** 初筛得票：ideaId → 票数。定名单的依据，不是名单本身。 */
+  const [tally, setTally] = useState<{
+    votes: Record<string, number>; judgesVoted: number; judgeCount: number;
+  } | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   /*
     三块数据各记自己的错误：挂在页顶一句笼统的「没取到」，下面那张卡仍然
@@ -73,6 +77,16 @@ export function AdminEvent() {
     void api.event(slug).then(setData).catch((e: Error) => setEvErr(e.message));
     void api.eventIdeas(slug).then((r) => setIdeas(r.ideas))
       .catch((e: Error) => { setIdeas([]); setIdeasErr(e.message); });
+    /*
+      得票汇总拉不到就当没有：它是定名单时的参考，接口抽风不该让整屏
+      打不开——勾选和推进阶段比它要紧。
+    */
+    void api.screeningTally(slug)
+      .then((r) => setTally({
+        votes: Object.fromEntries(r.rows.map((x) => [x.ideaId, x.votes])),
+        judgesVoted: r.judgesVoted, judgeCount: r.judgeCount,
+      }))
+      .catch(() => setTally(null));
     void api.eventRanking(slug).then((r) => setRanking(r.ranking))
       .catch((e: Error) => { setRanking([]); setRankErr(e.message); });
     // 评委从用户名单里挑，不手敲用户名——敲错一个字母整条请求都会被拒。
@@ -153,6 +167,7 @@ export function AdminEvent() {
         key={finalistSig(ideas)}
         ideas={ideas}
         ideasErr={ideasErr}
+        tally={tally}
         phase={ev.phase}
         hasScores={(ranking ?? []).some((r) => r.judged > 0)}
         onPatch={patch}
@@ -294,10 +309,12 @@ function PhaseCard({
  * 活动页在初筛会议中途闪过十几版名单。
  */
 function FinalistsCard({
-  ideas, ideasErr, phase, hasScores, onPatch, ask,
+  ideas, ideasErr, tally, phase, hasScores, onPatch, ask,
 }: {
   ideas: EventAdminIdea[] | null;
   ideasErr: string | null;
+  /** 初筛得票。拉不到就是 null，卡片上不显示票数，其余照常。 */
+  tally: { votes: Record<string, number>; judgesVoted: number; judgeCount: number } | null;
   phase: EventPhase;
   hasScores: boolean;
   onPatch: Patch;
@@ -342,9 +359,25 @@ function FinalistsCard({
             ? <Badge tone="warning" dot>未提交</Badge>
             : saved.length > 0 && <Badge tone="success" dot>已提交</Badge>}
         </div>
-        <p style={{ margin: '0 0 var(--space-8)', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+        <p style={{ margin: '0 0 var(--space-6)', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
           在下面的创意里点「入围」，再用箭头排出路演顺序——顺序就是编号，也是作品卡上的 NO.0x。
         </p>
+        {/*
+          投票进度，不是投票结果。
+
+          写明「还有几位没投」是因为差一票就可能换一个人入围：在八个人投完
+          之前按当前票数拍板，等于拿一份还没数完的票定名单。但也只是提示——
+          有人请假、临时换人都可能让它永远到不了满额，所以不拦着提交。
+        */}
+        {tally && tally.judgeCount > 0 && (
+          <p style={{ margin: '0 0 var(--space-8)', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+            初筛投票：{tally.judgeCount} 位评委里已有 {tally.judgesVoted} 位投过
+            {tally.judgesVoted < tally.judgeCount
+              ? `，还差 ${tally.judgeCount - tally.judgesVoted} 位——票还没数完，先别急着定`
+              : '，票数已齐'}
+            。得票显示在下面每张创意卡上。
+          </p>
+        )}
 
         {picks.length === 0 ? (
           <p style={{ margin: '0 0 var(--space-8)', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
@@ -423,6 +456,7 @@ function FinalistsCard({
                   key={idea.id}
                   idea={idea}
                   no={at < 0 ? null : finalistNo(at)}
+                  votes={tally?.votes[idea.id] ?? null}
                   onToggle={() => toggle(idea.id)}
                 />
               );
@@ -436,8 +470,13 @@ function FinalistsCard({
 
 /** 一条创意。作者、名称、想解决的问题、打算怎么做、形态、附件——初筛要看的全在这。 */
 function IdeaCard({
-  idea, no, onToggle,
-}: { idea: EventAdminIdea; no: string | null; onToggle: () => void }) {
+  idea, no, votes, onToggle,
+}: {
+  idea: EventAdminIdea; no: string | null;
+  /** 初筛得票。null = 还没有人投，或者汇总没拉到。 */
+  votes: number | null;
+  onToggle: () => void;
+}) {
   const picked = no !== null;
   return (
     <div style={{
@@ -457,6 +496,10 @@ function IdeaCard({
           </span>
         )}
         <strong style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-base)' }}>{idea.name}</strong>
+        {/* 初筛得票：勾选时的依据，摆在名字边上才看得见 */}
+        {votes !== null && votes > 0 && (
+          <Badge tone="brand">{votes} 票</Badge>
+        )}
         {idea.submitted && <Badge tone="success">已交作品</Badge>}
       </div>
 
