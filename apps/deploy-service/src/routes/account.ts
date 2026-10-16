@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  API_BASE, ERROR_CODES, IspaceError, isReservedPath, updateProfileRequestSchema,
-  usernameSchema, type User,
+  API_BASE, ERROR_CODES, IspaceError, adminSetPasswordRequestSchema, isReservedPath,
+  updateProfileRequestSchema, usernameSchema, type User,
 } from '@ispace/contracts';
 import {
   createUser, findUserById, getPlatformPolicy, provisionUserSchema, writeAudit, type Sql,
@@ -501,6 +501,70 @@ export function registerAccountRoutes(
   });
 
   // ── 用重置链接设新密码 ────────────────────────────────────────────
+  /**
+   * 管理员直接给别人设一个新密码。
+   *
+   * ┌─ 和上面「发重置链接」的区别 ──────────────────────────────────────┐
+   * │ 发链接：密码只有本人知道，此后这个账号做的事就是这个人做的。      │
+   * │ 直接设：管理员也知道，出了事没法说清是谁。                        │
+   * │                                                                    │
+   * │ 所以这条是应急用的（人就在跟前、马上要用、链接转交太绕），不是    │
+   * │ 默认路径。界面上把发链接摆在前面。                                │
+   * └────────────────────────────────────────────────────────────────────┘
+   *
+   * 密码强度按平台设置走同一套校验——管理员设的密码不该比本人自己设的宽松，
+   * 否则「平台最低 12 位」这条规则就有了一个官方的绕过口。
+   */
+  app.post(`${API_BASE}/admin/users/:id/password`, async (req) => {
+    const admin = await requireAdmin(req);
+    const { id } = req.params as { id: string };
+    const { password } = adminSetPasswordRequestSchema.parse(req.body);
+
+    const [target] = await sql<{ username: string; display_name: string }[]>`
+      SELECT username, display_name FROM ispace.users
+       WHERE id = ${id} AND status <> 'archived'
+    `;
+    if (!target) throw new IspaceError(ERROR_CODES.NOT_FOUND, '用户不存在或已归档');
+
+    const policy = await getPlatformPolicy(sql);
+    const bad = checkPasswordStrength(password, policy.passwordMinLength);
+    if (bad) throw new IspaceError(ERROR_CODES.INVALID_INPUT, bad);
+
+    await sql`
+      UPDATE ispace.users SET password_hash = ${await hashPassword(password)} WHERE id = ${id}
+    `;
+    /*
+      作废这个人手上所有还没用的重置链接。
+
+      不作废的话会出现这样一幕：管理员先发了链接、又改用直接设密码告诉本人，
+      本人回头翻到那条链接点开，把密码又改成了别的——然后他用管理员刚给的
+      那个登不进去，而管理员确信自己设对了。
+    */
+    await sql`
+      UPDATE ispace.password_resets SET used_at = now()
+       WHERE user_id = ${id} AND used_at IS NULL AND expires_at > now()
+    `;
+    /* 待处理的申请一并结掉，理由同上面发链接那段 */
+    await sql`
+      UPDATE ispace.password_reset_requests
+         SET handled_at = now(), handled_by = ${admin.id}
+       WHERE user_id = ${id} AND handled_at IS NULL
+    `;
+
+    await writeAudit(sql, {
+      actorId: admin.id, action: 'user.password.admin-set', targetType: 'user', targetId: id,
+      source: 'console', result: 'success',
+      metadata: { username: target.username },
+      ip: req.ip,
+    });
+
+    return {
+      ok: true,
+      displayName: target.display_name,
+      warning: '新密码只有你和本人知道。请当面告诉他，并让他登录后自己改一次。',
+    };
+  });
+
   app.post(`${API_BASE}/auth/reset`, async (req) => {
     const { token, password } = z.object({
       token: z.string().min(1),

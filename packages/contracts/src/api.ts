@@ -128,6 +128,50 @@ export const updateProfileRequestSchema = z.object({
 });
 export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;
 
+/**
+ * 管理员替别人改资料。
+ *
+ * ┌─ 为什么没有 username ──────────────────────────────────────────────┐
+ * │ 用户名不只是个显示用的名字，它派生出三样东西：                      │
+ * │   1. Postgres schema `u_{username}`，里面是这个人自己建的数据表     │
+ * │   2. /srv/sites/{username}/ 下已发布的站点目录                      │
+ * │   3. 所有对外链接 /{username}/{app}/ ——同事的收藏、分享出去的地址、 │
+ * │      手机壳里的通道，全挂在上面                                     │
+ * │                                                                    │
+ * │ 改名要把这三样一起搬，而搬 schema 得动 pgrst.db_schemas——          │
+ * │ 05-provision-user-schema.sh 自己写着那一步搞砸会让 PostgREST 对     │
+ * │ **所有人** 返回 503。这不是一个 UPDATE 能完成的事，做成一个按钮     │
+ * │ 只会让人以为它是。                                                 │
+ * │                                                                    │
+ * │ 真要改名，今天的答案是：新开一个账号，把东西搬过去，归档旧的。      │
+ * └────────────────────────────────────────────────────────────────────┘
+ *
+ * 两个字段都是可选的，只传要改的那个。
+ */
+export const adminUpdateUserRequestSchema = z.object({
+  displayName: z.string().trim().min(1).max(64).optional(),
+  /** 传 null 表示清空邮箱——那样这个人就只能靠管理员发链接登录了。 */
+  email: z.string().trim().toLowerCase().email('邮箱格式不对').max(160).nullable().optional(),
+}).refine((v) => v.displayName !== undefined || v.email !== undefined, {
+  message: '没有要改的字段',
+});
+export type AdminUpdateUserRequest = z.infer<typeof adminUpdateUserRequestSchema>;
+
+/**
+ * 管理员直接给别人设一个新密码。
+ *
+ * ⚠️ 这条路和「发重置链接」并列，不是替代。区别在于事后能不能归因：
+ * 发链接的话密码只有本人知道，之后这个账号做的事就是这个人做的；而直接
+ * 设密码意味着管理员也知道，出了事没法说清是谁。
+ *
+ * 所以界面上把发链接摆在前面，这条留给「人就在跟前、立刻要用」的场合。
+ * 两条都写审计。
+ */
+export const adminSetPasswordRequestSchema = z.object({
+  password: z.string().min(1).max(200),
+});
+export type AdminSetPasswordRequest = z.infer<typeof adminSetPasswordRequestSchema>;
+
 export const provisionRequestSchema = z.object({
   username: usernameSchema,
   displayName: z.string().min(1).max(64),

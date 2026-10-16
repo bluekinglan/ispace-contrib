@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Avatar, Badge, Button, Card, copyText, fmtBytes, fmtDate, Input, PageTitle,
+  Avatar, Badge, Button, Card, copyText, Dialog, fmtBytes, fmtDate, Input, PageTitle,
   StatCard, Toast, useConfirm,
 } from '@ispace/ui';
 import { api, type AdminUser, type OffboardRun } from '../api';
@@ -24,6 +24,7 @@ export function AdminUsers() {
   const fail = (e: unknown) => setMsg({
     text: e instanceof Error ? e.message : String(e), tone: 'error',
   });
+  const [editing, setEditing] = useState<AdminUser | null>(null);
   const [resetLink, setResetLink] = useState<
     { user: string; url: string; expiresInHours: number; warning: string } | null
   >(null);
@@ -346,6 +347,7 @@ export function AdminUsers() {
                     )}
                     {u.status === 'active' && (
                       <>
+                        <Button size="sm" variant="ghost" onClick={() => setEditing(u)}>编辑</Button>
                         <Button size="sm" variant="ghost" onClick={() => void resetPw(u)}>发设密码链接</Button>
                         <Button size="sm" variant="ghost" onClick={() => void changeRole(u)}>
                           {u.role === 'admin' ? '取消管理员' : '设为管理员'}
@@ -366,6 +368,18 @@ export function AdminUsers() {
           </table>
         </div>
       </Card>
+      {editing && (
+        <EditUserDialog
+          user={editing}
+          onClose={() => setEditing(null)}
+          onFail={fail}
+          onSaved={(text) => {
+            notify(text);
+            /* 列表里那一行要立刻跟着变，否则管理员会以为没保存上 */
+            void api.adminUsers().then((r) => { setUsers(r.users); setSummary(r.summary); });
+          }}
+        />
+      )}
       {msg && <Toast message={msg.text} tone={msg.tone} onClose={() => setMsg(null)} />}
       {confirmUI}
     </>
@@ -376,6 +390,139 @@ export function AdminUsers() {
  * 状态标签。冷冻期与已归档要分开——冷冻期内可一键恢复，
  * 过了才进入可清理状态，两者对管理员意味着完全不同的动作。
  */
+/**
+ * 管理员编辑一位员工。
+ *
+ * 资料和密码放在同一个弹层：管理员打开它多半是因为"这个人有点问题要处理"，
+ * 改个名和重设密码常常是同一次处理里的两步。分成两个入口会让人在表格里
+ * 来回找。
+ *
+ * 用户名只读。它派生出 Postgres schema、已发布站点的目录和所有对外链接，
+ * 改名不是一个 UPDATE——理由写在契约 adminUpdateUserRequestSchema 上。
+ */
+function EditUserDialog({ user, onSaved, onClose, onFail }: {
+  user: AdminUser;
+  onSaved: (msg: string) => void;
+  onClose: () => void;
+  onFail: (e: unknown) => void;
+}) {
+  const [name, setName] = useState(user.displayName);
+  const [email, setEmail] = useState(user.email ?? '');
+  const [pw, setPw] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const nameTrimmed = name.trim();
+  const emailTrimmed = email.trim();
+  const profileDirty = nameTrimmed !== user.displayName || emailTrimmed !== (user.email ?? '');
+
+  const saveProfile = async () => {
+    setBusy(true);
+    try {
+      const input: { displayName?: string; email?: string | null } = {};
+      if (nameTrimmed !== user.displayName) input.displayName = nameTrimmed;
+      if (emailTrimmed !== (user.email ?? '')) input.email = emailTrimmed || null;
+      await api.updateUser(user.id, input);
+      onSaved(`已更新 ${nameTrimmed} 的资料`);
+      onClose();
+    } catch (e) { onFail(e); } finally { setBusy(false); }
+  };
+
+  const setPassword = async () => {
+    setBusy(true);
+    try {
+      const r = await api.setUserPassword(user.id, pw);
+      setPw('');
+      onSaved(`已给 ${r.displayName} 设置新密码。${r.warning}`);
+      onClose();
+    } catch (e) { onFail(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog
+      open
+      title={`编辑 ${user.displayName}`}
+      description="改资料和重设密码都会写进审计日志。"
+      onClose={onClose}
+      width={440}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-8)' }}>
+        <label style={{ display: 'block' }}>
+          <span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+            显示名
+          </span>
+          <Input value={name} maxLength={64} onChange={(e) => setName(e.target.value)} />
+        </label>
+
+        <label style={{ display: 'block' }}>
+          <span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+            邮箱
+          </span>
+          <Input
+            type="email"
+            value={email}
+            maxLength={160}
+            placeholder="留空表示没有邮箱"
+            onChange={(e) => setEmail(e.target.value)}
+          />
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+            这是他登录和找回密码用的地址，改完要告诉他。留空的话他就只能靠你发链接进来。
+          </p>
+        </label>
+
+        <label style={{ display: 'block' }}>
+          <span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+            用户名
+          </span>
+          <Input value={user.username} disabled />
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+            不能在这里改。它派生出这个人的数据库 schema、已发布站点的目录和所有对外链接
+            （<span className="mono">{location.host}/{user.username}/</span>），
+            换名字要把这三样一起搬。确实要换，新开一个账号再把东西迁过去。
+          </p>
+        </label>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-4)' }}>
+          <Button onClick={onClose} disabled={busy}>取消</Button>
+          <Button
+            variant="primary"
+            disabled={busy || !profileDirty || !nameTrimmed}
+            onClick={() => void saveProfile()}
+          >
+            {busy ? '保存中…' : '保存资料'}
+          </Button>
+        </div>
+
+        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 'var(--space-8)' }}>
+          <span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+            直接设新密码
+          </span>
+          <Input
+            type="password"
+            value={pw}
+            autoComplete="new-password"
+            placeholder="当面告诉他的那个密码"
+            onChange={(e) => setPw(e.target.value)}
+          />
+          {/*
+            把代价说在按钮旁边，而不是做完之后。这两条路看起来都是"帮他把
+            密码弄好"，区别只在事后能不能归因——不写出来，没人会选更麻烦的
+            那条。
+          */}
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+            设完你也知道他的密码，之后这个账号做的事就说不清是谁做的。
+            能等的话用表格里的「发设密码链接」——那条路密码只有他自己知道。
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--space-5)' }}>
+            <Button disabled={busy || !pw} onClick={() => void setPassword()}>
+              {busy ? '设置中…' : '设置密码'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 function StatusBadge({ u }: { u: AdminUser }) {
   if (u.status === 'pending') return <Badge tone="warning">待激活</Badge>;
   if (u.status === 'active') return <Badge tone="success">正常</Badge>;

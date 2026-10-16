@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  API_BASE, ERROR_CODES, IspaceError, marketplaceCategorySchema, type User,
+  API_BASE, ERROR_CODES, IspaceError, adminUpdateUserRequestSchema,
+  marketplaceCategorySchema, type User,
 } from '@ispace/contracts';
 import { provisionUserSchema, writeAudit, type Sql } from '@ispace/db';
 import type { Orchestrator } from '@ispace/orchestrator';
@@ -346,6 +347,84 @@ export function registerAdminRoutes(
       ip: req.ip,
     });
     return { ok: true, role };
+  });
+
+  // ── 改资料（显示名 / 邮箱）────────────────────────────────────────
+  /**
+   * 替别人改显示名和邮箱。没有改用户名——为什么见
+   * adminUpdateUserRequestSchema 上那段。
+   *
+   * 改邮箱是改登录凭据：这个人下次要用新地址登录，找回密码也认新地址。
+   * 所以它和改显示名不是一个量级的动作，审计里分开记。
+   */
+  app.patch(`${API_BASE}/admin/users/:id/profile`, async (req) => {
+    const admin = await requireAdmin(req);
+    const { id } = req.params as { id: string };
+    const input = adminUpdateUserRequestSchema.parse(req.body);
+
+    const [before] = await sql<{ username: string; display_name: string; email: string | null }[]>`
+      SELECT username, display_name, email FROM ispace.users
+       WHERE id = ${id} AND status <> 'archived'
+    `;
+    if (!before) throw new IspaceError(ERROR_CODES.NOT_FOUND, '用户不存在或已归档');
+
+    /*
+      邮箱查重自己先做一遍，而不是等 users_email_lower_idx 抛。
+      唯一索引一定会拦住，但它抛出来的是一句英文的约束名，管理员看到那个
+      只会来问"这是什么意思"。这里先查，是为了能说出"这个邮箱是谁在用"。
+      查完到写入之间仍有竞态，所以下面的唯一索引仍然是最终那道闸。
+    */
+    if (input.email) {
+      const [dup] = await sql<{ username: string }[]>`
+        SELECT username FROM ispace.users
+         WHERE lower(email) = ${input.email} AND id <> ${id}
+      `;
+      if (dup) {
+        throw new IspaceError(
+          ERROR_CODES.INVALID_INPUT,
+          `这个邮箱已经是 ${dup.username} 的了。一个邮箱只能对应一个账号。`,
+        );
+      }
+    }
+
+    const [after] = await sql<{ username: string; display_name: string; email: string | null }[]>`
+      UPDATE ispace.users SET
+        display_name = ${input.displayName ?? before.display_name},
+        email        = ${input.email === undefined ? before.email : input.email}
+      WHERE id = ${id}
+      RETURNING username, display_name, email
+    `;
+
+    /*
+      一次改动一条审计，分开记。合成一条 'user.profile.admin-update' 的话，
+      日后想回答"谁的登录邮箱被换过"就得去翻 metadata 里有没有 email 这个
+      键——而审计是出了事才去查的东西，那时候不该还要先解析一遍格式。
+    */
+    if (input.displayName !== undefined && input.displayName !== before.display_name) {
+      await writeAudit(sql, {
+        actorId: admin.id, action: 'user.display_name.update', targetType: 'user', targetId: id,
+        source: 'console', result: 'success',
+        metadata: { username: before.username, from: before.display_name, to: after!.display_name },
+        ip: req.ip,
+      });
+    }
+    if (input.email !== undefined && input.email !== before.email) {
+      await writeAudit(sql, {
+        actorId: admin.id, action: 'user.email.update', targetType: 'user', targetId: id,
+        source: 'console', result: 'success',
+        metadata: { username: before.username, from: before.email, to: after!.email },
+        ip: req.ip,
+      });
+    }
+
+    return {
+      user: {
+        id,
+        username: after!.username,
+        displayName: after!.display_name,
+        email: after!.email,
+      },
+    };
   });
 
   // ── 通过待开通的注册 ──────────────────────────────────────────────

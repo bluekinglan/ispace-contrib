@@ -401,6 +401,19 @@ export const api = {
     req<{ url: string; expiresInHours: number; warning: string }>(
       `/admin/users/${userId}/reset-password`, { method: 'POST' },
     ),
+  /** 改别人的显示名 / 邮箱。没有用户名——理由见契约里 adminUpdateUserRequestSchema。 */
+  updateUser: (userId: string, input: { displayName?: string; email?: string | null }) =>
+    req<{ user: { id: string; username: string; displayName: string; email: string | null } }>(
+      `/admin/users/${userId}/profile`, { method: 'PATCH', body: JSON.stringify(input) },
+    ),
+  /**
+   * 直接给别人设一个新密码。应急用——密码会同时被管理员知道，
+   * 能发链接就发链接（resetPassword）。
+   */
+  setUserPassword: (userId: string, password: string) =>
+    req<{ ok: boolean; displayName: string; warning: string }>(
+      `/admin/users/${userId}/password`, { method: 'POST', body: JSON.stringify({ password }) },
+    ),
   setRole: (userId: string, role: 'admin' | 'employee') =>
     req<{ ok: boolean; role: string }>(`/admin/users/${userId}/role`, {
       method: 'PATCH', body: JSON.stringify({ role }),
