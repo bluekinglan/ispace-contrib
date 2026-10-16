@@ -390,6 +390,45 @@ export function EventLayoutStyles() {
   .ev-score-leader { min-width: 12px; }
   .ev-schedule-column + .ev-schedule-column { border: 0; }
 }
+
+/* ── 提交弹层 ───────────────────────────────────────────────────── */
+/*
+  同一个组件两种形态，断点沿用这一页其余部分的 720px：
+
+  电脑上居中。鼠标和视线都在窗口中间，把表单贴到屏幕底边等于让人把注意力
+  甩到角落去，而且 27 寸屏上那段距离很远。
+  手机上仍然从底部升起——表单要贴着拇指，这是原来那版的本意，不改。
+
+  为什么写在这儿而不是内联 style：内联优先级高于媒体查询，写在组件里就
+  没法按宽度切换。所以凡是两档不同的属性（对齐、圆角、最大高度、入场动画）
+  都挪到这里，组件只留两档共用的那些。
+*/
+.ev-sheet-backdrop {
+  position: fixed; inset: 0; z-index: 60; box-sizing: border-box;
+  background: rgba(0, 18, 23, .42);
+  display: flex; justify-content: center;
+  align-items: center; padding: 24px;
+}
+.ev-sheet-panel {
+  border-radius: 18px;
+  /* 居中时四角都是圆的，底部那条带上边框的按钮栏会探出圆角，裁掉 */
+  overflow: hidden;
+  /* 86vh + 上下各 24px 的留白，在高于 343px 的窗口里都不会超出一屏 */
+  max-height: 86vh;
+  animation: evSheetIn .22s cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes evSheetIn { from { transform: scale(.97); opacity: 0 } to { transform: none; opacity: 1 } }
+
+@media (max-width: 720px) {
+  .ev-sheet-backdrop { align-items: flex-end; padding: 0; }
+  .ev-sheet-panel {
+    /* 贴着屏幕底边，所以只有上面两个角是圆的 */
+    border-radius: 18px 18px 0 0;
+    max-height: 92vh;
+    animation: evSheetUp .28s cubic-bezier(.16, 1, .3, 1) both;
+  }
+}
+@keyframes evSheetUp { from { transform: translateY(16px); opacity: .6 } to { transform: none; opacity: 1 } }
 `}</style>
   );
 }

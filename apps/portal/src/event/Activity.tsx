@@ -1343,10 +1343,13 @@ function HeroCta({
 // ── 底部弹层（提交创意 / 提交作品）────────────────────────────────────
 
 /**
- * 从底部升起的面板。
+ * 提交表单的弹层。电脑上居中，手机上从底部升起。
  *
- * 没用 @ispace/ui 的 Dialog：那个是桌面模态（居中、固定宽度 440）。
- * 手机上表单该贴着拇指从下方升起，而且内容高度不定要能滚。
+ * 没用 @ispace/ui 的 Dialog：那个固定宽 440，而且只有居中一种形态。
+ * 手机上表单该贴着拇指从下方升起，内容高度不定还要能滚。
+ *
+ * 两档的差异（对齐、圆角、最大高度、入场动画）全在 styles.tsx 的
+ * .ev-sheet-* 里——内联 style 优先级高于媒体查询，放在这里切不动。
  */
 function Sheet({
   title, footer, onClose, children,
@@ -1372,24 +1375,18 @@ function Sheet({
       aria-modal="true"
       aria-label={title}
       onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 60,
-        background: 'rgba(0,18,23,.42)',
-        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-      }}
+      className="ev-sheet-backdrop"
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className="ev-sheet-panel"
         style={{
-          width: '100%', maxWidth: SHEET, maxHeight: '92vh',
+          width: '100%', maxWidth: SHEET,
           background: 'var(--surface-canvas)',
-          borderRadius: '18px 18px 0 0',
           display: 'flex', flexDirection: 'column',
           boxShadow: 'var(--shadow-elevated)',
-          animation: 'sheetUp .28s cubic-bezier(.16,1,.3,1) both',
         }}
       >
-        <style>{'@keyframes sheetUp{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}'}</style>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10,
           padding: '16px 18px 12px', flex: 'none',
