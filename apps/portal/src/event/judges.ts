@@ -20,17 +20,27 @@ export interface EventJudge {
   name: string;
   /** 头像，对应 public/event-judge-<key>.jpg */
   key: string;
+  /**
+   * 这个花名是谁的 iSpace 账号。
+   *
+   * **它不授予任何权限**——能不能打分只看 `event_judges` 那张表。写在这里
+   * 是因为页面印的是花名、库里存的是账号和姓名，两边原先没有任何东西能
+   * 对上：想确认「海报上这八个人是不是正好就是能打分的那八个」，只能靠
+   * 有人记得谁是谁。少配一个人的后果要到 10.19 当天他打不开打分页才会
+   * 暴露，那时候再找人开通已经来不及了。
+   */
+  username: string;
 }
 
 export const EVENT_JUDGES: EventJudge[] = [
-  { name: '和其正', key: 'hqz' },
-  { name: '莫问', key: 'mowen' },
-  { name: '包黑子', key: 'baoheizi' },
-  { name: '凯撒', key: 'kaisa' },
-  { name: '青岚', key: 'qinglan' },
-  { name: '超品', key: 'chaopin' },
-  { name: '春树', key: 'chunshu' },
-  { name: '克隆', key: 'kelong' },
+  { name: '和其正', key: 'hqz', username: 'heliu' },
+  { name: '莫问', key: 'mowen', username: 'zhaowenhua' },
+  { name: '包黑子', key: 'baoheizi', username: 'zhaodonghe' },
+  { name: '凯撒', key: 'kaisa', username: 'shalei' },
+  { name: '青岚', key: 'qinglan', username: 'zhangyulong' },
+  { name: '超品', key: 'chaopin', username: 'liuchao3' },
+  { name: '春树', key: 'chunshu', username: 'xubin' },
+  { name: '克隆', key: 'kelong', username: 'zongkelong' },
 ];
 
 /** 头像地址。图挂了的话调用方自己退回文字头像。 */
