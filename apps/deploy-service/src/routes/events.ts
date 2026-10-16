@@ -11,7 +11,7 @@ import {
   derivePhase, phaseAtLeast,
   type EventAdminIdea, type EventAward, type EventConfig, type EventFile, type EventFinalist,
   type EventIdeasResponse, type EventJudgeItem, type EventJudgeResponse, type EventPhase,
-  type EventScreeningResponse, type EventScreeningTallyRow,
+  type EventScreeningRankRow, type EventScreeningResponse, type EventScreeningTallyRow,
   type EventRankRow, type EventResponse, type EventSummary, type User,
 } from '@ispace/contracts';
 import type { Sql } from '@ispace/db';
@@ -168,6 +168,48 @@ function mdhm(iso: string | undefined): string {
   }).formatToParts(new Date(iso));
   const g = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
   return `${g('month')}.${g('day')} ${g('hour')}:${g('minute')}`;
+}
+
+/**
+ * 把得票数排成榜，并标出谁入围。
+ *
+ * 入参要求已经按「票数降序、同票时按提交先后」排好——名次和切线都只看顺序
+ * 和票数，排序规则留在 SQL 里，这里不再排一遍。
+ *
+ * ┌─ 第 8 名同票不自动切 ──────────────────────────────────────────────┐
+ * │ 票数相同的若干个创意挤在最后一个名额上时，全部标成 'tie'，谁进由   │
+ * │ 8 位评委线下商定（投票 20:00 截止、名单 20:30 公布，中间那半小时   │
+ * │ 就是留给这件事的）。                                               │
+ * │                                                                    │
+ * │ 按 id、按提交时间、按名字——随便哪个都能切出一个确定的结果，但那    │
+ * │ 等于让一个 ORDER BY 替人决定谁能进决赛。同票恰恰是最该由人判的那   │
+ * │ 一种，而"系统已经定了"会让这件事根本不被讨论。                     │
+ * └────────────────────────────────────────────────────────────────────┘
+ *
+ * 名次用「竞赛排名」：同票同名次，下一个跳号（1,2,2,4）。票数一样却显示成
+ * 不同名次，看榜的人第一反应是数据错了。
+ */
+export function rankScreening(
+  rows: { id: string; name: string; who: string; votes: number }[],
+  slots: number,
+): EventScreeningRankRow[] {
+  if (slots <= 0 || rows.length === 0) return [];
+
+  /* 最后一个名额上的票数。创意数不足名额时谁都不出局，cut 落在最低一档 */
+  const cut = rows[Math.min(slots, rows.length) - 1]!.votes;
+  const above = rows.filter((r) => r.votes > cut).length;
+  const atCut = rows.filter((r) => r.votes === cut).length;
+  /* 卡线那一档塞不进剩余名额，才叫同票待定 */
+  const tie = above + atCut > slots;
+
+  let rank = 0;
+  let prevVotes = Number.NaN;
+  return rows.map((r, i) => {
+    if (r.votes !== prevVotes) { rank = i + 1; prevVotes = r.votes; }
+    const status: EventScreeningRankRow['status'] =
+      r.votes > cut ? 'in' : r.votes === cut ? (tie ? 'tie' : 'in') : 'out';
+    return { ideaId: r.id, name: r.name, who: r.who, votes: r.votes, status, rank };
+  });
 }
 
 export function scoringWindow(ev: EventRow, now: Date): { open: boolean; reason: string | null } {
@@ -414,6 +456,20 @@ export function registerEventRoutes(
       throw new IspaceError(
         ERROR_CODES.FORBIDDEN,
         '交创意已经截止了。想参加下一届可以先把想法记下来。',
+      );
+    }
+
+    /*
+      评委不参赛。
+
+      评委要给所有创意投票排名次，自己也交一个就成了既当选手又当裁判——
+      哪怕他回避自己那一票，剩下七票投给谁仍然由他定。赛制上评委压根不该
+      有作品，所以在入口就拦住，而不是在投票那头特判"不能投自己"。
+    */
+    if (await isJudge(ev.id, me.id)) {
+      throw new IspaceError(
+        ERROR_CODES.FORBIDDEN,
+        '评委不参赛。你要给所有创意投票定入围名单，自己交一个就既是选手又是裁判了。',
       );
     }
 
@@ -710,18 +766,69 @@ export function registerEventRoutes(
   const screeningState = (ev: EventRow, now: Date) => {
     const phase = resolvePhase(ev, now);
     const limit = ev.config?.screeningVoteLimit ?? 0;
-    if (limit <= 0) return { limit: 0, open: false, reason: '本届不走初筛投票' };
+    const slots = ev.config?.screeningSlots ?? 0;
+    const shut = { limit, slots, open: false };
+    if (limit <= 0) return { ...shut, limit: 0, reason: '本届不走初筛投票' };
     if (phase === 'signup') {
       return {
-        limit,
-        open: false,
+        ...shut,
         reason: `创意 ${mdhm(ev.config?.deadlines?.idea)} 截止，截止后才开始投票`,
       };
     }
     if (phase !== 'screening') {
-      return { limit, open: false, reason: '入围名单已经公布，初筛投票已结束' };
+      return { ...shut, reason: '入围名单已经公布，初筛投票已结束' };
     }
-    return { limit, open: true, reason: null as string | null };
+    /*
+      投票比阶段早结束半小时。
+
+      阶段还是 screening（名单没公布），但票已经封存——那半小时是留给 8 位
+      评委就第 8 名同票线下商定的。退回用 screening 是为了往届：它们的配置
+      里没有 screeningVote，那时投票本来就开到公布为止。
+    */
+    const shutAt = ev.config?.deadlines?.screeningVote;
+    if (shutAt && now.getTime() >= Date.parse(shutAt)) {
+      return {
+        ...shut,
+        reason: `投票 ${mdhm(shutAt)} 已截止，票数封存。`
+          + `${mdhm(ev.config?.deadlines?.screening)} 公布入围名单。`,
+      };
+    }
+    return { limit, slots, open: true, reason: null as string | null };
+  };
+
+  /** 名单公布了没有。公布之后才让人看见票数。 */
+  const screeningResultsOpen = (ev: EventRow, now: Date) =>
+    phaseAtLeast(resolvePhase(ev, now), 'building');
+
+  /**
+   * 初筛得票榜。
+   *
+   * ┌─ 第 8 名同票不自动切 ──────────────────────────────────────────────┐
+   * │ 票数相同的若干个创意挤在最后一个名额上时，全部标成 'tie'，谁进由   │
+   * │ 8 位评委线下商定（投票 14:00 截止、名单 14:30 公布，中间那半小时   │
+   * │ 就是留给这件事的）。                                               │
+   * │                                                                    │
+   * │ 按 id、按提交时间、按名字——随便哪个都能切出一个确定的结果，但那    │
+   * │ 等于让一个 ORDER BY 替人决定谁能进决赛。同票恰恰是最该由人判的那   │
+   * │ 一种，而"系统已经定了"会让这件事根本不被讨论。                     │
+   * └────────────────────────────────────────────────────────────────────┘
+   *
+   * 名次用「竞赛排名」：同票同名次，下一个跳号（1,2,2,4）。票数一样却显示
+   * 成不同名次，看榜的人第一反应是数据错了。
+   */
+  const screeningRanking = async (ev: EventRow): Promise<EventScreeningRankRow[]> => {
+    const rows = await sql<{ id: string; name: string; who: string; votes: number }[]>`
+      SELECT i.id, i.name, u.display_name AS who,
+             count(v.judge_id)::int AS votes
+        FROM ispace.event_ideas i
+        JOIN ispace.users u ON u.id = i.user_id
+        LEFT JOIN ispace.event_screening_votes v
+               ON v.event_id = i.event_id AND v.idea_id = i.id
+       WHERE i.event_id = ${ev.id}
+       GROUP BY i.id, i.name, u.display_name, i.created_at
+       ORDER BY count(v.judge_id) DESC, i.created_at
+    `;
+    return rankScreening(rows, ev.config?.screeningSlots ?? 0);
   };
 
   app.get(`${API_BASE}/events/:slug/judge/screening`, async (req): Promise<EventScreeningResponse> => {
@@ -746,12 +853,28 @@ export function registerEventRoutes(
        ORDER BY i.created_at
     `;
 
+    /* 交卷进度：数到几个人交了，不碰谁投了什么 */
+    const [subs] = await sql<{ mine: boolean; total: number; judges: number }[]>`
+      SELECT bool_or(s.judge_id = ${me.id}) AS mine,
+             count(s.judge_id)::int        AS total,
+             (SELECT count(*)::int FROM ispace.event_judges WHERE event_id = ${ev.id}) AS judges
+        FROM ispace.event_screening_submits s
+       WHERE s.event_id = ${ev.id}
+    `;
+
+    const resultsOpen = screeningResultsOpen(ev, now);
     return {
       event: summary(ev, now),
       limit: st.limit,
+      slots: st.slots,
       used: rows.filter((r) => r.voted).length,
+      submitted: subs?.mine ?? false,
+      submittedCount: subs?.total ?? 0,
+      judgeCount: subs?.judges ?? 0,
       open: st.open,
       closedReason: st.reason,
+      resultsOpen,
+      ranking: resultsOpen ? await screeningRanking(ev) : null,
       items: rows.map((r) => ({
         ideaId: r.id,
         name: r.name,
@@ -766,6 +889,54 @@ export function registerEventRoutes(
     };
   });
 
+  /**
+   * 交卷 / 撤回交卷。
+   *
+   * 必须投满。投到一半就走开，等于这个人的票权被稀释——而得票是拿来排名次
+   * 的，少投的人实际上降低了所有人的区分度。所以差一票也不收。
+   */
+  app.post(`${API_BASE}/events/:slug/judge/screening/submit`, async (req) => {
+    const { slug } = req.params as { slug: string };
+    const ev = await loadEvent(slug);
+    const me = await requireJudge(req, ev.id);
+    const st = screeningState(ev, new Date());
+    if (!st.open) throw new IspaceError(ERROR_CODES.FORBIDDEN, st.reason ?? '现在不能投票');
+
+    const [c] = await sql<{ n: number }[]>`
+      SELECT count(*) AS n FROM ispace.event_screening_votes
+       WHERE event_id = ${ev.id} AND judge_id = ${me.id}
+    `;
+    const used = Number(c!.n);
+    if (used < st.limit) {
+      throw new IspaceError(
+        ERROR_CODES.INVALID_INPUT,
+        `还剩 ${st.limit - used} 票没投，投满 ${st.limit} 票才能提交`,
+      );
+    }
+
+    await sql`
+      INSERT INTO ispace.event_screening_submits (event_id, judge_id)
+      VALUES (${ev.id}, ${me.id})
+      ON CONFLICT (event_id, judge_id) DO NOTHING
+    `;
+    return { ok: true, submitted: true };
+  });
+
+  /** 撤回交卷，票重新可改。截止前随时可以。 */
+  app.delete(`${API_BASE}/events/:slug/judge/screening/submit`, async (req) => {
+    const { slug } = req.params as { slug: string };
+    const ev = await loadEvent(slug);
+    const me = await requireJudge(req, ev.id);
+    const st = screeningState(ev, new Date());
+    if (!st.open) throw new IspaceError(ERROR_CODES.FORBIDDEN, st.reason ?? '投票已截止，改不了了');
+
+    await sql`
+      DELETE FROM ispace.event_screening_submits
+       WHERE event_id = ${ev.id} AND judge_id = ${me.id}
+    `;
+    return { ok: true, submitted: false };
+  });
+
   /** 投/撤一票。和人气奖那颗按钮一样是开关：投过再点就是撤回。 */
   app.post(`${API_BASE}/events/:slug/judge/screening/:ideaId`, async (req) => {
     const { slug, ideaId } = req.params as { slug: string; ideaId: string };
@@ -774,6 +945,18 @@ export function registerEventRoutes(
     const st = screeningState(ev, new Date());
 
     if (!st.open) throw new IspaceError(ERROR_CODES.FORBIDDEN, st.reason ?? '现在不能投票');
+
+    /*
+      交过卷就锁住。不锁的话「已提交」只是个标签——交完还能随手改一票，
+      而别的评委那边显示的是「他已经交了」。
+    */
+    const [done] = await sql<{ one: number }[]>`
+      SELECT 1 AS one FROM ispace.event_screening_submits
+       WHERE event_id = ${ev.id} AND judge_id = ${me.id}
+    `;
+    if (done) {
+      throw new IspaceError(ERROR_CODES.FORBIDDEN, '已经提交了。要改先点「修改投票」。');
+    }
 
     const [idea] = await sql<{ user_id: string }[]>`
       SELECT user_id FROM ispace.event_ideas

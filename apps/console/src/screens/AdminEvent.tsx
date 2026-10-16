@@ -43,6 +43,11 @@ const PHASE_DESC: Record<EventPhase, string> = {
 /** config.deadlines 的六个时刻，按先后排。阶段就是照它们切的。 */
 const DEADLINE_ROWS: { key: keyof EventConfig['deadlines']; label: string }[] = [
   { key: 'idea', label: '交创意截止' },
+  /*
+    投票截止比公布早半小时，中间那半小时留给评委就第 8 名同票线下商定。
+    往届没有这一项（配置里可以缺），所以下面渲染时会跳过取不到值的行。
+  */
+  { key: 'screeningVote', label: '初筛投票截止' },
   { key: 'screening', label: '公布入围名单' },
   { key: 'work', label: '交作品截止' },
   { key: 'vote', label: '打分与投票锁定' },
@@ -263,6 +268,8 @@ function PhaseCard({
         <div style={{ display: 'grid', gap: 'var(--space-4)', marginBottom: 'var(--space-10)' }}>
           {DEADLINE_ROWS.map((row) => {
             const iso = deadlines[row.key];
+            /* 本届没配这个时刻就不占一行——显示成空白比不显示更让人以为是坏了 */
+            if (!iso) return null;
             const passed = Date.parse(iso) <= serverNow.getTime();
             return (
               <div key={row.key} style={{

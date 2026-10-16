@@ -170,6 +170,16 @@ export interface EventConfig {
   deadlines: {
     /** 交创意截止 */
     idea: string;
+    /**
+     * 初筛投票截止。票在这一刻封存，但名单还没公布。
+     *
+     * 和 `screening` 分开，因为中间那半小时是留给评委的：第 8 名同票要由
+     * 8 位评委线下商定，而商定得在票封存之后、名单公布之前。挤在同一个
+     * 时刻就没有商定的余地。
+     *
+     * 可选：往届没有这一项，缺了就退回用 `screening`（投票一直开到公布）。
+     */
+    screeningVote?: string;
     /** 入围名单公布 */
     screening: string;
     /** 交作品截止 */
@@ -207,6 +217,14 @@ export interface EventConfig {
    * 缺省时评委页不显示初筛投票。
    */
   screeningVoteLimit?: number;
+  /**
+   * 初筛入围几个。
+   *
+   * 和 screeningVoteLimit 恰好都是 8，但两者没有关系：一个是每位评委手里
+   * 的票数，一个是名额数。合用一个数字的话，哪天想把票数调成 10 就会连带
+   * 把名额也改了。
+   */
+  screeningSlots?: number;
   /**
    * 「奖项与评选」小节末尾那段说明：名次怎么定、人气奖怎么投、有没有互斥。
    *
@@ -458,12 +476,46 @@ export interface EventScreeningItem {
   voted: boolean;
 }
 
+/** 初筛结果榜上的一行。14:30 公布后才有。 */
+export interface EventScreeningRankRow {
+  ideaId: string;
+  name: string;
+  who: string;
+  /** 8 位评委加起来的票数 */
+  votes: number;
+  /**
+   * 入围、并列待定、还是没进。
+   *
+   * 'tie' 是第 8 名同票那种情况：票数一样多的人挤在最后一个名额上，谁进
+   * 由 8 位评委线下商定。不自动按某种顺序切一刀——那等于让一个 ORDER BY
+   * 替人做决定，而同票恰恰是最该由人来判的那一种。
+   */
+  status: 'in' | 'tie' | 'out';
+  rank: number;
+}
+
 export interface EventScreeningResponse {
   event: EventSummary;
   /** 每人几票 */
   limit: number;
   /** 我已经投掉几票 */
   used: number;
+  /** 入围几个 */
+  slots: number;
+  /**
+   * 我交卷了没有。
+   *
+   * 交卷之后票锁住，要改得先撤回交卷——这样「已提交」才是个有意义的状态，
+   * 否则交完还能随手改，那条状态就只是个标签。
+   */
+  submitted: boolean;
+  /** 已交卷的评委数 / 评委总数。让人知道还要等谁，不暴露谁投了什么。 */
+  submittedCount: number;
+  judgeCount: number;
+  /** 名单公布了没有。公布前 ranking 一律是 null，包括对管理员。 */
+  resultsOpen: boolean;
+  /** 公布后的得票榜；公布前是 null。 */
+  ranking: EventScreeningRankRow[] | null;
   /**
    * 现在能不能投。
    *

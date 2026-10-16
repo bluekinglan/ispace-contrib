@@ -321,6 +321,12 @@ export const api = {
     post<{ ok: boolean; voted: boolean; remaining: number }>(
       `/events/${slug}/judge/screening/${ideaId}`,
     ),
+  /** 交卷。投满 8 票才收，服务端会再数一遍。 */
+  submitScreening: (slug: string) =>
+    post<{ ok: boolean; submitted: boolean }>(`/events/${slug}/judge/screening/submit`),
+  /** 撤回交卷，票重新可改。 */
+  unsubmitScreening: (slug: string) =>
+    del<{ ok: boolean; submitted: boolean }>(`/events/${slug}/judge/screening/submit`),
   putScore: (slug: string, ideaId: string, input: ScoreInput) =>
     send<{ ok: boolean; total: number; submitted: boolean }>('PUT', `/events/${slug}/scores/${ideaId}`, input),
   /**
