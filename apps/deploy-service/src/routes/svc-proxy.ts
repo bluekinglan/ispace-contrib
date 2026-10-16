@@ -1,7 +1,8 @@
 import { request as httpRequest } from 'node:http';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Sql } from '@ispace/db';
-import type { SessionClaims } from '@ispace/auth';
+import { COOKIE_NAME, type SessionClaims } from '@ispace/auth';
+import { readResourceSession } from '../services/resource-session.js';
 
 /**
  * 后端服务的鉴权代理（/svc/{user}/{name}/...）。
@@ -56,18 +57,6 @@ export function registerSvcProxy(
 ): void {
   const { sql, verifySession } = deps;
 
-  async function readSession(req: FastifyRequest): Promise<SessionClaims | null> {
-    const cookie = (req.cookies as Record<string, string> | undefined)?.ispace_session;
-    const auth = req.headers.authorization;
-    const token = cookie ?? (auth?.startsWith('Bearer ') ? auth.slice(7) : undefined);
-    if (!token) return null;
-    try {
-      return await verifySession(token);
-    } catch {
-      return null;
-    }
-  }
-
   // 路由放进封装插件，好在**只在这个作用域内**换 body 解析器。
   //
   // 代理要原样转发任意内容类型——文件上传、multipart 表单、二进制。默认的
@@ -101,7 +90,7 @@ export function registerSvcProxy(
     }
 
     // ── 鉴权 ────────────────────────────────────────────────────────
-    const claims = await readSession(req);
+    const claims = await readResourceSession(req, sql, verifySession);
     const allowed = await isAllowed(row, claims);
     if (allowed === 'login') {
       // 页面调 /svc 是 fetch，302 没意义；这里直接 401，让页面自己处理
@@ -137,8 +126,16 @@ export function registerSvcProxy(
 
     const headers: Record<string, string | string[]> = {};
     for (const [k, v] of Object.entries(req.headers)) {
+      // Platform authentication terminates here, never at a user container.
+      if (k === 'authorization' || k === 'cookie') continue;
       if (v !== undefined && !DROP_HEADERS.has(k.toLowerCase())) headers[k] = v;
     }
+    // Preserve application cookies verbatim, but remove every platform-session occurrence.
+    const appCookies = req.headers.cookie?.split(';')
+      .map((part) => part.trim())
+      .filter((part) => part && part.split('=', 1)[0]?.trim() !== COOKIE_NAME)
+      .join('; ');
+    if (appCookies) headers.cookie = appCookies;
     // 在 loop 之后设，确保 prefix 一定是我算的值。让认这些头的框架
     // （Spring forward-headers、多数 Node 中间件）自己拼出正确的绝对链接，
     // backend 不必写死自己的 base path。

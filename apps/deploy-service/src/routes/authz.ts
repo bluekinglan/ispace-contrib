@@ -1,7 +1,8 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { API_BASE } from '@ispace/contracts';
 import type { SessionClaims } from '@ispace/auth';
 import type { Sql } from '@ispace/db';
+import { readResourceSession } from '../services/resource-session.js';
 
 /**
  * 静态页面的访问鉴权（Caddy forward_auth 的落点）。
@@ -18,7 +19,7 @@ import type { Sql } from '@ispace/db';
  * └──────────────────────────────────────────────────────────────────────┘
  *
  * Caddy 每个请求（含每个静态资源）都会打到这里，所以它必须便宜：
- * 一次 JWT 验签 + 一条带索引的查询，没有别的。
+ * JWT 验签后检查当前账号状态与角色，再判定资源权限。
  *
  * 返回约定（Caddy 会把非 2xx 的响应原样回给浏览器）：
  *   200  放行
@@ -32,7 +33,7 @@ export function registerAuthzRoutes(
   deps: {
     sql: Sql;
     publicBase: string;
-    /** 只验签，不查库——查库那步由本模块自己按需要做。 */
+    /** JWT 验签；账号状态与角色由 readResourceSession 查库。 */
     verifySession: (token: string) => Promise<SessionClaims | null>;
   },
 ): void {
@@ -76,7 +77,7 @@ export function registerAuthzRoutes(
       return reply.status(404).type('text/html; charset=utf-8').send(page404());
     }
 
-    const claims = await readSession(req);
+    const claims = await readResourceSession(req, sql, verifySession);
 
     // 没登录：跳登录页，带上 redirect 让人登完回到原地。
     // 直接 401 会让同事点开分享链接时看到一片空白，不知道该干什么。
@@ -109,18 +110,6 @@ export function registerAuthzRoutes(
     return reply.status(403).type('text/html; charset=utf-8').send(page403(owner));
   });
 
-  /** 从 cookie 或 Authorization 头取会话。取不到返回 null，不抛。 */
-  async function readSession(req: FastifyRequest): Promise<SessionClaims | null> {
-    const cookie = req.cookies?.ispace_session;
-    const auth = req.headers.authorization;
-    const token = cookie ?? (auth?.startsWith('Bearer ') ? auth.slice(7) : undefined);
-    if (!token) return null;
-    try {
-      return await verifySession(token);
-    } catch {
-      return null;
-    }
-  }
 }
 
 /**
