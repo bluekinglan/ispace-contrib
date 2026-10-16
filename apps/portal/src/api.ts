@@ -191,6 +191,14 @@ async function apkRelease(): Promise<ApkRelease> {
 export const api = {
   apkRelease,
   authPolicy: () => get<AuthPolicy>('/auth/policy'),
+  /**
+   * 忘记密码：本人发起一条申请，管理员在控制台放行。
+   *
+   * 返回的 message 与邮箱存不存在无关——服务端刻意不区分，免得这个免登录
+   * 接口变成「谁开了账号」的探测器。所以前端也别自作聪明去判断成功与否。
+   */
+  forgotPassword: (email: string) =>
+    post<{ ok: boolean; message: string }>('/auth/forgot', { email }),
   login: (email: string, password: string) =>
     post<{ user: User; token: string }>('/auth/login', { email, password }),
   /** 用管理员发的一次性链接设新密码。不需要会话——令牌本身就是身份证明。 */

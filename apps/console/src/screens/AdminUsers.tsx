@@ -33,7 +33,20 @@ export function AdminUsers() {
   const [form, setForm] = useState({ username: '', displayName: '', email: '' });
   const [busy, setBusy] = useState(false);
 
-  const load = () => void api.adminUsers().then((r) => { setUsers(r.users); setSummary(r.summary); });
+  /** 本人在登录页点了「忘记密码」、还没发链接的那些。 */
+  const [requests, setRequests] = useState<{
+    id: string; userId: string; username: string;
+    displayName: string; email: string | null; createdAt: string;
+  }[]>([]);
+
+  const load = () => {
+    void api.adminUsers().then((r) => { setUsers(r.users); setSummary(r.summary); });
+    /*
+      申请列表单独取，失败就当没有：它是这一屏的附加信息，拉不到不该让
+      整个「员工与开通」变成一片空白——开通和回收比它要紧得多。
+    */
+    void api.passwordRequests().then((r) => setRequests(r.requests)).catch(() => setRequests([]));
+  };
   useEffect(load, []);
 
   const provision = async () => {
@@ -81,8 +94,10 @@ export function AdminUsers() {
       confirmLabel: '生成链接',
     });
     if (!ok) return;
-    try { setResetLink({ user: u.displayName, ...(await api.resetPassword(u.id)) }); }
-    catch (e) { fail(e); }
+    try {
+      setResetLink({ user: u.displayName, ...(await api.resetPassword(u.id)) });
+      load();   // 签发会把这个人的待处理申请结掉，列表要跟着消一条
+    } catch (e) { fail(e); }
   };
 
   const changeRole = async (u: AdminUser) => {
@@ -138,6 +153,50 @@ export function AdminUsers() {
   return (
     <>
       <PageTitle title="员工与开通" subtitle="开通、角色、密码与离职回收" />
+
+      {/*
+        有人在登录页点了「忘记密码」。
+
+        放在最上面是因为这些人此刻**登不进去**：别的事都能等，这件不能。
+        平台没有邮件服务，链接只能由管理员转交，所以这一屏是整条路径里
+        唯一会被看到的地方——藏在列表里等于没有。
+      */}
+      {requests.length > 0 && (
+        <Card style={{
+          marginBottom: 'var(--space-8)',
+          background: 'var(--tabby-orange-subtle)', border: '1px solid var(--tabby-orange)',
+        }}>
+          <strong style={{ fontSize: 'var(--text-base)', display: 'block', marginBottom: 'var(--space-5)' }}>
+            {requests.length} 个人在等设密码链接
+          </strong>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+            {requests.map((r) => {
+              const u = users.find((x) => x.id === r.userId);
+              return (
+                <div key={r.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 'var(--space-6)', flexWrap: 'wrap',
+                }}>
+                  <span style={{ fontWeight: 'var(--weight-semibold)' }}>{r.displayName}</span>
+                  <code className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+                    {r.email ?? r.username}
+                  </code>
+                  <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+                    {fmtDate(r.createdAt)} 提交
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  {/*
+                    找不到对应的 AdminUser 时按钮不可点：resetPw 要拿 displayName
+                    去做确认文案，拿不到就别让人点出一个半截的弹窗。正常情况下
+                    两份数据都来自同一次 load，对不上说明列表还没回来。
+                  */}
+                  <Button size="sm" variant="primary" disabled={!u}
+                    onClick={() => u && void resetPw(u)}>发链接</Button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* 一次性链接必须显眼且不自动消失：错过就得重新生成 */}
       {resetLink && (

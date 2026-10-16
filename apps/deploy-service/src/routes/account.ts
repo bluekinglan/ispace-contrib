@@ -350,10 +350,91 @@ export function registerAccountRoutes(
     return { ok: true };
   });
 
+  // ── 忘记密码：本人发起申请 ────────────────────────────────────────
+  /**
+   * 登录页「忘记密码」打到这里。
+   *
+   * ┌─ 为什么响应与邮箱存不存在无关 ────────────────────────────────┐
+   * │ 这是个**不需要登录**的接口。如果邮箱没注册时回「查无此人」，任何 │
+   * │ 人都能拿它当探测器，一个个试出公司里谁开了账号——而账号名就是    │
+   * │ 邮箱，等于把员工名册漏出去。所以不管有没有这个人，一律同一句话、 │
+   * │ 同一个状态码。                                                  │
+   * │                                                                │
+   * │ 代价是邮箱打错了也只会得到同样的提示，自己察觉不到。这比名册泄露 │
+   * │ 划算：打错了顶多等不到管理员联系，再试一次。                    │
+   * └────────────────────────────────────────────────────────────────┘
+   *
+   * 只给 active 的账号建申请：pending 的还没被批准、archived 的已经回收，
+   * 给这两种人重置密码没有意义，而且会让管理员那一屏冒出本不该处理的条目。
+   */
+  app.post(`${API_BASE}/auth/forgot`, async (req) => {
+    const { email } = z.object({
+      email: z.string().email().max(254),
+    }).parse(req.body ?? {});
+
+    const [user] = await sql<{ id: string; username: string }[]>`
+      SELECT id, username FROM ispace.users
+       WHERE lower(email) = ${email.toLowerCase()} AND status = 'active'
+    `;
+
+    if (user) {
+      /*
+        ON CONFLICT DO NOTHING 配合那条部分唯一索引：人在登不进去的时候
+        会反复点，重复点不该在管理员那边堆出一排一模一样的条目。
+      */
+      await sql`
+        INSERT INTO ispace.password_reset_requests (user_id)
+        VALUES (${user.id})
+        ON CONFLICT (user_id) WHERE handled_at IS NULL DO NOTHING
+      `;
+      await writeAudit(sql, {
+        actorId: user.id, action: 'user.password_reset_request',
+        targetType: 'user', targetId: user.id,
+        /* source 的枚举里没有 portal；登录页其他动作（改密码）也记 console */
+        source: 'console', result: 'success',
+        metadata: { username: user.username }, ip: req.ip,
+      });
+    }
+
+    return {
+      ok: true,
+      message: '已经记下了。管理员会生成一条设密码链接给你——平台没有邮件服务，'
+        + '链接需要他当面或经可信渠道转交，所以请直接联系他。',
+    };
+  });
+
+  // ── 待处理的重置申请（管理员）────────────────────────────────────
+  app.get(`${API_BASE}/admin/password-requests`, async (req) => {
+    await requireAdmin(req);
+    const rows = await sql<{
+      id: string; user_id: string; username: string;
+      display_name: string; email: string | null; created_at: Date;
+    }[]>`
+      SELECT r.id, r.user_id, u.username, u.display_name, u.email, r.created_at
+        FROM ispace.password_reset_requests r
+        JOIN ispace.users u ON u.id = r.user_id
+       WHERE r.handled_at IS NULL
+       ORDER BY r.created_at DESC
+    `;
+    return {
+      requests: rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        username: r.username,
+        displayName: r.display_name,
+        email: r.email,
+        createdAt: r.created_at.toISOString(),
+      })),
+    };
+  });
+
   // ── 管理员签发重置链接 ────────────────────────────────────────────
   /**
-   * 平台没有可用的邮件服务，所以不做自助重置：管理员生成一次性链接，
-   * 线下交给本人。链接只显示一次，服务端只存哈希。
+   * 平台没有可用的邮件服务，链接没法自动送到本人手上，所以管理员这一环
+   * 去不掉：生成一次性链接，线下交给本人。链接只显示一次，服务端只存哈希。
+   *
+   * 本人可以从登录页发起申请（POST /auth/forgot），管理员在控制台看到待
+   * 处理的那条，点一下就走到这里——省掉的是「找到管理员并把事情说一遍」。
    */
   app.post(`${API_BASE}/admin/users/:id/reset-password`, async (req) => {
     const admin = await requireAdmin(req);
@@ -369,6 +450,22 @@ export function registerAccountRoutes(
       INSERT INTO ispace.password_resets (user_id, token_hash, issued_by, expires_at)
       VALUES (${id}, ${hashToken(plain)}, ${admin.id},
               now() + ${`${RESET_TTL_HOURS} hours`}::interval)
+    `;
+    /*
+      顺手结掉这个人的待处理申请。
+
+      放在签发这里而不是单给一个「标记已处理」的接口：管理员的动作只有
+      一个——发链接。要是结单是另一次点击，就一定会出现「链接发了、申请
+      还挂着」，下一个管理员看到会重复发一条，而每发一条都会让前一条失效，
+      本人手上那条就莫名其妙地用不了了。
+
+      两条入口（本人申请、管理员主动发）都落到这一句，所以主动发链接也会
+      把恰好存在的申请一并结掉，不会留下孤儿。
+    */
+    await sql`
+      UPDATE ispace.password_reset_requests
+         SET handled_at = now(), handled_by = ${admin.id}
+       WHERE user_id = ${id} AND handled_at IS NULL
     `;
     await writeAudit(sql, {
       actorId: admin.id, action: 'user.password_reset', targetType: 'user', targetId: id,

@@ -382,6 +382,14 @@ export const api = {
   logout: () => req<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 
   // ── 管理端 ────────────────────────────────────────────────────────
+  /** 本人从登录页发起的、还没处理的重置申请。 */
+  passwordRequests: () =>
+    req<{
+      requests: {
+        id: string; userId: string; username: string;
+        displayName: string; email: string | null; createdAt: string;
+      }[];
+    }>('/admin/password-requests'),
   /** 生成一次性设密码链接。只返回一次，前端要立刻显示。 */
   resetPassword: (userId: string) =>
     req<{ url: string; expiresInHours: number; warning: string }>(

@@ -1843,6 +1843,23 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** 「忘记密码」提交后服务端那句话。非 null 就把入口换成它。 */
+  const [forgot, setForgot] = useState<string | null>(null);
+
+  /*
+    复用上面已经填好的邮箱，不再单开一个输入框：走到这一步的人刚把邮箱
+    敲进去过，再要一遍只是多一次出错的机会。邮箱还空着时就提示先填。
+  */
+  const askReset = async () => {
+    const addr = email.trim();
+    if (!addr) { setErr('先填上公司邮箱，再点忘记密码'); return; }
+    setBusy(true); setErr(null);
+    try {
+      setForgot((await api.forgotPassword(addr)).message);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally { setBusy(false); }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1873,9 +1890,30 @@ function LoginForm() {
         style={{ width: '100%' }}>
         {busy ? '登录中…' : '登录'}
       </Button>
-      <p style={{ margin: 'var(--space-8) 0 0', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-        忘记密码请找管理员重置——平台还没接邮件服务，做不了自助重置。
-      </p>
+      {forgot ? (
+        <p role="status" style={{
+          margin: 'var(--space-8) 0 0', padding: 'var(--space-6)',
+          borderRadius: 'var(--radius-8)', background: 'var(--surface-2)',
+          fontSize: 'var(--text-sm)', lineHeight: 1.6, color: 'var(--text-secondary)',
+        }}>{forgot}</p>
+      ) : (
+        <p style={{ margin: 'var(--space-8) 0 0', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', textAlign: 'center' }}>
+          {/*
+            button 而不是 a：它不导航，只发一个请求。写成链接的话键盘用户
+            按空格不会触发，右键「新标签打开」还会开出一个空页面。
+          */}
+          <button
+            type="button"
+            onClick={() => void askReset()}
+            disabled={busy}
+            style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              font: 'inherit', color: 'var(--link)', textDecoration: 'underline',
+            }}
+          >忘记密码</button>
+          {' '}· 会通知管理员给你发一条设密码链接
+        </p>
+      )}
     </form>
   );
 }
