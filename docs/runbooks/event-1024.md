@@ -71,6 +71,25 @@ curl -X PATCH https://{域名}/deploy/api/events/1024-2026 \
 整批替换，不是增量。账号必须存在且在职，否则整条请求失败并告诉你是哪几个
 找不到——不会设进去一半。
 
+### 页面上印谁，和谁能打分，是两件事
+
+`/1024` 上「评委 · 8 位 TL」那一排**不读这个接口**——它来自
+`apps/portal/src/event/judges.ts` 里写死的名册（花名 + 头像），理由见那个
+文件开头。控制台这份名单管的是权限：谁能打开 `/1024/judge`。
+
+两边正常情况下是同一批人，但没有任何机制保证。**少配一个人的后果要到
+10.23 当天他打不开打分页才会暴露**，那时候再找人开通已经来不及。所以改完
+任意一边，跑一次这个核对：
+
+```bash
+ROSTER=$(grep -oE "username: '[a-z0-9]+'" apps/portal/src/event/judges.ts \
+  | sed "s/username: '//;s/'//" | sort)
+LIVE=$(./infra/scripts/remote.sh "docker exec supabase-db psql -U supabase_admin \
+  -d postgres -t -A -c \"select u.username from ispace.event_judges j \
+  join ispace.users u on u.id=j.user_id\"" | sort)
+[ "$ROSTER" = "$LIVE" ] && echo '一致' || diff <(echo "$ROSTER") <(echo "$LIVE")
+```
+
 设完刷新 `/1024`，「奖项与评选」那段会出现评委头像。
 
 ---
