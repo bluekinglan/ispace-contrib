@@ -10,6 +10,11 @@ import { squareAvatar } from './avatar';
  * 做成弹层而不是 /settings 这样的页面：新开一个顶层路径要同步三处
  * （RESERVED_PATHS、Caddyfile、一致性测试），而门户本来就用弹层装这类
  * 小事（扫码登录、下载 App 都是）。
+ *
+ * ⚠️ 用户名和邮箱的提示只说「联系管理员」，没说"在控制台改"——因为控制台
+ * 现在**没有**这个控件：管理员能改角色、能归档恢复、能发重置链接，但改不了
+ * 别人的显示名、邮箱和用户名，只能直接动库。等控制台补上那一屏，这两句话
+ * 才能改成指路到具体位置。在那之前别写成指路，否则管理员会去翻一遍找不到。
  */
 export function ProfileDialog({ user, onUser, onClose }: {
   user: User;
@@ -126,13 +131,13 @@ export function ProfileDialog({ user, onUser, onClose }: {
           <Input value={user.username} disabled />
           <p style={{ margin: '4px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
             你的地址是 <span className="mono">{location.host}/{user.username}/</span>，
-            改名会让已经发出去的链接全部失效。确实要改找管理员。
+            改名会让已经发出去的链接全部失效。确实要改，联系管理员。
           </p>
         </Row>
         <Row label="邮箱">
           <Input value={user.email ?? '未设置'} disabled />
           <p style={{ margin: '4px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-            登录和找回密码认这个地址，改动要管理员在控制台操作。
+            登录和找回密码认这个地址。平台没有邮件服务，换地址验证不了，要改联系管理员。
           </p>
         </Row>
 
