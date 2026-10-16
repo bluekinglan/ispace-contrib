@@ -347,11 +347,25 @@ function JudgeRow({
         }}>{it.name}</span>
         <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{it.who}</span>
       </span>
-      {submitted || draft || it.mine ? (
-        <span className="mono" style={{
-          flex: 'none', fontSize: 13, fontWeight: 700,
-          color: submitted ? 'var(--success)' : 'var(--tabby-orange-hover)',
-        }}>{total}</span>
+      {/*
+        三种状态照稿写明，不靠颜色区分：已提交给分数 + 「已提交」，
+        打了没交只写「未提交」，没动过写「未打分」。光靠绿/橙两种颜色
+        分辨「交没交」，色弱的人看不出来，而这一步不可逆。
+      */}
+      {submitted ? (
+        <span style={{
+          flex: 'none', display: 'flex', flexDirection: 'column',
+          alignItems: 'flex-end', gap: 1,
+        }}>
+          <span className="mono" style={{
+            fontSize: 13, fontWeight: 700, color: 'var(--success)',
+          }}>{total}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>已提交</span>
+        </span>
+      ) : draft || it.mine ? (
+        <span style={{
+          flex: 'none', fontSize: 11, color: 'var(--tabby-orange-hover)', fontWeight: 600,
+        }}>未提交</span>
       ) : (
         <span style={{ flex: 'none', fontSize: 11, color: 'var(--text-tertiary)' }}>未打分</span>
       )}

@@ -102,21 +102,16 @@ export function Screen() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
             {/*
-              公司标识。放在白底卡片里，因为它是深色图，直接压在橙底上会糊。
-              onError 隐藏自己：少一张图不该让背景墙顶上留个破图图标——
-              这块屏会在会议室里挂一整天，没人会盯着它救场。
+              公司标识。v3 换成方形图标，不再套白卡片——图标自己有底色，
+              压在橙底上不糊。onError 隐藏自己：少一张图不该让背景墙顶上
+              留个破图图标，这块屏会在会议室里挂一整天。
             */}
-            <div style={{
-              background: '#fff', borderRadius: 16, padding: '10px 18px',
-              display: 'flex', alignItems: 'center',
-            }}>
-              <img
-                src="/event-logo.png"
-                alt=""
-                onError={(e) => { e.currentTarget.parentElement!.style.display = 'none'; }}
-                style={{ height: 48, width: 'auto', display: 'block' }}
-              />
-            </div>
+            <img
+              src="/event-icon.png"
+              alt=""
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              style={{ width: 68, height: 68, borderRadius: 18, display: 'block' }}
+            />
             <span className="mono" style={{
               background: INK, color: '#fff', borderRadius: 100,
               padding: '10px 22px', fontSize: 24, fontWeight: 700,
@@ -124,7 +119,9 @@ export function Screen() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <Mark size={44} tone="dark" />
-            <span style={{ fontFamily: 'var(--font-serif)', fontSize: 32 }}>iSpace</span>
+            <span style={{
+              fontFamily: 'var(--font-sans)', fontSize: 32, fontWeight: 800, letterSpacing: '-.03em',
+            }}>iSpace</span>
           </div>
         </div>
 

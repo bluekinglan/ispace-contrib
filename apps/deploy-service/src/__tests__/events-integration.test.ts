@@ -69,7 +69,8 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     // 造人：一个管理员、三个参赛者、两个评委
     for (const [username, role] of [
       ['admin', 'admin'], ['lixiao', 'employee'], ['wutong', 'employee'],
-      ['zhoumu', 'employee'], ['judge-a', 'employee'], ['judge-b', 'employee'],
+      ['zhoumu', 'employee'], ['huangke', 'employee'],
+      ['judge-a', 'employee'], ['judge-b', 'employee'],
     ] as const) {
       const rows = await sql<User[]>`
         INSERT INTO ispace.users (sso_subject, username, display_name, role)
@@ -137,6 +138,31 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     expect(r.statusCode, r.body).toBe(200);
   };
 
+  /**
+   * 把投票窗口挪到「现在」。
+   *
+   * 本届真实窗口是 2026-10-22 18:00 – 10-23 12:00，而测试跑在那之前，
+   * 按真实配置投票一律被拒。改时钟会牵动整条阶段推导，所以改配置——
+   * 走的是管理员那条 PATCH，顺带把它也验了。
+   *
+   * `config` 是整块替换，所以先取回完整那份再改这两个键。
+   */
+  const moveVoteWindow = async (opensMinAgo: number, closesMinAhead: number) => {
+    const cur = (await get(`/events/${SLUG}`)).json() as { event: { config: Record<string, unknown> } };
+    const d = cur.event.config.deadlines as Record<string, string>;
+    const now = Date.now();
+    const config = {
+      ...cur.event.config,
+      deadlines: {
+        ...d,
+        voteOpen: new Date(now - opensMinAgo * 60_000).toISOString(),
+        vote: new Date(now + closesMinAhead * 60_000).toISOString(),
+      },
+    };
+    const r = await send('PATCH', `/events/${SLUG}`, { config }, AS('admin'));
+    expect(r.statusCode, r.body).toBe(200);
+  };
+
   // ── 迁移与种子 ──────────────────────────────────────────────────
   it('迁移建出六张表，种子写入本届配置', async () => {
     const tables = await sql<{ table_name: string }[]>`
@@ -152,8 +178,18 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
       SELECT slug, phase, config FROM ispace.events WHERE slug = ${SLUG}
     `;
     expect(ev[0]!.phase).toBeNull();                 // 空 = 交给时钟推导
-    expect(ev[0]!.config.voteLimit).toBe(3);
+    expect(ev[0]!.config.voteLimit).toBe(2);
     expect((ev[0]!.config.criteria as { max: number }[]).reduce((n, c) => n + c.max, 0)).toBe(100);
+
+    /*
+      0019 把投票截止与评委打分锁定拆成了两个时刻（12:00 / 11:55）。
+      合用一个键的话，把投票推到 12:00 会连带把打分也放宽五分钟。
+    */
+    const d = ev[0]!.config.deadlines as Record<string, string>;
+    expect(d.voteOpen, '缺 voteOpen：投票窗口跨阶段靠它').toBeTruthy();
+    expect(Date.parse(d.judgeLock!)).toBeLessThan(Date.parse(d.vote!));
+    // 投票 10.22 18:00 就开，而作品 10.23 00:00 才截止——窗口确实跨阶段
+    expect(Date.parse(d.voteOpen!)).toBeLessThan(Date.parse(d.work!));
   });
 
   it('种子里的截止时间带时区，不被服务器本地时区改写', async () => {
@@ -187,6 +223,7 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
   it('交创意后能在自己的 me 块里看到，别人看不到', async () => {
     for (const [who, name] of [
       ['lixiao', '周报助手'], ['wutong', '会议纪要智能体'], ['zhoumu', '门店客流问答'],
+      ['huangke', '访客签到一体机'],
     ] as const) {
       const r = await send('PUT', `/events/${SLUG}/idea`, {
         name, problem: `${name}要解决的问题`, plan: `${name}的做法`,
@@ -196,7 +233,7 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
 
     const mine = (await get(`/events/${SLUG}`, AS('lixiao'))).json();
     expect(mine.me.idea.name).toBe('周报助手');
-    expect(mine.stats.ideaCount).toBe(3);
+    expect(mine.stats.ideaCount).toBe(4);
     // 初筛前谁都看不到创意列表，哪怕登录了
     expect(mine.finalists).toEqual([]);
   });
@@ -208,7 +245,7 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     expect(r.statusCode).toBe(200);
 
     const n = await sql<{ n: number }[]>`SELECT count(*) AS n FROM ispace.event_ideas`;
-    expect(Number(n[0]!.n)).toBe(3);
+    expect(Number(n[0]!.n)).toBe(4);
     const me = (await get(`/events/${SLUG}`, AS('lixiao'))).json();
     expect(me.me.idea.name).toBe('周报助手 · 全员版');
   });
@@ -232,7 +269,7 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     const byName = (n: string) => ideas.find((i) => i.name.startsWith(n))!.id;
 
     const r = await send('PATCH', `/events/${SLUG}`, {
-      finalists: [byName('会议纪要'), byName('周报助手'), byName('门店客流')],
+      finalists: [byName('会议纪要'), byName('周报助手'), byName('门店客流'), byName('访客签到')],
       judges: ['judge-a', 'judge-b'],
     }, AS('admin'));
     expect(r.statusCode, r.body).toBe(200);
@@ -242,7 +279,7 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
        WHERE finalist ORDER BY finalist_no
     `;
     expect(nos.map((x) => [x.finalist_no, x.name.slice(0, 2)]))
-      .toEqual([['01', '会议'], ['02', '周报'], ['03', '门店']]);
+      .toEqual([['01', '会议'], ['02', '周报'], ['03', '门店'], ['04', '访客']]);
   });
 
   it('管理员能把本届全部创意拉出来，别人不能', async () => {
@@ -255,11 +292,11 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     expect(r.statusCode, r.body).toBe(200);
     const { ideas } = r.json() as { ideas: EventAdminIdea[] };
 
-    expect(ideas).toHaveLength(3);
+    expect(ideas).toHaveLength(4);
     expect(ideas.every((i) => i.problem.length > 0 && i.plan.length > 0)).toBe(true);
     expect(ideas.every((i) => i.username.length > 0 && i.who.length > 0)).toBe(true);
     // 已定的名单与编号一并带回——控制台靠它还原「已存的路演顺序」
-    expect(ideas.filter((i) => i.finalist).map((i) => i.no).sort()).toEqual(['01', '02', '03']);
+    expect(ideas.filter((i) => i.finalist).map((i) => i.no).sort()).toEqual(['01', '02', '03', '04']);
 
     expect((await get(`/events/${SLUG}/ideas`, AS('lixiao'))).statusCode).toBe(403);
     // 没登录是 401 而不是 403：两者该把人引向不同的下一步
@@ -277,22 +314,22 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     `;
     const all = ideas.map((i) => i.id);
     // 换个顺序重设
-    await send('PATCH', `/events/${SLUG}`, { finalists: [all[2]!, all[0]!, all[1]!] }, AS('admin'));
+    await send('PATCH', `/events/${SLUG}`, { finalists: [all[2]!, all[0]!, all[1]!, all[3]!] }, AS('admin'));
     const nos = await sql<{ n: number }[]>`
       SELECT count(DISTINCT finalist_no) AS n FROM ispace.event_ideas WHERE finalist
     `;
-    expect(Number(nos[0]!.n)).toBe(3);
+    expect(Number(nos[0]!.n)).toBe(4);
     // 还原成「会议纪要=01」的顺序，后面的断言依赖它
     const byName = (n: string) => ideas.find((i) => i.name.startsWith(n))!.id;
     await send('PATCH', `/events/${SLUG}`, {
-      finalists: [byName('会议纪要'), byName('周报助手'), byName('门店客流')],
+      finalists: [byName('会议纪要'), byName('周报助手'), byName('门店客流'), byName('访客签到')],
     }, AS('admin'));
   });
 
   it('入围名单在入围制作阶段才对外可见', async () => {
     await setPhase('building');
     const pub = (await get(`/events/${SLUG}`)).json();
-    expect(pub.finalists).toHaveLength(3);
+    expect(pub.finalists).toHaveLength(4);
     expect(pub.finalists[0].no).toBe('01');
     // 投票期间不放票数
     expect(pub.finalists[0].votes).toBeNull();
@@ -452,7 +489,56 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
   });
 
   // ── 投票 ────────────────────────────────────────────────────────
-  it('投票是开关，不能投自己，有票数上限', async () => {
+  //
+  // 本届投票改成了全员线上：10.22 18:00 开放、10.23 12:00 截止、每人 2 票，
+  // 窗口横跨 building 与 demo 两个阶段。下面几条都靠 moveVoteWindow 把窗口
+  // 挪到「现在」来验——真实窗口在未来，按原配置一律被拒。
+
+  it('窗口没开时投不了，和已经截止是同一种拒绝', async () => {
+    const ideas = await sql<{ id: string; finalist_no: string }[]>`
+      SELECT id, finalist_no FROM ispace.event_ideas WHERE finalist ORDER BY finalist_no
+    `;
+    const idOf = (no: string) => ideas.find((i) => i.finalist_no === no)!.id;
+
+    // 窗口整段在未来
+    await moveVoteWindow(-60, 120);
+    const early = await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('lixiao'));
+    expect(early.statusCode).toBe(403);
+
+    // 窗口整段在过去
+    await moveVoteWindow(120, -60);
+    const late = await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('lixiao'));
+    expect(late.statusCode).toBe(403);
+  });
+
+  /**
+   * 投票窗口**只看时刻，不看阶段**。
+   *
+   * 这条是改版的要害：窗口 10.22 18:00 就开，而作品 10.23 00:00 才截止，
+   * 所以开头那半程活动还处在 building。原先那句 `phase !== 'demo'`
+   * 会把前一晚的投票整段挡掉，而规则写明那时就能投。
+   */
+  it('building 阶段只要窗口开着就能投', async () => {
+    await setPhase('building');
+    await moveVoteWindow(30, 30);
+    const ideas = await sql<{ id: string; finalist_no: string }[]>`
+      SELECT id, finalist_no FROM ispace.event_ideas WHERE finalist ORDER BY finalist_no
+    `;
+    const idOf = (no: string) => ideas.find((i) => i.finalist_no === no)!.id;
+
+    const r = await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('zhoumu'));
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json().voted).toBe(true);
+    // 撤回，把计数还原，后面的断言从干净状态开始
+    await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('zhoumu'));
+
+    // 对外也要说窗口是开着的，前端据此显示投票按钮
+    expect((await get(`/events/${SLUG}`)).json().event.votingOpen).toBe(true);
+  });
+
+  it('投票是开关，不能投自己，上限 2 票', async () => {
+    await setPhase('demo');
+    await moveVoteWindow(30, 30);
     const ideas = await sql<{ id: string; finalist_no: string }[]>`
       SELECT id, finalist_no FROM ispace.event_ideas WHERE finalist ORDER BY finalist_no
     `;
@@ -464,23 +550,60 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     expect(own.json().message).toContain('自己');
 
     const v1 = await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('lixiao'));
-    expect(v1.json()).toMatchObject({ voted: true, remaining: 2 });
+    expect(v1.json()).toMatchObject({ voted: true, remaining: 1 });
 
     // 再点一次 = 撤回
     const v2 = await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('lixiao'));
-    expect(v2.json()).toMatchObject({ voted: false, remaining: 3 });
+    expect(v2.json()).toMatchObject({ voted: false, remaining: 2 });
 
-    // 投满上限（voteLimit=3，但只有 2 件不是自己的）
+    // 投满 2 票（只有 01、03 不是自己的）
     for (const no of ['01', '03']) {
       await send('POST', `/events/${SLUG}/votes/${idOf(no)}`, undefined, AS('lixiao'));
     }
-    const left = await send('POST', `/events/${SLUG}/votes/${idOf('01')}`, undefined, AS('lixiao'));
-    expect(left.json().voted).toBe(false);  // 撤回，不是报错
+    const full = (await get(`/events/${SLUG}`, AS('lixiao'))).json();
+    expect(full.me.votes).toHaveLength(2);
 
-    // 别人也来投，给 01 堆票
+    /*
+      票数故意这样铺：03 票最多，但它同时会拿到评委奖；04 票第二多且
+      没有评委奖。于是「人气奖与一二三等奖互斥」这条规则必须跳过 03、
+      落到 04——不互斥的话会落到 03，而规则禁止一个人抱两个奖。
+    */
     for (const who of ['wutong', 'zhoumu', 'judge-a', 'judge-b']) {
       await send('POST', `/events/${SLUG}/votes/${idOf('03')}`, undefined, AS(who));
     }
+    for (const who of ['wutong', 'judge-a', 'judge-b']) {
+      await send('POST', `/events/${SLUG}/votes/${idOf('04')}`, undefined, AS(who));
+    }
+  });
+
+  it('打分锁定与投票截止是两回事：锁了分还能投票', async () => {
+    // 打分锁在 1 分钟前，投票还开着
+    const cur = (await get(`/events/${SLUG}`)).json() as { event: { config: Record<string, unknown> } };
+    const d = cur.event.config.deadlines as Record<string, string>;
+    const now = Date.now();
+    await send('PATCH', `/events/${SLUG}`, {
+      config: {
+        ...cur.event.config,
+        deadlines: {
+          ...d,
+          judgeLock: new Date(now - 60_000).toISOString(),
+          voteOpen: new Date(now - 60_000).toISOString(),
+          vote: new Date(now + 60 * 60_000).toISOString(),
+        },
+      },
+    }, AS('admin'));
+
+    const after = (await get(`/events/${SLUG}`)).json();
+    expect(after.event.judgingLocked).toBe(true);
+    expect(after.event.votingOpen).toBe(true);
+
+    const idea = await sql<{ id: string }[]>`
+      SELECT id FROM ispace.event_ideas WHERE finalist_no = '01'
+    `;
+    const score = await send('PUT', `/events/${SLUG}/scores/${idea[0]!.id}`, {
+      dims: [1, 1, 1, 1], submit: true,
+    }, AS('judge-a'));
+    expect(score.statusCode, '打分该被锁住').toBe(403);
   });
 
   it('投票期间不对外暴露票数', async () => {
@@ -501,7 +624,11 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     expect(byNo['02'].judged).toBe(1);
     expect(byNo['02'].rank).toBe(1);
     expect(byNo['01'].judged).toBe(1);       // judge-b 的草稿没算进来
-    expect(ranking.map((x: { rank: number }) => x.rank)).toEqual([1, 2, 3]);
+    /*
+      04 一个评委都没打过分，所以它没有名次（null），而不是排在第 4。
+      编一个名次出来会让颁奖时把零分作品当成第四名。
+    */
+    expect(ranking.map((x: { rank: number | null }) => x.rank)).toEqual([1, 2, 3, null]);
   });
 
   it('排名只有管理员能看', async () => {
@@ -516,15 +643,32 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     expect(pub.stats.voteTotal).toBeGreaterThan(0);
     expect(pub.finalists[0].votes).not.toBeNull();
 
-    const awards = pub.awards as { key: string; no: string; judgeScore: number | null; votes: number; comment: string | null }[];
+    const awards = pub.awards as {
+      key: string; no: string; judgeScore: number | null; votes: number;
+      comment: string | null; desc: string; dims: number[] | null;
+    }[];
     const first = awards.find((a) => a.key === 'first')!;
     expect(first.no).toBe('02');                  // 评委平均分最高
     expect(first.judgeScore).toBe(86);
     expect(first.comment).toContain('评语');       // 取了一条已提交的评语
 
-    // 人气奖按票数，和评委名次无关：03 被四个人投过
+    // 颁奖大屏要用的两项：一句话介绍与各维度均分
+    expect(first.desc.length).toBeGreaterThan(0);
+    expect(first.dims).toHaveLength(4);
+    expect(first.dims!.reduce((n, v) => n + v, 0)).toBeCloseTo(first.judgeScore!, 1);
+
+    /*
+      互斥：03 票数最多（4 票），但它拿了评委奖，所以人气奖跳过它，
+      落到票数第二的 04。这条就是本届新加的「与一二三等奖互斥」。
+    */
+    const byVotes = [...pub.finalists].sort((a: { votes: number }, b: { votes: number }) => b.votes - a.votes);
+    expect(byVotes[0]!.no, '票王应是 03').toBe('03');
+    const judgeWinners = awards.filter((a) => a.judgeScore != null).map((a) => a.no);
+    expect(judgeWinners).toContain('03');
+
     const popular = awards.find((a) => a.key === 'popular')!;
-    expect(popular.no).toBe('03');
+    expect(popular.no, '人气奖该跳过已拿评委奖的 03').toBe('04');
+    expect(judgeWinners).not.toContain(popular.no);
     expect(popular.judgeScore).toBeNull();
 
     // 入围奖人人有份，不是一个名次，不进获奖名单

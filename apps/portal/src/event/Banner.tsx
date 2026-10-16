@@ -5,19 +5,24 @@ import {
 } from '@ispace/contracts';
 import { Button } from '@ispace/ui';
 import { api } from '../api';
-import { AsciiBits, EventKeyframes } from './visual';
+import { BitField } from './BitField';
+import { EVENT_JUDGES } from './judges';
+import { Caret, DOTS_ON_ORANGE, DotMatrix, EventKeyframes } from './visual';
 
 /**
- * 「我的页面」顶部的 1024 横幅。
+ * 「我的页面」顶部的 1024 腰带。
  *
  * ┌─ 它自己决定要不要出现 ────────────────────────────────────────────┐
- * │ 活动结束（phase='ended'）就整块不渲染——横幅自动下线，不需要有人     │
+ * │ 活动结束（phase='ended'）就整块不渲染——腰带自动下线，不需要有人     │
  * │ 在 11 月初记得回来删掉这段代码。拿不到活动数据也不渲染：首页不该      │
  * │ 因为一个活动接口抽风而多出一块报错。                                │
  * └────────────────────────────────────────────────────────────────────┘
  *
  * 文案跟着阶段走，并且**跟着「我」走**：还没交创意写「交创意报名」，交了
  * 写「已交创意『X』」。这一下不额外请求——活动接口本身就带 me 那一块。
+ *
+ * 版式照设计稿：一条横的，左边一块点阵 1024，中间 tag + 标题 + 一句说明，
+ * 右边一颗按钮，整条都可以点。右侧那个出血的巨大 1024 是水印。
  */
 export function EventBanner() {
   const [data, setData] = useState<EventResponse | null>(null);
@@ -25,78 +30,91 @@ export function EventBanner() {
   useEffect(() => {
     /*
       吞掉错误：这是首页上的一块装饰性入口，活动不存在、接口挂了、
-      还没跑迁移，都该表现为「没有横幅」，而不是首页上一条报错。
+      还没跑迁移，都该表现为「没有腰带」，而不是首页上一条报错。
     */
     void api.event(CURRENT_EVENT_SLUG).then(setData).catch(() => setData(null));
   }, []);
 
   if (!data || data.event.phase === 'ended') return null;
 
-  const { event, me, stats, finalists } = data;
-  const copy = bannerCopy(event.phase, data);
+  const copy = bannerCopy(data);
+  const go = (hash?: string) => { location.href = EVENT_PATH + (hash ?? ''); };
 
   return (
-    <div style={{
-      position: 'relative', overflow: 'hidden', borderRadius: 'var(--radius-16)',
-      backgroundColor: 'var(--tabby-orange)',
-      backgroundImage: 'radial-gradient(var(--tabby-orange-hover) 1.2px, transparent 1.2px)',
-      backgroundSize: '20px 20px',
-      padding: 'var(--space-12) var(--space-12) var(--space-10)',
-      marginTop: 'var(--space-12)',
-      display: 'flex', flexDirection: 'column', gap: 'var(--space-3)',
-    }}>
+    <div
+      onClick={() => go()}
+      style={{
+        position: 'relative', overflow: 'hidden',
+        background: 'var(--tabby-orange)', borderRadius: 'var(--radius-16)',
+        padding: '24px 28px', marginTop: 'var(--space-12)',
+        display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
+        cursor: 'pointer',
+      }}
+    >
+      {/*
+        点阵靠 commit 关键帧逐格入场。腰带挂在「我的页面」上，不经过活动页，
+        所以这里要自己挂一份——否则 animation 指向一个不存在的名字，
+        整块点阵会直接定在终态，少掉入场那一下。
+      */}
       <EventKeyframes />
+
+      {/* 指针扫过腰带时亮起的 0/1。半径比大页面小一圈，稿上是 120。 */}
+      <BitField rgb="255,255,255" alpha={0.5} glow="255,255,255" glowAlpha={0.14} radius={120} />
+
+      {/* 出血的巨大 1024。纯装饰，不可选中也不吃点击。 */}
       <span aria-hidden="true" className="mono" style={{
-        position: 'absolute', right: -24, bottom: -58, fontWeight: 800, fontSize: 150,
-        lineHeight: 1, letterSpacing: '-.06em', color: 'var(--tabby-orange-hover)',
+        position: 'absolute', right: -28, top: '50%', transform: 'translateY(-50%)',
+        fontWeight: 800, fontSize: 210, lineHeight: 1, letterSpacing: '-.06em',
+        color: 'var(--tabby-orange-hover)',
         whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
       }}>1024</span>
 
-      <div style={{
-        position: 'relative', display: 'flex', alignItems: 'flex-start',
-        gap: 'var(--space-6)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', flex: 1, minWidth: 0 }}>
-          <span className="mono" style={{
-            fontWeight: 800, fontSize: 34, lineHeight: 0.9, letterSpacing: '-.04em',
-            color: 'var(--text-heading)',
-          }}>1024</span>
-          <span style={{
-            background: 'var(--text-heading)', color: '#fff', borderRadius: 100,
-            padding: '3px 9px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
-          }}>{PHASE_LABEL[event.phase]}</span>
-        </div>
-        <AsciiBits color="var(--text-heading)" />
+      {/*
+        点阵 1024，和活动详情页 hero 用的是同一个字模与同一套橙底配色——
+        腰带是那一页的入口，两处的 1024 应该是同一个东西，不是一个点阵
+        加一个排版字。
+
+        格子取 8px：hero 那块是 13px 的主视觉，这里只是腰带上的一个记号，
+        照搬会把整条压垮；但再往下到 6px，点阵就细得只剩一片纹理，远看认
+        不出是 1024——而认得出才是换它的理由。8px 高 68px，与右边两行文案
+        等高。
+      */}
+      <div style={{ position: 'relative', flex: 'none' }}>
+        <DotMatrix size={8} gap={2} radius={2} palette={DOTS_ON_ORANGE} />
       </div>
 
-      <span style={{
-        position: 'relative', fontSize: 'var(--text-card-title)',
-        fontWeight: 'var(--weight-bold)', color: 'var(--text-heading)',
-      }}>{copy.title}</span>
-      <span style={{
-        position: 'relative', maxWidth: 420, fontSize: 'var(--text-sm)',
-        lineHeight: 1.6, color: 'var(--text-heading)',
-      }}>{copy.desc}</span>
-
       <div style={{
-        position: 'relative', display: 'flex', alignItems: 'center',
-        gap: 'var(--space-6)', paddingTop: 'var(--space-2)',
+        position: 'relative', flex: 1, minWidth: 260,
+        display: 'flex', flexDirection: 'column', gap: 6,
       }}>
-        <Button variant="primary" size="sm" onClick={() => { location.href = EVENT_PATH; }}>
-          活动详情
-        </Button>
-        {(me?.isJudge || me?.isAdmin) && finalists.length > 0 && (
-          <a href={`${EVENT_PATH}/judge`} style={{
-            fontSize: 'var(--text-sm)', fontWeight: 600,
-            color: 'var(--text-heading)', textDecoration: 'underline',
-          }}>去打分</a>
-        )}
-        <span style={{ flex: 1 }} />
-        <span className="mono" style={{
-          fontSize: 'var(--text-xs)', color: 'var(--text-heading)', opacity: 0.66,
-        }}>
-          {event.phase === 'signup' ? `${stats.ideaCount} 个创意` : `${finalists.length} 个入围`}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {/*
+            阶段标签后面跟一个终端光标，和活动页标题后面那颗是同一个组件。
+            它说明这个阶段是**活的**——报名中就是此刻还能报，不是一块写死的
+            状态牌；阶段一翻页，这里的字跟着换，光标继续闪。
+          */}
+          <span style={{
+            background: 'var(--text-heading)', color: '#fff', borderRadius: 100,
+            padding: '3px 10px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+          }}>{PHASE_LABEL[data.event.phase]}<Caret color="#fff" /></span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-heading)' }}>
+            {copy.title}
+          </span>
+        </div>
+        <span style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-heading)' }}>
+          {copy.desc}
         </span>
+      </div>
+
+      <div style={{ position: 'relative', flex: 'none' }}>
+        {/*
+          按钮自己带目标小节的锚点，和整条腰带的「进活动页」不是一回事：
+          stopPropagation 免得外层再跳一次，把锚点冲掉。
+        */}
+        <Button
+          variant="primary"
+          onClick={(e) => { e.stopPropagation(); go(copy.hash); }}
+        >{copy.btn}</Button>
       </div>
     </div>
   );
@@ -104,65 +122,115 @@ export function EventBanner() {
 
 const PHASE_LABEL: Record<EventPhase, string> = {
   signup: '报名中',
-  screening: '评委初筛',
+  screening: '创意初筛',
   building: '入围制作',
-  demo: '今天路演',
-  result: '已公布',
+  demo: '展示答辩',
+  result: '结果公布',
   ended: '已结束',
 };
 
-function bannerCopy(phase: EventPhase, data: EventResponse): { title: string; desc: string } {
-  const { event, me, finalists, awards } = data;
+/**
+ * 每个阶段腰带上写什么。
+ *
+ * 措辞照设计稿，日期与件数一律从 config/stats 算——稿上是写死的演示数字，
+ * 照抄过来就会出现「收到 42 个创意」而实际只有 7 个这种事。
+ */
+function bannerCopy(data: EventResponse): {
+  title: string; desc: string; btn: string; hash?: string;
+} {
+  const { event, me, stats, finalists, awards } = data;
   const d = event.config.deadlines;
   const idea = me?.idea;
 
-  switch (phase) {
+  switch (event.phase) {
     case 'signup':
       return idea
         ? {
             title: `已交创意「${idea.name}」`,
-            desc: `${md(d.idea)} 12:00 截止前可以改，当天下午公布入围名单。`,
+            desc: `${mdhm(d.idea)} 截止前可以改，${hm(d.screening)} 公布入围。`,
+            btn: '进入活动页',
           }
         : {
             title: '1024 程序员节 · 交创意报名',
-            desc: `1024·AI创新赛现已开放报名，提交创意即可参赛。${md(d.idea)} 截止。`,
+            desc: `1024·AI创新赛现已开放报名，提交创意即可参赛。${mdhm(d.idea)} 截止。`,
+            btn: '活动详情',
           };
     case 'screening':
       return {
-        title: '创意已截止，评委初筛中',
-        desc: `${md(d.screening)} 公布入围名单，入围即得 ¥200 京东卡。`,
+        title: `评委初筛中 · 今天 ${hm(d.screening)} 公布入围`,
+        /* 评委人数走固定名册，与活动页一致；理由见 judges.ts */
+        desc: `收到 ${stats.ideaCount} 个创意，${EVENT_JUDGES.length} 位评委投票选出入围名单。`,
+        btn: '进入活动页',
       };
     case 'building':
-      return idea?.finalist
-        ? {
-            title: `「${idea.name}」入围了`,
-            desc: `${md(d.work)} 前提交作品，${md(d.award)} 上午现场路演。`,
-          }
-        : {
-            title: `${finalists.length} 个项目入围`,
-            desc: `${md(d.award)} 上午现场路演，全员扫码投票选最佳人气奖。`,
-          };
+      if (idea?.finalist) {
+        return me?.work
+          ? {
+              title: `已交作品「${me.work.name}」`,
+              desc: `${md(d.work)} 截止前都可以换，${md(d.award)} 上午现场路演。`,
+              btn: '进入活动页',
+            }
+          : {
+              title: '你的创意入围了',
+              desc: `入围即得 ¥200 京东卡。${md(d.work)} 前交作品，${md(d.award)} 上午现场路演。`,
+              btn: '提交作品',
+            };
+      }
+      return {
+        title: '入围名单公布了',
+        desc: `${finalists.length} 个创意正在做，${mdhm(d.voteOpen)} 起可以投人气票，`
+          + `${md(d.award)} 上午来${event.venue ? ` ${event.venue.replace(/^上午\s*/, '').split(' · ')[0]} ` : ''}看路演。`,
+        btn: '看入围名单',
+        hash: `#${SEC_WORKS}`,
+      };
     case 'demo':
       return {
-        title: '今天路演，扫码投票',
-        desc: `${finalists.length} 个入围项目现场演示，每人 ${event.config.voteLimit} 票选最佳人气奖。`,
+        /* startsAt 允许为空（阶段可以被手工钉住），那就不写时间 */
+        title: event.startsAt ? `今天 ${hm(event.startsAt)} 现场路演` : '今天现场路演',
+        desc: `${finalists.length} 个入围项目依次路演，评委现场打分；`
+          + `最佳人气奖投票 ${hm(d.vote)} 截止。`,
+        btn: '去投票',
+        hash: `#${SEC_WORKS}`,
       };
     case 'result': {
       const first = awards?.[0];
       return {
-        title: first ? `${first.name}：${first.ideaName}` : '获奖名单已公布',
-        desc: first ? `${first.who} · ${first.money}。点开看完整获奖名单。` : '点开看完整获奖名单。',
+        title: '获奖名单公布了',
+        desc: first
+          ? `${first.name}「${first.ideaName}」${first.who}。一二三等奖和最佳人气奖都在活动页。`
+          : '一二三等奖和最佳人气奖都在活动页。',
+        btn: '看获奖名单',
+        hash: `#${SEC_RESULTS}`,
       };
     }
     default:
-      return { title: '1024 程序员节', desc: '本届已结束。' };
+      return { title: '1024 程序员节', desc: '本届已结束。', btn: '活动详情' };
   }
 }
 
+/* 与 Activity 里的 SEC 对应。那边是私有的，这里只用到两个，就地写明。 */
+const SEC_WORKS = 'ev-sec-works';
+const SEC_RESULTS = 'ev-sec-results';
+
+function parts(iso: string, opts: Intl.DateTimeFormatOptions) {
+  const p = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', ...opts })
+    .formatToParts(new Date(iso));
+  return (t: string) => p.find((x) => x.type === t)?.value ?? '';
+}
+
+/** 10.19 */
 function md(iso: string): string {
-  const p = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
-  }).formatToParts(new Date(iso));
-  const get = (t: string) => p.find((x) => x.type === t)?.value ?? '';
-  return `${get('month')}.${get('day')}`;
+  const g = parts(iso, { month: '2-digit', day: '2-digit' });
+  return `${g('month')}.${g('day')}`;
+}
+
+/** 12:00 */
+function hm(iso: string): string {
+  const g = parts(iso, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${g('hour')}:${g('minute')}`;
+}
+
+/** 10.19 12:00 */
+function mdhm(iso: string): string {
+  return `${md(iso)} ${hm(iso)}`;
 }

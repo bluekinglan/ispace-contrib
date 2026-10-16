@@ -21,6 +21,7 @@ export function EventKeyframes() {
       @keyframes blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
       @keyframes commit { from { opacity: 0; transform: scale(.3) } to { opacity: 1; transform: scale(1) } }
       @keyframes spin { to { transform: rotate(360deg) } }
+      @keyframes awardRise { from { opacity: 0; transform: translateY(40px) } to { opacity: 1; transform: none } }
     `}</style>
   );
 }
@@ -145,42 +146,14 @@ export function BinaryTen({ size, gap, color }: { size: number; gap: number; col
   );
 }
 
-/** 「1024」四个字符的 ASCII 位图，8 列 × 4 行。右上角那块小方阵。 */
-export function AsciiBits({ color }: { color: string }) {
-  const bits = '1024'
-    .split('')
-    .map((ch) => ch.charCodeAt(0).toString(2).padStart(8, '0'))
-    .join('')
-    .split('');
-  return (
-    <div
-      aria-hidden="true"
-      style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 9px)', gap: 3, paddingTop: 2 }}
-    >
-      {bits.map((b, i) => (
-        <span
-          key={i}
-          style={{
-            width: 9, height: 9, borderRadius: 2, boxSizing: 'border-box',
-            border: `1.5px solid ${color}`,
-            background: b === '1' ? color : 'transparent',
-            animation: 'commit .5s cubic-bezier(.16,1,.3,1) both',
-            animationDelay: `${i * 45}ms`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
 /** 闪烁的终端光标。跟在「程序员节」后面。 */
 export function Caret({ color }: { color: string }) {
   return (
     <span
       aria-hidden="true"
       style={{
-        display: 'inline-block', width: '.4em', height: '.82em', background: color,
-        borderRadius: '.05em', marginLeft: '.1em', verticalAlign: '-.01em',
+        display: 'inline-block', width: '.4em', height: '1em', background: color,
+        borderRadius: '.05em', marginLeft: '.1em', verticalAlign: '-.12em',
         animation: 'blink 1.1s step-end infinite',
       }}
     />
@@ -259,20 +232,30 @@ export function EIcon({ name, size = 16, style }: { name: EventIconName; size?: 
   );
 }
 
-/** 小节标题：橙色 0x 编号 + 标题。活动页每一段都用它开头。 */
-export function SectionHead({ no, title, sub }: { no: string; title: string; sub?: ReactNode }) {
+/**
+ * 小节标题。居中：编号 + 中文标题一行，底下一行英文副标题。
+ *
+ * `side` 是右侧那个贴边的小槽（入围进度之类）。它绝对定位在标题行右端，
+ * 到 720px 以下回到标题下方正常流——窄屏上贴边放不下。
+ */
+export function SectionHead({ no, title, en, note, side }: {
+  no: string;
+  title: string;
+  en: string;
+  note?: ReactNode;
+  side?: ReactNode;
+}) {
   return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span className="mono" style={{
-          background: 'var(--tabby-orange)', color: 'var(--text-heading)',
-          borderRadius: 6, padding: '2px 7px', fontSize: 11, fontWeight: 700,
-        }}>{no}</span>
-        <span style={{ fontSize: 19, fontWeight: 700, color: 'var(--text-heading)' }}>{title}</span>
+    <div className="ev-section-head">
+      <div className="ev-section-heading">
+        <div className="ev-section-primary">
+          <span className="ev-section-number">{no}</span>
+          <span className="ev-section-title">{title}</span>
+        </div>
+        <span className="ev-section-en">{en}</span>
+        {note ? <span className="ev-section-note">{note}</span> : null}
       </div>
-      {sub ? (
-        <span style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-tertiary)' }}>{sub}</span>
-      ) : null}
-    </>
+      {side ? <div className="ev-section-side">{side}</div> : null}
+    </div>
   );
 }

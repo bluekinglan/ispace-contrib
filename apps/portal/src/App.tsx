@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { mergeMarketResults, type MarketItem } from './market-state';
 import {
   EVENT_PATH, MARKETPLACE_CATEGORIES,
   type App as AppEntity, type AppGroup,
@@ -6,6 +7,7 @@ import {
 import { Activity } from './event/Activity';
 import { Judge } from './event/Judge';
 import { Screen } from './event/Screen';
+import { Award } from './event/Award';
 import { EventBanner } from './event/Banner';
 import {
   AppIcon, Avatar, AvatarMenu, Badge, Button, Card, CoverBanner, Dialog, fmtBytes, fmtDate,
@@ -78,6 +80,7 @@ export function App() {
   if (path === EVENT_PATH) return <Activity />;
   if (path === `${EVENT_PATH}/judge`) return <Judge />;
   if (path === `${EVENT_PATH}/screen`) return <Screen />;
+  if (path === `${EVENT_PATH}/award`) return <Award />;
 
   return <Space />;
 }
@@ -216,12 +219,15 @@ function Shell({
   const [qrOpen, setQrOpen] = useState(false);
   const [apkOpen, setApkOpen] = useState(false);
   const compact = useCompactHeader();
+  const narrow = useMedia(NARROW_HEADER);
+  const phone = useMedia(PHONE_HEADER);
   return (
     <div style={{ minHeight: '100vh', background: 'var(--surface-canvas)' }}>
       <header style={{
         position: 'sticky', top: 0, zIndex: 10,
-        display: 'flex', alignItems: 'center', gap: 'var(--space-8)',
-        height: 57, padding: '0 var(--space-12)',
+        display: 'flex', alignItems: 'center',
+        gap: phone ? 'var(--space-4)' : 'var(--space-8)',
+        height: 57, padding: phone ? '0 var(--space-5)' : '0 var(--space-12)',
         background: 'var(--glass-bg)', backdropFilter: 'var(--glass-blur)',
         WebkitBackdropFilter: 'var(--glass-blur)',
         borderBottom: '1px solid var(--border-subtle)',
@@ -251,15 +257,24 @@ function Shell({
           onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
         >
           <img src="/favicon.svg" alt="" aria-hidden="true" style={{ width: 26, height: 26, flex: 'none', display: 'block' }} />
-          <strong style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)' }}>
-            {c('app.name')}
-          </strong>
+          {!phone && (
+            <strong style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)' }}>
+              {c('app.name')}
+            </strong>
+          )}
         </a>
-        <span className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-          {location.host}/{me.user.username}
-        </span>
+        {/*
+          窄屏不显示：这是顶栏里最长的一段（域名 + 用户名），而顶栏里
+          其余东西都是定宽的，它一出现就把右侧顶出视口、冒出横向滚动条。
+          真要用这个地址的时候走「分享」，那里给的是可复制的完整链接。
+        */}
+        {!compact && (
+          <span className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+            {location.host}/{me.user.username}
+          </span>
+        )}
 
-        <div style={{ marginLeft: 'var(--space-8)' }}>
+        <div style={{ marginLeft: phone ? 0 : 'var(--space-8)' }}>
           <Tabs
             value={tab}
             onChange={onTab}
@@ -273,6 +288,7 @@ function Shell({
         <div style={{ flex: 1 }} />
 
         {/* 设计稿顶栏：搜索框内嵌 15px 放大镜，控制台按钮带 12px 滑块图标 */}
+        {!narrow && (
         <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
           <Icon
             name="search"
@@ -292,33 +308,40 @@ function Shell({
             }}
           />
         </div>
+        )}
         {/*
           装 App 是"还没装的人"才做的事，而没装的人恰恰不会想到去翻头像菜单。
           放在顶栏才有被撞见的机会。ghost 而不是描边按钮：它常驻可见，
           但左边的「我的页面/创意市场」才是这个界面的主干。
         */}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => setApkOpen(true)}
-          aria-label="下载手机 App"
-          title="下载手机 App（安卓）"
-        >
-          <Icon name="mobile" size={12} />
-          {!compact && '下载 App'}
-        </Button>
-        <a href="/console" style={{ textDecoration: 'none' }}>
-          <Button size="sm">
-            <Icon name="sliders" size={12} />
-            {c('nav.console')}
+        {!phone && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setApkOpen(true)}
+            aria-label="下载手机 App"
+            title="下载手机 App（安卓）"
+          >
+            <Icon name="mobile" size={12} />
+            {!compact && '下载 App'}
           </Button>
-        </a>
+        )}
+        {!phone && (
+          <a href="/console" style={{ textDecoration: 'none' }}>
+            <Button size="sm">
+              <Icon name="sliders" size={12} />
+              {c('nav.console')}
+            </Button>
+          </a>
+        )}
         <AvatarMenu
           name={me.user.displayName}
           subtitle={`${location.host}/${me.user.username}`}
           items={[
             { label: '我的空间', href: `/${me.user.username}/` },
             { label: '控制台', href: '/console' },
+            /* 顶栏那颗按钮在手机档被收掉了，这里补上，功能不丢 */
+            ...(phone ? [{ label: '下载手机 App', onClick: () => setApkOpen(true) }] : []),
             { label: '手机扫码登录', onClick: () => setQrOpen(true) },
             {
               label: '退出登录',
@@ -354,6 +377,24 @@ function Shell({
 
 const COMPACT_HEADER = '(max-width: 900px)';
 
+/*
+  顶栏一共三档，断点是量出来的，不是拍的：
+
+  完整顶栏（产品名 + 标签页 + 240px 搜索框 + 下载 App + 控制台 + 头像）
+  的最小宽度是 **786px**。所以
+
+    > 820   完整
+    561–820 去掉搜索框 → 最小 530px
+    ≤ 560   只留图标、标签页、头像 → 最小约 314px（320 的屏也放得下）
+
+  compact（900）管的是另一件事：把「下载 App」的文字收成纯图标。
+
+  砍掉的都有别的去处：控制台和空间地址在头像菜单里本来就有，
+  下载 App 在最窄那一档挪进头像菜单，搜索在页面主体里还有一个。
+*/
+const NARROW_HEADER = '(max-width: 820px)';
+const PHONE_HEADER = '(max-width: 560px)';
+
 /**
  * 顶栏窄到放不下文字时的信号。
  *
@@ -365,6 +406,18 @@ const COMPACT_HEADER = '(max-width: 900px)';
  * 用 matchMedia 而不是媒体查询：这套界面的样式全写在行内，
  * 没有一张可以挂断点的样式表。
  */
+function useMedia(query: string): boolean {
+  const [on, setOn] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const sync = () => setOn(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, [query]);
+  return on;
+}
+
 function useCompactHeader(): boolean {
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_HEADER).matches);
   useEffect(() => {
@@ -720,7 +773,12 @@ function Section({
       </div>
       <div style={{
         display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        /*
+          min(300px, 100%) 而不是直接 300px：容器比 300 还窄时（320 的手机
+          减掉两侧内边距只剩 272），写死的最小轨道会把整个栅格撑出视口，
+          于是整页多一条横向滚动条。min() 让轨道在这种时候跟着容器缩。
+        */
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
       }}>
         {apps.map((a) => <AppCard key={a.id} app={a} owner={owner} onShare={onShare} />)}
       </div>
@@ -756,7 +814,7 @@ function BackendSection({
       </div>
       <div style={{
         display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
       }}>
         {items.map((b) => {
           const url = `/svc/${owner}/${b.name}/`;
@@ -891,7 +949,7 @@ function InstalledSection({
       )}
       <div style={{
         display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
       }}>
         {items.map((a) => {
           const url = `/${a.owner_username}/${a.slug}/`;
@@ -979,7 +1037,7 @@ function InstalledBackendSection({
       )}
       <div style={{
         display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
       }}>
         {items.map((b) => {
           const url = `/svc/${b.owner_username}/${b.name}/`;
@@ -1212,12 +1270,12 @@ function EmptyState() {
  * 直接读；kind 专属字段（app_id/slug、backend_id/has_cover 等）先判 kind
  * 再读。
  */
-type MarketItem = ({ kind: 'app' } & Listing) | ({ kind: 'backend' } & BackendListing);
-
 function Market({ isAdmin }: { isAdmin: boolean }) {
-  const [items, setItems] = useState<MarketItem[]>([]);
+  const [{ items, errors }, setMarket] = useState<{ items: MarketItem[]; errors: string[] }>({ items: [], errors: [] });
   const [busy, setBusy] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const loadVersion = useRef(0);
   /** 正在看提示词的那条 listing。null 表示弹窗关着。做同款只对页面成立。 */
   const [remix, setRemix] = useState<Listing | null>(null);
   const [msg, setMsg] = useState<{ text: string; tone: 'info' | 'error' } | null>(null);
@@ -1230,19 +1288,23 @@ function Market({ isAdmin }: { isAdmin: boolean }) {
     合并后按安装数/发布时间重新排一遍：两条查询各自在服务端排过，但那只保证
     各自有序，交错合并后整体顺序要在这里重新算。
   */
-  const load = () => void Promise.all([
-    api.marketplace()
-      .then((r) => r.listings.map((l): MarketItem => ({ kind: 'app', ...l })))
-      .catch(() => [] as MarketItem[]),
-    api.backendMarketplace()
-      .then((r) => r.listings.map((b): MarketItem => ({ kind: 'backend', ...b })))
-      .catch(() => [] as MarketItem[]),
-  ]).then(([apps, backends]) => {
-    setItems([...apps, ...backends].sort((a, b) =>
-      b.install_count - a.install_count
-      || +new Date(b.published_at) - +new Date(a.published_at)));
-  }).finally(() => setLoaded(true));
-  useEffect(load, []);
+  const load = useCallback(() => {
+    const version = ++loadVersion.current;
+    setLoading(true);
+    void Promise.allSettled([
+      api.marketplace().then((r) => r.listings.map((l): MarketItem => ({ kind: 'app', ...l }))),
+      api.backendMarketplace().then((r) => r.listings.map((b): MarketItem => ({ kind: 'backend', ...b }))),
+    ]).then(([apps, backends]) => {
+      if (version !== loadVersion.current) return;
+      setMarket((previous) => mergeMarketResults(previous.items, apps, backends));
+      setLoaded(true);
+      setLoading(false);
+    });
+  }, []);
+  useEffect(() => {
+    load();
+    return () => { ++loadVersion.current; };
+  }, [load]);
 
   /**
    * 管理员下架别人上架的内容。
@@ -1283,7 +1345,16 @@ function Market({ isAdmin }: { isAdmin: boolean }) {
     } finally { setBusy(null); }
   };
 
-  if (!loaded) return null;
+  if (!loaded) return <p role="status">正在加载创意市场…</p>;
+
+  const loadError = errors.length > 0 ? (
+    <div role="alert" style={{ marginBottom: 'var(--space-8)' }}>
+      <p>{errors.join('；')}。{items.length > 0 ? '已加载的内容仍可查看，部分内容可能不是最新。' : '请重试。'}</p>
+      <Button onClick={load} disabled={loading}>{loading ? '正在重试…' : '重新加载'}</Button>
+    </div>
+  ) : null;
+
+  if (items.length === 0 && loadError) return loadError;
 
   if (items.length === 0) {
     return (
@@ -1323,6 +1394,7 @@ function Market({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <>
+      {loadError}
       <div style={{ marginBottom: 'var(--space-12)' }}>
         <Greeting>Made by colleagues</Greeting>
         <h1 style={{ margin: 'var(--space-2) 0 var(--space-3)', font: 'var(--weight-bold) var(--text-2xl)/1.2 var(--font-sans)', color: 'var(--text-heading)' }}>
@@ -1365,7 +1437,7 @@ function Market({ isAdmin }: { isAdmin: boolean }) {
               {kw ? `没有匹配「${q}」的内容` : '这个分类下还没有内容'}
             </p>
           ) : (
-          <div style={{ display: 'grid', gap: 'var(--space-8)', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+          <div style={{ display: 'grid', gap: 'var(--space-8)', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))' }}>
         {visible.map((item) => {
           const href = item.kind === 'app'
             ? `/${item.owner_username}/${item.slug}/`

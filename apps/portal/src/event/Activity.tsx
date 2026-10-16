@@ -6,8 +6,11 @@ import {
 } from '@ispace/contracts';
 import { Avatar, Badge, Button, GlobalKeyframes, Input, Tabs, Toast, ToneProvider } from '@ispace/ui';
 import { api } from '../api';
+import { BitField } from './BitField';
+import { EVENT_JUDGES, judgeAvatar } from './judges';
+import { EventLayoutStyles } from './styles';
 import {
-  AsciiBits, BinaryTen, Caret, DOTS_ON_ORANGE, DotMatrix, EIcon, EventKeyframes,
+  BinaryTen, Caret, DOTS_ON_ORANGE, DotMatrix, EIcon, EventKeyframes,
   Mark, SectionHead, type EventIconName,
 } from './visual';
 
@@ -29,8 +32,30 @@ import {
  * 把 10.19 12:00 的截止交给浏览器本地时钟，等于把表往前拨就能接着改。
  */
 
-/** 手机设计稿的内容宽度。电脑上打开就居中成这么一条，不拉伸成宽屏。 */
-const COL = 460;
+/**
+ * 内容最大宽度，与样式表里 `.ev-page` 的一致——底部固定栏要和内容对齐。
+ *
+ * 这一页不再是固定宽的手机列：设计师这版给了四列 / 三列领奖台 / 两栏日程，
+ * 宽屏要撑开才成立，窄屏由 styles.tsx 的断点逐级塌成一列。
+ */
+const COL = 1120;
+
+/**
+ * 交创意 / 交作品那两个底部弹层的宽度。
+ *
+ * 不跟 COL 走：弹层是一张表单，拉到 1120 宽之后每行输入框横跨整个屏幕，
+ * 读起来反而费劲。表单该窄。
+ */
+const SHEET = 560;
+
+/** 页内小节的锚点。hero 的次按钮靠它滚过去。 */
+const SEC = {
+  works: 'ev-sec-works',
+  results: 'ev-sec-results',
+  rules: 'ev-sec-rules',
+  awards: 'ev-sec-awards',
+  schedule: 'ev-sec-schedule',
+} as const;
 
 /** 报名要身份。登完回到这一页——portal 根路径认 ?redirect= 且只放行站内路径。 */
 function gotoLogin(): void {
@@ -104,6 +129,17 @@ export function Activity() {
 
   useEffect(() => { void load(); }, [load]);
 
+  /*
+    首页腰带的按钮会带着 #ev-sec-works 这类锚点跳过来。浏览器自带的锚点
+    定位在这里不管用：跳转时整页还是 loading，目标小节根本还没渲染出来。
+    所以等数据到位之后再滚一次。
+  */
+  useEffect(() => {
+    if (!data || !location.hash) return;
+    const el = document.getElementById(location.hash.slice(1));
+    if (el) el.scrollIntoView({ block: 'start' });
+  }, [data]);
+
   if (err) {
     return (
       <Center>
@@ -114,7 +150,7 @@ export function Activity() {
   }
   if (!data) return <Center><Pulse /></Center>;
 
-  const { event, stats, finalists, awards, judges, me } = data;
+  const { event, stats, finalists, awards, me } = data;
   const phase = event.phase;
   const cfg = event.config;
 
@@ -122,7 +158,7 @@ export function Activity() {
   let n = 0;
   const no = () => `0x0${(n += 1)}`;
 
-  const showCards = (phase === 'building' || phase === 'demo') && finalists.length > 0;
+  const showCards = (phase === 'building' || phase === 'demo' || event.votingOpen) && finalists.length > 0;
   const showAwards = phaseAtLeast(phase, 'result') && !!awards?.length;
   const showRules = phase === 'signup' || phase === 'screening' || phase === 'building';
 
@@ -130,28 +166,36 @@ export function Activity() {
     <ToneProvider tone="business">
       <GlobalKeyframes />
       <EventKeyframes />
+      <EventLayoutStyles />
       <div style={{ minHeight: '100vh', background: 'var(--surface-canvas)' }}>
         <div style={{
-          maxWidth: COL, margin: '0 auto', minHeight: '100vh',
-          background: 'var(--surface-canvas)', position: 'relative',
-          /* 底部操作栏是固定定位的，给内容留出等高的垫子，免得压住最后一行 */
-          paddingBottom: phase === 'result' || phase === 'ended' ? 24 : 92,
+          minHeight: '100vh', background: 'var(--surface-canvas)', position: 'relative',
         }}>
-          <Hero data={data} />
+          {/* 内容区这一层用橙字橙光，压在浅色底上才看得见 */}
+          <BitField rgb="249,115,22" alpha={0.42} glow="251,146,60" glowAlpha={0.1} />
+          <Hero
+            data={data}
+            onIdea={() => (me ? setSheet('idea') : gotoLogin())}
+            onWork={() => (me ? setSheet('work') : gotoLogin())}
+          />
 
-          <div style={{ padding: '26px 16px 28px', display: 'flex', flexDirection: 'column', gap: 32 }}>
+          <div className="ev-page">
             {showCards && (
-              <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <section className="ev-section-block ev-section-block--works" id={SEC.works}>
                 <SectionHead
                   no={no()}
                   title={phase === 'building' ? '入围名单' : '今天路演的作品'}
-                  sub={phase === 'building'
-                    ? `${finalists.length} 个创意入围，编号就是 ${fmtMd(cfg.deadlines.award)} 的路演顺序 · ${fmtMd(cfg.deadlines.work)} 前交作品`
-                    : `${finalists.length} 件 · 扫码投票选最佳人气奖，每人 ${cfg.voteLimit} 票，不能投给自己`}
+                  en={phase === 'building' ? 'FINALISTS' : "TODAY'S DEMOS"}
+                  /* 进度条贴在标题行右端，窄屏回到标题下方（见 ev-section-side） */
+                  side={phase === 'building'
+                    ? <Progress done={stats.workCount} total={finalists.length} />
+                    : undefined}
                 />
-                {phase === 'building' && (
-                  <Progress done={stats.workCount} total={finalists.length} />
-                )}
+                <span className="ev-section-caption">
+                  {phase === 'building'
+                    ? `${finalists.length} 个创意入围，编号就是 ${fmtMd(cfg.deadlines.award)} 的路演顺序 · ${fmtMd(cfg.deadlines.work)} 前交作品`
+                    : `${finalists.length} 件 · 最佳人气奖投票 ${fmtHm(cfg.deadlines.vote)} 截止，每人 ${cfg.voteLimit} 票 · 不能投给自己`}
+                </span>
                 <FinalistCards
                   data={data}
                   onVoted={load}
@@ -161,11 +205,12 @@ export function Activity() {
             )}
 
             {showAwards && (
-              <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <section className="ev-section-block ev-section-block--works" id={SEC.results}>
                 <SectionHead
                   no={no()}
                   title="获奖名单"
-                  sub={`${fmtMdHm(cfg.deadlines.award)} 公布 · 评委 ${stats.judgeCount} 人 · 投票 ${stats.voteTotal} 张`}
+                  en="WINNERS"
+                  side={`${fmtMdHm(cfg.deadlines.award)} 公布 · 评委 ${EVENT_JUDGES.length} 人 · 投票 ${stats.voteTotal} 张`}
                 />
                 <Awards awards={awards!} myName={me?.displayName} />
                 {/*
@@ -178,7 +223,14 @@ export function Activity() {
 
             {showRules && <HowSection no={no()} cfg={cfg} />}
 
-            <PrizesSection no={no()} cfg={cfg} judges={judges} awardDate={fmtMd(cfg.deadlines.award)} />
+            <PrizesSection
+              no={no()}
+              cfg={cfg}
+              awardDate={fmtMd(cfg.deadlines.award)}
+              /* 评委入口按设计稿放在打分那一栏里，不再单独占一条吸底栏 */
+              showJudgeLink={(!!me?.isJudge || !!me?.isAdmin) && !event.judgingLocked
+                && phaseAtLeast(phase, 'building')}
+            />
 
             <ScheduleSection no={no()} cfg={cfg} />
 
@@ -195,11 +247,6 @@ export function Activity() {
             </footer>
           </div>
 
-          <BottomBar
-            data={data}
-            onIdea={() => (me ? setSheet('idea') : gotoLogin())}
-            onWork={() => (me ? setSheet('work') : gotoLogin())}
-          />
         </div>
       </div>
 
@@ -231,7 +278,9 @@ export function Activity() {
 
 // ── 头图 ──────────────────────────────────────────────────────────────
 
-function Hero({ data }: { data: EventResponse }) {
+function Hero({ data, onIdea, onWork }: {
+  data: EventResponse; onIdea: () => void; onWork: () => void;
+}) {
   const { event, stats, finalists, awards, me } = data;
   const cfg = event.config;
   const phase = event.phase;
@@ -241,140 +290,184 @@ function Hero({ data }: { data: EventResponse }) {
   const count = countdown(data);
   const mine = myStatus(data);
 
+  /*
+    宽屏铺开、窄屏摞起来的是同一棵 DOM：版式差异全在 styles.tsx 的断点里，
+    不按屏宽渲染两套（那会在 SSR/首屏之间闪一下，也多一份要同步的代码）。
+    点阵与方块的尺寸是画出来的，没法靠 CSS 改，所以这里按视口挑一次。
+  */
+  const dots = useDotScale();
+
   return (
     <header style={{
       position: 'relative', overflow: 'hidden',
       backgroundColor: 'var(--tabby-orange)',
       backgroundImage: 'radial-gradient(var(--tabby-orange-hover) 1.2px, transparent 1.2px)',
       backgroundSize: '20px 20px',
-      padding: '20px 18px 18px',
     }}>
+      {/* 指针扫过时亮起来的 0/1。参数照稿：橙底上用白字白光。 */}
+      <BitField rgb="255,255,255" alpha={0.55} glow="255,255,255" glowAlpha={0.14} />
+
       {/* 出血的巨大 1024。纯装饰，不可选中也不吃点击。 */}
-      <span aria-hidden="true" className="mono" style={{
-        position: 'absolute', right: -46, top: 150, fontWeight: 800, fontSize: 230,
+      <span aria-hidden="true" className="mono ev-hero-mark" style={{
+        position: 'absolute', fontWeight: 800,
         lineHeight: 1, letterSpacing: '-.06em', color: 'var(--tabby-orange-hover)',
         whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
       }}>1024</span>
 
-      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 18 }}>
-        <a
-          href="/"
-          aria-label="回 iSpace"
-          style={{
-            width: 36, height: 36, margin: '-6px 2px -6px -8px', borderRadius: 10,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'var(--text-heading)', textDecoration: 'none',
-          }}
-        >
-          <EIcon name="back" size={20} />
-        </a>
-        <Mark size={22} />
-        <span style={{ fontFamily: 'var(--font-serif)', fontSize: 14, color: 'var(--text-heading)' }}>
-          iSpace
-        </span>
-        <span style={{ flex: 1 }} />
-        {me ? (
-          <div style={{ background: 'var(--surface-1)', borderRadius: 100, padding: 2, display: 'flex' }}>
-            <Avatar name={me.displayName} size={28} />
-          </div>
-        ) : (
-          /*
-            未登录不摆头像，也不摆「登录」按钮——这一页的主张就是不必登录。
-            要身份的时候底部那颗按钮会去要。
-          */
-          <span className="mono" style={{ fontSize: 11, color: 'var(--text-heading)', opacity: 0.72 }}>
-            {cfg.dateLabel.split(' ')[0]}
+      <div className="ev-hero-inner">
+        <div className="ev-hero-top">
+          <a
+            href="/"
+            aria-label="回 iSpace"
+            style={{
+              width: 36, height: 36, margin: '-6px 2px -6px -8px', borderRadius: 10,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-heading)', textDecoration: 'none',
+            }}
+          >
+            <EIcon name="back" size={20} />
+          </a>
+          <Mark size={22} />
+          <span style={{
+            fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 800,
+            letterSpacing: '-.03em', color: 'var(--text-heading)',
+          }}>
+            iSpace
           </span>
-        )}
-      </div>
-
-      <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-          {event.edition && (
-            <span className="mono" style={{
-              background: 'var(--text-heading)', color: '#fff', borderRadius: 100,
-              padding: '4px 10px', fontSize: 11,
-            }}>{event.edition}</span>
-          )}
-          <AsciiBits color="var(--text-heading)" />
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12 }}>
-          <div style={{ paddingBottom: 4 }}>
-            <DotMatrix size={6} gap={2} radius={1.5} palette={DOTS_ON_ORANGE} />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <BinaryTen size={9} gap={3} color="var(--text-heading)" />
-            </span>
-            <span style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: 'var(--text-heading)' }}>
-              {event.title}<Caret color="var(--text-heading)" />
-            </span>
-          </div>
-        </div>
-
-        {event.subtitle && (
-          <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-heading)' }}>
-            {event.subtitle}
-          </span>
-        )}
-
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
-          fontSize: 12, fontWeight: 600, color: 'var(--text-heading)',
-        }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <EIcon name="calendar" size={14} /><span>{cfg.dateLabel}</span>
-          </span>
-          {event.venue && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <EIcon name="pin" size={14} /><span>{event.venue}</span>
+          <span style={{ flex: 1 }} />
+          {me ? (
+            <div style={{ background: 'var(--surface-1)', borderRadius: 100, padding: 2, display: 'flex' }}>
+              <Avatar name={me.displayName} size={28} />
+            </div>
+          ) : (
+            /*
+              未登录不摆头像，也不摆「登录」按钮——这一页的主张就是不必登录。
+              要身份的时候底部那颗按钮会去要。
+            */
+            <span className="mono" style={{ fontSize: 11, color: 'var(--text-heading)', opacity: 0.72 }}>
+              {cfg.dateLabel.split(' ')[0]}
             </span>
           )}
         </div>
 
-        {/* 当前阶段卡：倒数 + 我的状态。整页唯一一处随「我」变化的地方。 */}
-        <div style={{
-          marginTop: 4, background: 'var(--surface-1)', borderRadius: 16,
-          padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
-          boxShadow: 'var(--shadow-card)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{
-              fontSize: 10, fontWeight: 600, letterSpacing: '.05em',
-              textTransform: 'uppercase', color: 'var(--text-tertiary)',
-            }}>当前阶段</span>
-            <Badge tone="brand" dot>{PHASE_LABEL[phase]}</Badge>
+        <div className="ev-hero-main">
+          <div className="ev-hero-copy">
+            {event.edition && (
+              <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                <span className="mono" style={{
+                  background: 'var(--text-heading)', color: '#fff', borderRadius: 100,
+                  padding: dots.wide ? '5px 12px' : '4px 10px', fontSize: dots.wide ? 12 : 11,
+                }}>{event.edition}</span>
+              </div>
+            )}
+
+            <div className="ev-hero-title-row">
+              {/* flex:none——点阵是画出来的固定宽，被 flex 压缩就塌成一条竖线 */}
+              <div style={{ flex: 'none', padding: dots.wide ? '2px 0 6px' : '0 0 4px' }}>
+                <DotMatrix
+                  size={dots.size}
+                  gap={dots.gap}
+                  radius={dots.radius}
+                  palette={DOTS_ON_ORANGE}
+                />
+              </div>
+              <div className="ev-hero-title-col" style={{ gap: dots.wide ? 8 : 5 }}>
+                {/*
+                  宽屏方块与公式并排，窄屏竖着摞——标题右边那一列在手机上
+                  放不下一整行。
+                */}
+                <span style={{
+                  display: 'flex', flexDirection: dots.wide ? 'row' : 'column',
+                  alignItems: dots.wide ? 'center' : 'flex-start', gap: dots.wide ? 10 : 5,
+                  flexWrap: 'wrap',
+                }}>
+                  <BinaryTen size={dots.wide ? 12 : 9} gap={4} color="var(--text-heading)" />
+                  <span className="mono" style={{
+                    fontSize: dots.wide ? 13 : 11, fontWeight: 700, color: 'var(--text-heading)',
+                  }}>= 2¹⁰ = 0x400 = 1 KB</span>
+                </span>
+                <span className="ev-hero-title">
+                  {event.title}<Caret color="var(--text-heading)" />
+                </span>
+              </div>
+            </div>
+
+            {event.subtitle && <span className="ev-hero-sub">{event.subtitle}</span>}
+
+            {cfg.intro && <span className="ev-hero-intro">{cfg.intro}</span>}
+
+            <div className="ev-hero-meta">
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <EIcon name="calendar" size={14} /><span>{cfg.dateLabel}</span>
+              </span>
+              {event.venue && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <EIcon name="pin" size={14} /><span>{event.venue}</span>
+                </span>
+              )}
+            </div>
+
+            <HeroCta data={data} onIdea={onIdea} onWork={onWork} />
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <span className="mono" style={{
-              fontSize: 36, fontWeight: 700, lineHeight: 1, color: 'var(--text-heading)',
-            }}>{count.num}</span>
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{count.unit}</span>
-          </div>
-          <div style={{ height: 1, background: 'var(--border-subtle)' }} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-heading)' }}>{mine.title}</span>
-            <span style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{mine.hint}</span>
+
+          {/* 当前阶段卡：倒数 + 我的状态。整页唯一一处随「我」变化的地方。 */}
+          <div className="ev-hero-stage">
+            <div style={{
+              /* 稿上是 rgba(255,255,255,.8)：压在橙底上要透出一点底下的点阵 */
+              background: 'rgba(255,255,255,.8)', borderRadius: 'var(--radius-16)',
+              padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14,
+              boxShadow: 'var(--shadow-card)',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 600, letterSpacing: '.05em',
+                  textTransform: 'uppercase', color: 'var(--text-tertiary)',
+                }}>当前阶段</span>
+                <Badge tone="brand" dot>{PHASE_LABEL[phase]}</Badge>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <span className="mono" style={{
+                  fontSize: 44, fontWeight: 700, lineHeight: 1, color: 'var(--text-heading)',
+                }}>{count.num}</span>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{count.unit}</span>
+              </div>
+              <div style={{ height: 1, background: 'var(--border-subtle)' }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {me && <Avatar name={me.displayName} size={28} />}
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-heading)' }}>
+                    {mine.title}
+                  </span>
+                  <span style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+                    {mine.hint}
+                  </span>
+                </div>
+              </div>
+              <div style={{ height: 1, background: 'var(--border-subtle)' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                {heroStats(data).map((m) => (
+                  <Metric key={m.label} value={m.value} label={m.label} />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
-        <div style={{
-          display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6, marginTop: 2,
-        }}>
+        <div className="ev-hero-steps">
           {STEP_NAMES.map((name, i) => {
             const cur = i === si && !done;
             const past = i < si || done;
             return (
-              <div key={name} style={{
-                minWidth: 0, borderRadius: 10, padding: 8,
-                display: 'flex', flexDirection: 'column', gap: 2,
+              <div key={name} className="ev-hero-step" style={{
+                minWidth: 0,
                 background: cur ? 'var(--text-heading)' : past ? 'rgba(255,255,255,.32)' : 'transparent',
                 border: `1px solid ${cur ? 'var(--text-heading)' : past ? 'transparent' : 'rgba(0,18,23,.22)'}`,
                 color: cur ? '#fff' : 'var(--text-heading)',
               }}>
-                <span style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{name}</span>
-                <span className="mono" style={{ fontSize: 10, whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' }}>{name}</span>
+                <span className="mono" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
                   {(cfg.how[i]?.date ?? '').replace(/\s*–\s*/, '–')}
                 </span>
               </div>
@@ -386,6 +479,32 @@ function Hero({ data }: { data: EventResponse }) {
   );
 }
 
+/**
+ * 阶段卡右下角那两个数。取哪两个跟着阶段走：报名期关心有多少人交了创意，
+ * 入围后关心作品交了几件，出结果后关心一共投了多少票。
+ */
+function heroStats(data: EventResponse): { value: string; label: string }[] {
+  const { event, stats, finalists } = data;
+  switch (event.phase) {
+    case 'signup':
+    case 'screening':
+      return [
+        { value: String(stats.ideaCount), label: '个创意已提交' },
+        { value: String(EVENT_JUDGES.length), label: '位评委' },
+      ];
+    case 'building':
+      return [
+        { value: `${stats.workCount}/${finalists.length}`, label: '件作品已交' },
+        { value: String(EVENT_JUDGES.length), label: '位评委' },
+      ];
+    default:
+      return [
+        { value: String(finalists.length), label: '件入围作品' },
+        { value: String(stats.voteTotal), label: '张人气票' },
+      ];
+  }
+}
+
 const PHASE_LABEL: Record<EventPhase, string> = {
   signup: '报名中',
   screening: '评委初筛',
@@ -395,7 +514,34 @@ const PHASE_LABEL: Record<EventPhase, string> = {
   ended: '已结束',
 };
 
-/** 大数字 + 一句说明。每个阶段数的是不同的东西。 */
+/**
+ * 点阵与二进制方块的尺寸。
+ *
+ * 这几块是用格子「画」出来的，尺寸进不了 CSS 媒体查询，只能按视口挑一次。
+ *
+ * ┌─ 为什么不照搬设计稿 ──────────────────────────────────────────────┐
+ * │ 稿上点阵恒为 13px 格子（整块 365px 宽），窄屏靠裁切解决——设计师给   │
+ * │ 的 701px 截图里公式那行就是被右边裁掉的。701 上这样没问题，标题还     │
+ * │ 在；可到 375 的手机上，365px 的点阵会把「程序员节」整个挤出屏幕。     │
+ * │ 这一页主要是被转发到群里、用手机点开的，所以 720 以下分两档缩。      │
+ * └────────────────────────────────────────────────────────────────────┘
+ */
+function useDotScale(): { size: number; gap: number; radius: number; wide: boolean } {
+  const read = () => {
+    const w = typeof window === 'undefined' ? 1280 : window.innerWidth;
+    if (w > 720) return { size: 13, gap: 3, radius: 3, wide: true };
+    if (w > 480) return { size: 9, gap: 3, radius: 2, wide: false };
+    return { size: 6, gap: 2, radius: 1.5, wide: false };
+  };
+  const [v, setV] = useState(read);
+  useEffect(() => {
+    const on = () => setV(read());
+    window.addEventListener('resize', on);
+    return () => window.removeEventListener('resize', on);
+  }, []);
+  return v;
+}
+
 function countdown(data: EventResponse): { num: string; unit: string } {
   const { event, stats, finalists, awards } = data;
   const { now, phase, config: cfg } = event;
@@ -531,7 +677,12 @@ function FinalistCards({
   say: (m: string, tone?: 'info' | 'error') => void;
 }) {
   const { event, finalists, me } = data;
-  const voting = event.phase === 'demo';
+  /*
+    投票开不开由服务端算好（event.votingOpen）。本届窗口是 10.22 18:00 –
+    10.23 12:00，横跨 building 与 demo 两个阶段——用 `phase === 'demo'` 判断
+    会把 10.22 晚上那半程整个挡掉。
+  */
+  const voting = event.votingOpen;
   const [busy, setBusy] = useState<string | null>(null);
 
   const vote = async (f: EventFinalist) => {
@@ -551,7 +702,7 @@ function FinalistCards({
   };
 
   return (
-    <>
+    <div className="ev-card-grid">
       {finalists.map((f) => {
         const isMine = !!me && f.ownerUsername === me.username;
         const voted = !!me && me.votes.includes(f.ideaId);
@@ -660,7 +811,7 @@ function FinalistCards({
           </article>
         );
       })}
-    </>
+    </div>
   );
 }
 
@@ -673,7 +824,7 @@ function Awards({ awards, myName }: { awards: EventResponse['awards']; myName?: 
     first: 'trophy', second: 'medal', third: 'award', popular: 'heart',
   };
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="ev-card-grid">
       {/* 一等奖单独一张大卡：橙底，分数与票数并排 */}
       {top && (
         <div style={{
@@ -823,51 +974,74 @@ function Metric({ value, label }: { value: string; label: string }) {
   );
 }
 
+/** 评委头像。照片取不到（文件没发上去、被挡了）就退回文字头像，不留碎图。 */
+function JudgeFace({ judge }: { judge: typeof EVENT_JUDGES[number] }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) return <Avatar name={judge.name} size={48} />;
+  return (
+    <img
+      src={judgeAvatar(judge.key)}
+      alt=""
+      aria-hidden="true"
+      onError={() => setBroken(true)}
+      style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', display: 'block' }}
+    />
+  );
+}
+
 // ── 怎么参加 ──────────────────────────────────────────────────────────
+
+/*
+  以下三段走 styles.tsx 的 `ev-*` 类名，不像本文件其余部分那样内联。
+  原因只有一个：设计稿这几段是响应式的（四列 → 两列 → 一列），断点写
+  不进 style 属性。排版交给样式表，这里只管把数据填进去。
+*/
 
 function HowSection({ no, cfg }: { no: string; cfg: EventConfig }) {
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHead no={no} title="怎么参加" />
-      {cfg.how.map((h, i) => (
-        <div key={h.title} style={{
-          display: 'flex', gap: 12, background: 'var(--surface-1)',
-          border: '1px solid var(--border-subtle)', borderRadius: 14, padding: 14,
-        }}>
-          <span style={{
-            width: 36, height: 36, flex: 'none', borderRadius: 10,
-            background: i === 0 ? 'var(--tabby-orange)' : 'var(--surface-2)',
-            color: 'var(--text-heading)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <EIcon name={(h.icon as EventIconName) ?? 'idea'} size={18} />
-          </span>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-heading)' }}>{h.title}</span>
-              <span className="mono" style={{ flex: 'none', fontSize: 11, color: 'var(--text-secondary)' }}>
-                {h.date}
+    <section className="ev-section-block" id={SEC.rules}>
+      <SectionHead no={no} title="怎么参加" en="HOW TO PARTICIPATE" />
+      <div className="ev-how-grid">
+        {cfg.how.map((h) => {
+          const icon = (h.icon as EventIconName) ?? 'idea';
+          return (
+            <div key={h.title} className="ev-how-card">
+              {/* 右下角压出血的大图标：重复的是卡片里已有的信息，对读屏藏掉 */}
+              <span className="ev-how-watermark" aria-hidden="true">
+                <EIcon name={icon} size={112} />
               </span>
+              <div className="ev-how-content">
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                }}>
+                  <span className="ev-how-icon" style={{ background: 'var(--tabby-orange)' }}>
+                    <EIcon name={icon} size={18} />
+                  </span>
+                  <span className="mono" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {h.date}
+                  </span>
+                </div>
+                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-heading)' }}>
+                  {h.title}
+                </span>
+                <span style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+                  {h.desc}
+                </span>
+              </div>
             </div>
-            <span style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)' }}>{h.desc}</span>
-          </div>
+          );
+        })}
+      </div>
+      <div className="ev-panel-card">
+        <div className="ev-rules-title ev-panel-title">参赛规则</div>
+        <div className="ev-rules-list">
+          {cfg.rules.map((t, i) => (
+            <div key={t} className="ev-rule-row">
+              <span className="ev-rule-index">{`0${i + 1}`}</span>
+              <span className="ev-rule-text">{t}</span>
+            </div>
+          ))}
         </div>
-      ))}
-      <div style={{
-        background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-        borderRadius: 14, padding: '6px 16px',
-      }}>
-        {cfg.rules.map((t, i) => (
-          <div key={t} style={{
-            display: 'flex', gap: 10, padding: '10px 0',
-            borderBottom: i === cfg.rules.length - 1 ? 'none' : '1px solid var(--border-subtle)',
-          }}>
-            <span className="mono" style={{
-              flex: 'none', fontSize: 11, color: 'var(--text-tertiary)', paddingTop: 2,
-            }}>{`0${i + 1}`}</span>
-            <span style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-primary)' }}>{t}</span>
-          </div>
-        ))}
       </div>
     </section>
   );
@@ -875,243 +1049,293 @@ function HowSection({ no, cfg }: { no: string; cfg: EventConfig }) {
 
 // ── 奖项与评选 ────────────────────────────────────────────────────────
 
-function PrizesSection({
-  no, cfg, judges, awardDate,
-}: {
-  no: string; cfg: EventConfig; judges: EventResponse['judges']; awardDate: string;
-}) {
-  const TONE: Record<EventPrize['tone'], { bg: string; bd: string; fg: string }> = {
-    brand:  { bg: 'var(--tabby-orange)', bd: 'var(--tabby-orange)', fg: 'var(--text-heading)' },
-    dark:   { bg: 'var(--dark-bg)', bd: 'var(--dark-bg)', fg: '#ffffff' },
-    subtle: { bg: 'var(--tabby-orange-subtle)', bd: 'rgba(251,146,60,.35)', fg: 'var(--text-heading)' },
-    plain:  { bg: 'var(--surface-1)', bd: 'var(--border-subtle)', fg: 'var(--text-heading)' },
-  };
-  const ICONS: EventIconName[] = ['trophy', 'medal', 'award', 'heart', 'card'];
-
-  return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHead no={no} title="奖项与评选" />
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        {cfg.prizes.map((p, i) => {
-          const t = TONE[p.tone] ?? TONE.plain;
-          return (
-            <div key={p.name} style={{
-              background: t.bg, border: `1px solid ${t.bd}`, color: t.fg,
-              borderRadius: 14, padding: '12px 14px',
-              display: 'flex', flexDirection: 'column', gap: 4,
-              /* 一等奖占满一行：它是这组里唯一的主角 */
-              gridColumn: i === 0 ? 'span 2' : 'auto',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <EIcon name={ICONS[i] ?? 'award'} size={18} />
-                <span style={{ fontSize: 13, fontWeight: 700 }}>{p.name}</span>
-                <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 11, opacity: 0.72 }}>{p.count}</span>
-              </div>
-              <span className="mono" style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>
-                {p.money}
-              </span>
-              <span style={{ fontSize: 11, lineHeight: 1.5, opacity: 0.8 }}>{p.how}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {judges.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-heading)' }}>
-            评委 · {judges.length} 位
-          </span>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {judges.map((j) => (
-              <span key={j.username} style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-                borderRadius: 100, padding: '4px 10px 4px 4px',
-              }}>
-                <Avatar name={j.displayName} size={22} />
-                <span style={{ fontSize: 12, color: 'var(--text-primary)' }}>{j.displayName}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div style={{
-        background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-        borderRadius: 14, padding: '6px 16px',
-      }}>
-        <div style={{
-          padding: '10px 0', borderBottom: '1px solid var(--border-subtle)',
-          fontSize: 13, fontWeight: 600, color: 'var(--text-heading)',
-        }}>
-          {awardDate} 答辩怎么打分
-        </div>
-        {cfg.criteria.map((c, i) => (
-          <div key={c.key} style={{
-            display: 'flex', alignItems: 'baseline', gap: 10, padding: '10px 0',
-            borderBottom: i === cfg.criteria.length - 1 ? 'none' : '1px solid var(--border-subtle)',
-          }}>
-            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
-              <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{c.key}</span>
-              <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{c.desc}</span>
-            </div>
-            <span className="mono" style={{
-              flex: 'none', fontSize: 12, fontWeight: 700, color: 'var(--text-heading)',
-            }}>{c.max} 分</span>
-          </div>
-        ))}
-      </div>
-      <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
-        路演作品全靠评委打分排名次，定一、二、三等奖；现场扫码投票只用来选最佳人气奖。
-      </p>
-    </section>
-  );
+/** 把 "¥5,000" 读成 5000。读不出来返回 null——拿不准就不显示那行汇总。 */
+function yuan(s: string): number | null {
+  const m = /^¥\s*([\d,]+)$/.exec(s.trim());
+  return m?.[1] ? Number(m[1].replace(/,/g, '')) : null;
 }
 
-type EventPrize = EventConfig['prizes'][number];
+function PrizesSection({
+  no, cfg, awardDate, showJudgeLink,
+}: {
+  no: string; cfg: EventConfig; awardDate: string; showJudgeLink: boolean;
+}) {
+  /*
+    前三名上领奖台（二在左、一居中更高、三在右，由 ev-main-prize-rank-N 定位），
+    其余的走下面两格小卡。顺序取 config，因为结算 awardRules 也按这个顺序。
+  */
+  const main = cfg.prizes.slice(0, 3);
+  const mini = cfg.prizes.slice(3);
+  const MAIN_ICONS: EventIconName[] = ['trophy', 'medal', 'award'];
+  const MINI_ICONS: EventIconName[] = ['heart', 'card'];
 
-// ── 日程 ──────────────────────────────────────────────────────────────
+  /* 标题下那行汇总：现金奖总额由前三名加出来，任一项读不出金额就整行不显示 */
+  const cash = main.map((p) => yuan(p.money));
+  const last = mini[mini.length - 1];
+  const note = cash.every((n): n is number => n !== null)
+    ? `现金奖 ¥${cash.reduce((a, b) => a + b, 0).toLocaleString('en-US')}${
+      last ? ` · ${last.name} ${last.money}` : ''}`
+    : undefined;
 
-function ScheduleSection({ no, cfg }: { no: string; cfg: EventConfig }) {
+  const screening = cfg.screening ?? [];
+
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHead no={no} title={`${fmtMd(cfg.deadlines.award)} 线下`} />
-      {cfg.schedule.map((block) => (
-        <div key={block.label} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>{block.label}</span>
-            <span className="mono" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{block.time}</span>
-          </div>
-          <div style={{
-            background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-            borderRadius: 14, padding: '6px 14px',
-          }}>
-            {block.rows.map((r, i) => (
-              <div key={`${r.time}${r.title}`} style={{
-                display: 'flex', gap: 10, padding: '10px 0',
-                borderBottom: i === block.rows.length - 1 ? 'none' : '1px solid var(--border-subtle)',
-              }}>
-                <span className="mono" style={{
-                  flex: 'none', width: 40, fontSize: 11, fontWeight: 600,
-                  color: 'var(--text-heading)', paddingTop: 3,
-                }}>{r.time}</span>
-                <span style={{
-                  width: 26, height: 26, flex: 'none', borderRadius: 8,
-                  background: r.icon === 'gift' || r.icon === 'mail'
-                    ? 'var(--tabby-orange-subtle)' : 'var(--surface-2)',
-                  color: 'var(--text-heading)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <EIcon name={(r.icon as EventIconName) ?? 'zap'} size={15} />
+    <section className="ev-section-block" id={SEC.awards}>
+      <SectionHead
+        no={no}
+        title="奖项与评选"
+        en="AWARDS & JUDGING"
+        note={note ? <span className="mono">{note}</span> : undefined}
+      />
+
+      <div className="ev-prize-showcase">
+        <div className="ev-main-prizes">
+          {main.map((p, i) => (
+            <div key={p.name} className={`ev-main-prize ev-main-prize-rank-${i + 1}`}>
+              <span className="ev-prize-rank-deco" aria-hidden="true">{`0${i + 1}`}</span>
+              {/*
+                奖牌是装饰。onError 把自己藏起来：缺一张图不该在领奖台上
+                留个破图图标，这一页会被转发到群里。
+              */}
+              <img
+                className="ev-prize-medal"
+                src={`/event-prize-${i + 1}.png`}
+                alt=""
+                aria-hidden="true"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              />
+              <div className="ev-main-prize-meta">
+                <span className="ev-main-prize-icon">
+                  <EIcon name={MAIN_ICONS[i] ?? 'award'} size={30} />
                 </span>
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-heading)' }}>{r.title}</span>
-                  <span style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-secondary)' }}>{r.desc}</span>
+              </div>
+              <span className="ev-main-prize-name">{p.name}</span>
+              <div className="ev-main-prize-value">
+                <span className="ev-main-prize-label">奖金</span>
+                <span className="ev-main-prize-money">{p.money}</span>
+                <span className="ev-main-prize-how">{p.how}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {mini.length > 0 && (
+          <div className="ev-mini-prizes">
+            {mini.map((p, i) => (
+              <div key={p.name} className="ev-mini-prize">
+                <span className="ev-mini-prize-icon">
+                  <EIcon name={MINI_ICONS[i] ?? 'award'} size={24} />
+                </span>
+                <div className="ev-mini-prize-copy">
+                  <span className="ev-mini-prize-name">{p.name}</span>
+                  <span className="ev-mini-prize-how">{p.how}</span>
+                </div>
+                <div className="ev-mini-prize-value">
+                  <span className="ev-mini-prize-money">{p.money}</span>
+                  <span className="ev-mini-prize-count">{p.count}</span>
                 </div>
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      <div className="ev-panel-card">
+        {/*
+          名单走 judges.ts 的固定名册，不读接口——那边是「谁能打分」的权限，
+          这里是「海报上印谁」。理由写在 judges.ts 开头。
+        */}
+        <div className="ev-judge-panel">
+          <span className="ev-panel-title">评委 · {EVENT_JUDGES.length} 位 TL</span>
+          <div className="ev-judge-row">
+            {EVENT_JUDGES.map((j) => (
+              <div key={j.key} className="ev-judge-cell">
+                <JudgeFace judge={j} />
+                <span style={{
+                  fontSize: 13, fontWeight: 600,
+                  color: 'var(--text-heading)', whiteSpace: 'nowrap',
+                }}>{j.name}</span>
+              </div>
+            ))}
+          </div>
         </div>
-      ))}
+        {/* 没有初筛那一栏时收成一列，否则右半边空着 */}
+        <div className={`ev-criteria-grid${screening.length ? '' : ' ev-criteria-grid--single'}`}>
+          {screening.length > 0 && (
+            <div className="ev-criteria-panel">
+              <span className="ev-panel-title">初筛看什么</span>
+              {screening.map((c) => (
+                <div key={c.key} className="ev-screen-row">
+                  <span className="ev-screen-key">{c.key}</span>
+                  <span className="ev-screen-desc">{c.desc}</span>
+                </div>
+              ))}
+              {cfg.screeningNote && (
+                <span className="ev-criteria-note">{cfg.screeningNote}</span>
+              )}
+            </div>
+          )}
+          <div className="ev-criteria-panel ev-criteria-panel-score">
+            <span className="ev-panel-title">{awardDate} 答辩怎么打分</span>
+            {cfg.criteria.map((c) => (
+              <div key={c.key} className="ev-score-row">
+                <span className="ev-score-label">{c.key}</span>
+                <span className="ev-score-desc">{c.desc}</span>
+                <span className="ev-score-leader" aria-hidden="true" />
+                <span className="ev-score-weight">{c.max} 分</span>
+              </div>
+            ))}
+            {/*
+              赛制说明走 config：这一届它就改过一次（投票从现场扫码改成全员
+              线上、人气奖与前三名互斥），写死在这里等于改规则要改代码。
+            */}
+            <span className="ev-criteria-note">
+              {cfg.judgingNote
+                ?? '路演作品全靠评委打分排名次，定一、二、三等奖；现场扫码投票只用来选最佳人气奖。'}
+            </span>
+            {showJudgeLink && (
+              <a href={`${EVENT_PATH}/judge`} style={{
+                alignSelf: 'flex-start', fontSize: 12, fontWeight: 600,
+                color: 'var(--link)',
+              }}>你是本届评委 · 打开评委打分页 →</a>
+            )}
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
 
-// ── 底部操作栏 ────────────────────────────────────────────────────────
+// ── 日程 ──────────────────────────────────────────────────────────────
 
-function BottomBar({
+/** 小节副标题要英文：10.23 → OCT 23。 */
+function enMonthDay(iso: string): string {
+  const p = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ, month: 'short', day: 'numeric',
+  }).formatToParts(new Date(iso));
+  const get = (t: string) => p.find((x) => x.type === t)?.value ?? '';
+  return `${get('month')} ${get('day')}`;
+}
+
+function ScheduleSection({ no, cfg }: { no: string; cfg: EventConfig }) {
+  return (
+    <section className="ev-section-block" id={SEC.schedule}>
+      <SectionHead
+        no={no}
+        title={`${fmtMd(cfg.deadlines.award)} 线下`}
+        en={`${enMonthDay(cfg.deadlines.award)} / OFFLINE`}
+        note={cfg.dateLabel}
+      />
+      <div className="ev-panel-card">
+        <div className="ev-schedule-grid">
+          {cfg.schedule.map((block, bi) => (
+            <div key={block.label} className="ev-schedule-column">
+              <div className="ev-schedule-header">
+                <span className="ev-schedule-code">{bi === 0 ? 'AM' : 'PM'}</span>
+                <div className="ev-schedule-title">
+                  <span className="ev-schedule-name">{block.label}</span>
+                  <span className="ev-schedule-time">{block.time}</span>
+                </div>
+              </div>
+              {block.rows.map((r) => (
+                <div key={`${r.time}${r.title}`} className="ev-schedule-item">
+                  <span className="ev-schedule-item-time">{r.time}</span>
+                  <span className="ev-schedule-item-icon" style={{
+                    background: r.icon === 'gift' || r.icon === 'mail'
+                      ? 'var(--tabby-orange-subtle)' : 'var(--surface-2)',
+                    color: 'var(--text-heading)',
+                  }}>
+                    <EIcon name={(r.icon as EventIconName) ?? 'zap'} size={18} />
+                  </span>
+                  <div className="ev-schedule-item-copy">
+                    <span className="ev-schedule-item-title">{r.title}</span>
+                    <span className="ev-schedule-item-desc">{r.desc}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── hero 里的行动按钮 ─────────────────────────────────────────────
+
+/** 滚到某个小节。目标在当前阶段没渲染时什么都不做。 */
+function scrollToSection(id: string): void {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * hero 里那一到两颗按钮，取代了原先那条吸底栏。
+ *
+ * ┌─ 为什么不吸底 ────────────────────────────────────────────────────┐
+ * │ 设计稿把动作放在日期/地点下面，和上面那段介绍连着读：先说清这是     │
+ * │ 什么、什么时候、在哪，然后才是「那我该做什么」。悬在屏幕底下的一条   │
+ * │ 栏把这个顺序打断了，而且在宽屏上尤其突兀。                          │
+ * └────────────────────────────────────────────────────────────────────┘
+ *
+ * 每个阶段「此刻该做什么」只有一件，所以主按钮永远只有一颗；次按钮是可选的
+ * 「顺便看看」，滚到页内对应小节。
+ */
+function HeroCta({
   data, onIdea, onWork,
 }: {
   data: EventResponse; onIdea: () => void; onWork: () => void;
 }) {
   const { event, me } = data;
   const { phase, config: cfg } = event;
-  if (phase === 'result' || phase === 'ended') return null;
 
-  const judgeLink = me?.isJudge || me?.isAdmin;
-  const left = me ? cfg.voteLimit - me.votes.length : cfg.voteLimit;
+  type Act = { label: string; run: () => void };
+  let primary: Act;
+  let second: Act | null = null;
+
+  switch (phase) {
+    case 'signup':
+      primary = { label: me?.idea ? '修改创意' : '提交创意', run: onIdea };
+      break;
+    case 'screening':
+      primary = { label: '看初筛怎么评', run: () => scrollToSection(SEC.awards) };
+      break;
+    case 'building':
+      if (me?.idea?.finalist) {
+        primary = { label: me.work ? '更换作品' : '提交作品', run: onWork };
+        second = { label: '看入围名单', run: () => scrollToSection(SEC.works) };
+      } else {
+        primary = { label: '看入围名单', run: () => scrollToSection(SEC.works) };
+      }
+      break;
+    case 'demo': {
+      const left = me ? cfg.voteLimit - me.votes.length : cfg.voteLimit;
+      primary = {
+        label: left > 0 ? `去投票 · 还有 ${left} 票` : `${cfg.voteLimit} 票已投完`,
+        run: () => scrollToSection(SEC.works),
+      };
+      second = { label: '今天的安排', run: () => scrollToSection(SEC.schedule) };
+      break;
+    }
+    case 'result':
+      primary = { label: '看获奖名单', run: () => scrollToSection(SEC.results) };
+      second = { label: '线下安排', run: () => scrollToSection(SEC.schedule) };
+      break;
+    default:
+      primary = { label: '看获奖作品', run: () => scrollToSection(SEC.results) };
+  }
+
+  /*
+    组件只有 sm/md 两档，稿上这两颗是 lg，差的那一档在这里补。
+    主次不同尺寸是稿里明确写的：主按钮 48 高、至少 176 宽、16px/700。
+  */
+  const PRIMARY = { minWidth: 176, height: 48, padding: '0 32px', fontSize: 16, fontWeight: 700 } as const;
+  const SECOND = { height: 44, padding: '0 20px', fontSize: 14 } as const;
 
   return (
-    <div style={{
-      position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 20,
-      display: 'flex', justifyContent: 'center',
-      background: 'var(--glass-bg)', backdropFilter: 'var(--glass-blur)',
-      WebkitBackdropFilter: 'var(--glass-blur)',
-      borderTop: '1px solid var(--border-subtle)',
-      /* 刘海屏的手势条要让位，否则按钮被压在横条下面点不着 */
-      paddingBottom: 'env(safe-area-inset-bottom, 0px)',
-    }}>
-      <div style={{
-        width: '100%', maxWidth: COL, padding: '12px 16px',
-        display: 'flex', flexDirection: 'column', gap: 8,
-      }}>
-        {judgeLink && phase === 'demo' && (
-          <a href={`${EVENT_PATH}/judge`} style={{
-            display: 'flex', alignItems: 'center', gap: 10, minHeight: 44,
-            boxSizing: 'border-box', borderRadius: 12, padding: '10px 14px',
-            background: 'var(--tabby-orange-subtle)', border: '1px solid rgba(251,146,60,.35)',
-            textDecoration: 'none',
-          }}>
-            <span style={{ display: 'flex', color: 'var(--tabby-orange-hover)' }}>
-              <EIcon name="clipboard" size={18} />
-            </span>
-            <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text-heading)' }}>
-              你是本届评委 · 去打分
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>→</span>
-          </a>
-        )}
-
-        {(phase === 'signup') && (
-          <Button variant="primary" onClick={onIdea} style={{ width: '100%' }}>
-            {me?.idea ? '修改创意' : '提交创意'}
-          </Button>
-        )}
-
-        {phase === 'screening' && (
-          <p style={{ margin: 0, textAlign: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
-            创意已截止，{fmtHm(cfg.deadlines.screening)} 公布入围名单
-          </p>
-        )}
-
-        {phase === 'building' && (
-          me?.idea?.finalist ? (
-            <Button variant="primary" onClick={onWork} style={{ width: '100%' }}>
-              {me.work ? '更换作品' : '提交作品'}
-            </Button>
-          ) : (
-            <p style={{ margin: 0, textAlign: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
-              入围作者可在 {fmtMd(cfg.deadlines.work)} 前提交作品
-            </p>
-          )
-        )}
-
-        {phase === 'demo' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>
-                {me ? (left > 0 ? `还有 ${left} 票` : `${cfg.voteLimit} 票已投完`) : `每人 ${cfg.voteLimit} 票`}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                {fmtHm(cfg.deadlines.vote)} 截止 · 不能投给自己
-              </span>
-            </div>
-            <div style={{ display: 'flex', gap: 5, flex: 'none' }}>
-              {Array.from({ length: cfg.voteLimit }, (_, i) => (
-                <span key={i} style={{
-                  width: 10, height: 10, borderRadius: 100,
-                  background: me && i < me.votes.length ? 'var(--tabby-orange)' : 'var(--surface-3)',
-                }} />
-              ))}
-            </div>
-            {!me && (
-              <Button variant="primary" size="sm" onClick={gotoLogin}>登录后投票</Button>
-            )}
-          </div>
-        )}
-      </div>
+    <div className="ev-hero-cta">
+      <Button variant="primary" onClick={primary.run} style={PRIMARY}>{primary.label}</Button>
+      {second && (
+        <Button variant="secondary" onClick={second.run} style={SECOND}>{second.label}</Button>
+      )}
     </div>
   );
 }
@@ -1157,7 +1381,7 @@ function Sheet({
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: '100%', maxWidth: COL, maxHeight: '92vh',
+          width: '100%', maxWidth: SHEET, maxHeight: '92vh',
           background: 'var(--surface-canvas)',
           borderRadius: '18px 18px 0 0',
           display: 'flex', flexDirection: 'column',

@@ -92,6 +92,16 @@ export interface EventPrize {
   tone: 'brand' | 'dark' | 'subtle' | 'plain';
 }
 
+/**
+ * 初筛看什么。给的是「评委凭什么挑」，没有分值——初筛是八位评委投票
+ * 选出入围名单，不是打分。所以不能混进 criteria：那一组的 max 之和
+ * 必须是 100，服务端按它校验评委打分。
+ */
+export interface EventScreeningPoint {
+  key: string;
+  desc: string;
+}
+
 /** 评分维度。`max` 之和必须是 100——服务端在写分时据此校验。 */
 export interface EventCriterion {
   key: string;
@@ -124,6 +134,16 @@ export interface EventAwardRule {
   money: string;
   by: 'judge' | 'votes' | 'finalist';
   rank: number;
+  /**
+   * 与已评出的奖项互斥：算这个奖时跳过已经拿过奖的作品。
+   *
+   * 本届最佳人气奖就是这样——「与一二三等奖互斥」。没有它的话，票王同时
+   * 是评委第一名时会一个人抱走两个奖，而规则写明不行。
+   *
+   * 按 awardRules 的**声明顺序**结算，所以互斥的奖项要排在它要避开的那些
+   * 之后（finalist 不占名次，不参与互斥）。
+   */
+  exclusive?: boolean;
 }
 
 export interface EventConfig {
@@ -133,6 +153,13 @@ export interface EventConfig {
   dateLabel: string;
   /** 活动有问题找谁 */
   contact: string;
+  /**
+   * 头图里那段话：一句说清整个赛程。缺省时头图不显示这一段。
+   *
+   * 和 tagline 分开：tagline 是口号（「灵感上线・AI 不设限」），这一段是
+   * 说明。转发到群里的人多半只看头图，光一句口号说不清这事要怎么参加。
+   */
+  intro?: string;
   /**
    * 各阶段的切换时刻（ISO）。events.phase 为空时由它推导当前阶段，
    * 也用于「还有几天截止」的倒数和「截止前可以改」的判断。
@@ -147,19 +174,46 @@ export interface EventConfig {
     screening: string;
     /** 交作品截止 */
     work: string;
-    /** 投票与打分锁定 */
+    /**
+     * 人气奖投票开放。
+     *
+     * 本届它落在**交作品截止之前**（10.22 18:00，而作品 10.23 00:00 截止），
+     * 所以投票窗口横跨 building 与 demo 两个阶段——不能再用「阶段等于 demo」
+     * 来判断能不能投，只能看时刻。
+     */
+    voteOpen: string;
+    /** 人气奖投票截止 */
     vote: string;
+    /**
+     * 评委打分锁定。
+     *
+     * 与 `vote` 分开，因为本届两者不是同一时刻：投票 12:00 截止，而评委
+     * 打分 11:55 就锁（上午场到 11:55 结束）。合用一个字段的话，改其中一个
+     * 一定会悄悄改掉另一个。
+     */
+    judgeLock: string;
     /** 颁奖（结果公布） */
     award: string;
     /** 活动整体结束，页面与横幅下线 */
     end: string;
   };
-  /** 每人几票（人气奖）。设计稿是 3。 */
+  /** 每人几票（人气奖）。本届 2 票。 */
   voteLimit: number;
+  /**
+   * 「奖项与评选」小节末尾那段说明：名次怎么定、人气奖怎么投、有没有互斥。
+   *
+   * 落在 config 而不是写死在页面里：它逐字描述赛制，而赛制这一届就改过
+   * 一次（投票从现场扫码改成全员线上）。写死就意味着改规则要改代码。
+   */
+  judgingNote?: string;
   rules: string[];
   how: EventHowStep[];
   prizes: EventPrize[];
   criteria: EventCriterion[];
+  /** 初筛看什么。缺省时活动页不显示这一栏。 */
+  screening?: EventScreeningPoint[];
+  /** 初筛那栏末尾的一句说明（几位评委、选几个）。理由同 judgingNote。 */
+  screeningNote?: string;
   schedule: EventScheduleBlock[];
   awardRules: EventAwardRule[];
 }
@@ -178,6 +232,16 @@ export interface EventSummary {
   phase: EventPhase;
   /** 该阶段是否由人工钉死。给管理员看，普通用户不关心。 */
   phasePinned: boolean;
+  /**
+   * 人气奖投票此刻开不开。
+   *
+   * 由服务端按 deadlines.voteOpen / vote 算好给前端，**不要在客户端重算**：
+   * 这不只是时钟不可信的问题——投票窗口横跨 building 与 demo 两个阶段，
+   * 「阶段等于 demo」这种就近判断会在 10.22 晚上把投票整段挡掉。
+   */
+  votingOpen: boolean;
+  /** 评委打分是否已锁定（11:55 之后，或已到结果公布）。 */
+  judgingLocked: boolean;
   config: EventConfig;
   /** 服务端此刻的时间。前端的倒数以它为基准，不信本机时钟。 */
   now: string;
@@ -235,6 +299,13 @@ export interface EventAward {
   votes: number;
   /** 评委留的一句话评语，取已提交评语中的一条 */
   comment: string | null;
+  /** 作品一句话介绍。颁奖大屏上揭晓后显示在名字下面。 */
+  desc: string;
+  /**
+   * 各维度的评委平均分，顺序与 config.criteria 一致，一位小数。
+   * 颁奖大屏画那四条分项柱用它。无人打分时为 null。
+   */
+  dims: number[] | null;
 }
 
 /** 登录者自己的状态。未登录时整块为 null——页面照常显示，只是不知道「我」。 */

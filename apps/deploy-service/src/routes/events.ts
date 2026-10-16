@@ -108,17 +108,42 @@ function summary(ev: EventRow, now: Date): EventSummary {
     endsAt: ev.ends_at ? ev.ends_at.toISOString() : null,
     phase: resolvePhase(ev, now),
     phasePinned: ev.phase != null,
+    votingOpen: voteWindowOpen(ev, now),
+    judgingLocked: isLocked(ev, now),
     config: ev.config,
     now: now.toISOString(),
   };
 }
 
-/** 打分与投票是否已锁定。11:55 一到就不能再改，名次按那一刻的分数排。 */
+/**
+ * 评委打分是否已锁定。11:55 一到就不能再改，名次按那一刻的分数排。
+ *
+ * 用 judgeLock 而不是 vote：本届两者不是同一时刻（投票 12:00 截止，打分
+ * 11:55 锁）。缺 judgeLock 时回落到 vote——老配置里只有那一个字段。
+ */
 function isLocked(ev: EventRow, now: Date): boolean {
   const phase = resolvePhase(ev, now);
   if (phaseAtLeast(phase, 'result')) return true;
-  const vote = ev.config?.deadlines?.vote;
-  return vote ? now.getTime() >= Date.parse(vote) : false;
+  const d = ev.config?.deadlines;
+  const at = d?.judgeLock ?? d?.vote;
+  return at ? now.getTime() >= Date.parse(at) : false;
+}
+
+/**
+ * 人气奖投票窗口是否开着。
+ *
+ * **只看时刻，不看阶段**：本届投票 10.22 18:00 开放，而作品 10.23 00:00
+ * 才截止，窗口横跨 building 与 demo 两个阶段。原先那句
+ * `phase !== 'demo'` 会把前一晚的投票全部挡掉。
+ *
+ * 缺 voteOpen 的老配置回落到「demo 阶段才开」，与改版前行为一致。
+ */
+function voteWindowOpen(ev: EventRow, now: Date): boolean {
+  const d = ev.config?.deadlines;
+  const t = now.getTime();
+  if (d?.vote && t >= Date.parse(d.vote)) return false;
+  if (d?.voteOpen) return t >= Date.parse(d.voteOpen);
+  return resolvePhase(ev, now) === 'demo';
 }
 
 /** 作品公开地址。硬件作品没有地址，只有照片。 */
@@ -423,9 +448,7 @@ export function registerEventRoutes(
     const ev = await loadEvent(slug);
     const now = new Date();
 
-    const phase = resolvePhase(ev, now);
-    const deadline = ev.config?.deadlines?.vote;
-    if (phase !== 'demo' || (deadline && now.getTime() >= Date.parse(deadline))) {
+    if (!voteWindowOpen(ev, now)) {
       throw new IspaceError(ERROR_CODES.FORBIDDEN, '投票还没开始，或者已经截止了');
     }
 
@@ -941,9 +964,10 @@ async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[]> {
 
   const meta = await sql<{
     idea_id: string; kind: string | null; app_slug: string | null;
-    app_owner: string | null; note: string | null;
+    app_owner: string | null; note: string | null; plan: string; pitch: string | null;
   }[]>`
     SELECT i.id AS idea_id, w.kind, a.slug AS app_slug, au.username AS app_owner,
+           i.plan, w.pitch,
            (SELECT s.note FROM ispace.event_scores s
              WHERE s.idea_id = i.id AND s.submitted_at IS NOT NULL
                AND s.note IS NOT NULL AND length(trim(s.note)) > 0
@@ -956,14 +980,50 @@ async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[]> {
   `;
   const metaById = new Map(meta.map((m) => [m.idea_id, m]));
 
+  /*
+    各维度的评委平均分，颁奖大屏那四条分项柱要用。
+
+    在 JS 里按下标平均而不是写 SQL：维度个数由 config.criteria 决定
+    （本届 4 个，明年可能不是），SQL 里拆 jsonb 数组要按固定下标展开，
+    改维度数就得改这条查询。
+  */
+  const dimRows = await sql<{ idea_id: string; dims: number[] }[]>`
+    SELECT idea_id, dims FROM ispace.event_scores
+     WHERE event_id = ${ev.id} AND submitted_at IS NOT NULL
+  `;
+  const dimsById = new Map<string, number[]>();
+  const dimCount = new Map<string, number>();
+  for (const r of dimRows) {
+    if (!Array.isArray(r.dims)) continue;
+    const acc = dimsById.get(r.idea_id) ?? r.dims.map(() => 0);
+    r.dims.forEach((v, i) => { acc[i] = (acc[i] ?? 0) + (Number(v) || 0); });
+    dimsById.set(r.idea_id, acc);
+    dimCount.set(r.idea_id, (dimCount.get(r.idea_id) ?? 0) + 1);
+  }
+  const avgDims = (ideaId: string): number[] | null => {
+    const acc = dimsById.get(ideaId);
+    const n = dimCount.get(ideaId) ?? 0;
+    if (!acc || n === 0) return null;
+    return acc.map((v) => Math.round((v / n) * 10) / 10);
+  };
+
   const out: EventAward[] = [];
+  /*
+    已经拿过奖的作品。`exclusive` 的奖项要跳过它们——本届规则写明
+    「最佳人气奖与一二三等奖互斥」，不然票王同时是评委第一名时会一个人
+    抱走两个奖。按 awardRules 的声明顺序结算，所以互斥的奖排在后面。
+  */
+  const taken = new Set<string>();
   for (const rule of rules) {
     // 入围奖人人有份，不是一个名次，不进获奖名单那块（它在奖项列表里说明）
     if (rule.by === 'finalist') continue;
-    const row = rule.by === 'votes' ? byVotes[rule.rank - 1] : ranking[rule.rank - 1];
+    const pool = rule.by === 'votes' ? byVotes : ranking;
+    const eligible = rule.exclusive ? pool.filter((r) => !taken.has(r.ideaId)) : pool;
+    const row = eligible[rule.rank - 1];
     if (!row) continue;
     // 评委一个分都没打时没有名次可言，不编一个出来
     if (rule.by === 'judge' && row.judgeScore == null) continue;
+    taken.add(row.ideaId);
     const m = metaById.get(row.ideaId);
     out.push({
       key: rule.key,
@@ -976,6 +1036,8 @@ async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[]> {
       judgeScore: rule.by === 'judge' ? row.judgeScore : null,
       votes: row.votes,
       comment: m?.note ?? null,
+      desc: m?.pitch ?? m?.plan ?? '',
+      dims: avgDims(row.ideaId),
     });
   }
   return out;
