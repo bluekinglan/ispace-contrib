@@ -70,7 +70,7 @@ const ALLOWED_FILE_TYPES: Record<string, string> = {
   'application/pdf': '.pdf',
 };
 
-interface EventRow {
+export interface EventRow {
   id: string;
   slug: string;
   title: string;
@@ -1360,7 +1360,7 @@ export async function computeRanking(sql: Sql, ev: EventRow): Promise<EventRankR
  * 一、二、三等奖看评委平均分名次，最佳人气奖看票数名次——设计稿上写得
  * 很清楚：「路演作品全靠评委打分排名次……现场扫码投票只用来选最佳人气奖」。
  */
-async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[]> {
+export async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[]> {
   const ranking = await computeRanking(sql, ev);
   if (ranking.length === 0) return [];
 
