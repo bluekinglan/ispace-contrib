@@ -886,6 +886,10 @@ export function registerEventRoutes(
    *
    * 必须投满。投到一半就走开，等于这个人的票权被稀释——而得票是拿来排名次
    * 的，少投的人实际上降低了所有人的区分度。所以差一票也不收。
+   *
+   * 交卷只管两件事：把票锁住，以及让组织者看到谁投完了。**它不决定票算不
+   * 算**——screeningRanking、控制台的 screening-tally、20:00 的自动入围都
+   * 数库里全部的票，不看交卷表。组织者定的：到点没交卷的评委，票照样有效。
    */
   app.post(`${API_BASE}/events/:slug/judge/screening/submit`, async (req) => {
     const { slug } = req.params as { slug: string };

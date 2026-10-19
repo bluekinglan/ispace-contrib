@@ -67,7 +67,11 @@ export async function applyAutoFinalists(
     `;
     if (n > 0) return { done: true, kept: n } as const;
 
-    /* 和得票榜用同一条排序：票数降序、同票按提交先后 */
+    /*
+      和得票榜同一条计票、同一种排序：票数降序、同票按提交先后。
+      数的是全部的票，**不看交卷**——到点还没点「交卷」的评委，票照样算。
+      这是组织者定的，不是漏了 join 交卷表。
+    */
     const rows = await tx<{ id: string; name: string; who: string; votes: number }[]>`
       SELECT i.id, i.name, u.display_name AS who,
              count(v.judge_id)::int AS votes
