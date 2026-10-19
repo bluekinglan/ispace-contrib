@@ -139,6 +139,27 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
   };
 
   /**
+   * 把整套日历平移到「现在之后」：创意截止落在一天以后，其余截止时间保持
+   * 和种子里一样的间隔。
+   *
+   * 交创意、交作品、打分锁定这些接口除了看阶段，还直接拿当前时间和截止时间
+   * 比——setPhase 钉住阶段也绕不过去。种子写的是本届的真实日期，所以这个
+   * 文件原先是个定时炸弹：只要晚于 10.19 18:00 跑，交创意就一律被拒，后面
+   * 二十条全跟着塌（入围、作品、打分都建立在「有人交了创意」上）。平移之后
+   * 测试不再依赖今天是几号。
+   */
+  const rebaseCalendar = async () => {
+    const cur = (await get(`/events/${SLUG}`)).json() as { event: { config: Record<string, unknown> } };
+    const d = cur.event.config.deadlines as Record<string, string>;
+    const shift = Date.now() + 24 * 3600_000 - Date.parse(d.idea!);
+    const deadlines = Object.fromEntries(
+      Object.entries(d).map(([k, v]) => [k, new Date(Date.parse(v) + shift).toISOString()]),
+    );
+    const r = await send('PATCH', `/events/${SLUG}`, { config: { ...cur.event.config, deadlines } }, AS('admin'));
+    expect(r.statusCode, r.body).toBe(200);
+  };
+
+  /**
    * 把投票窗口挪到「现在」。
    *
    * 本届真实窗口是 2026-10-22 18:00 – 10-23 12:00，而测试跑在那之前，
@@ -164,14 +185,16 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
   };
 
   // ── 迁移与种子 ──────────────────────────────────────────────────
-  it('迁移建出六张表，种子写入本届配置', async () => {
+  it('迁移建出八张表，种子写入本届配置', async () => {
     const tables = await sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'ispace' AND table_name LIKE 'event%'
        ORDER BY table_name
     `;
+    // 0023 / 0027 加了初筛投票和交卷两张表
     expect(tables.map((t) => t.table_name)).toEqual([
-      'event_ideas', 'event_judges', 'event_scores', 'event_votes', 'event_works', 'events',
+      'event_ideas', 'event_judges', 'event_scores', 'event_screening_submits',
+      'event_screening_votes', 'event_votes', 'event_works', 'events',
     ]);
 
     const ev = await sql<{ slug: string; phase: string | null; config: Record<string, unknown> }[]>`
@@ -197,8 +220,20 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
       SELECT (config->'deadlines'->>'idea')::timestamptz AS at
         FROM ispace.events WHERE slug = ${SLUG}
     `;
-    // 10.19 12:00 +08 = 04:00 UTC
-    expect(r[0]!.at.toISOString()).toBe('2026-10-19T04:00:00.000Z');
+    // 10.19 18:00 +08 = 10:00 UTC（f0af732 从 12:00 顺延到 18:00）
+    expect(r[0]!.at.toISOString()).toBe('2026-10-19T10:00:00.000Z');
+  });
+
+  // ── 日历 ────────────────────────────────────────────────────────
+  /*
+    上面两条读的是种子原样；从这里起整套截止时间平移到「现在之后」，
+    后面的测试才不受今天日期的影响（理由见 rebaseCalendar）。
+  */
+  it('日历平移到现在之后，时钟推导出来是报名中', async () => {
+    await rebaseCalendar();
+    const r = (await get(`/events/${SLUG}`)).json();
+    expect(r.event.phasePinned).toBe(false);
+    expect(r.event.phase).toBe('signup');
   });
 
   // ── 免登录可读 ──────────────────────────────────────────────────
@@ -780,7 +815,7 @@ describe.skipIf(!DSN)('赛事接口（真实 Postgres）', () => {
     await setPhase(null);
     const r = (await get(`/events/${SLUG}`)).json();
     expect(r.event.phasePinned).toBe(false);
-    // 2026-11-01 之后是 ended；本测试跑在那之前，所以一定不是 ended
-    expect(r.event.phase).not.toBe('ended');
+    // 日历已平移到现在之后，交还给时钟就回到报名中（不再依赖今天是几号）
+    expect(r.event.phase).toBe('signup');
   });
 });
