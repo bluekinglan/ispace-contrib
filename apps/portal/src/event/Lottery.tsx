@@ -3,7 +3,7 @@ import {
   LOTTERY_BY_PID, LOTTERY_PEOPLE, LOTTERY_PRIZES, LOTTERY_PRIZE_BY_K,
   lotteryRoundTitle, LOTTERY_ROUND_CN,
 } from './lottery-data';
-import { dots1024, DOTS_ON_SCREEN } from './visual';
+import { dots1024, DOTS_ON_SCREEN, Mark } from './visual';
 /*
   <particle-text> 和 <confetti-burst> 用的是 effects.ts 里那两个——颁奖那边
   早就移植好并注册了（registerEventEffects，幂等）。这里不要再搬一份：
@@ -516,9 +516,10 @@ export const LotteryStage = forwardRef<LotteryHandle>(
     /**
      * 主操作。返回 false = 抽奖结束，舞台交回典礼。
      *
-     * 压轴揭晓之后再按一下就该去切蛋糕了——原版在这里是「查看名单」，
-     * 但接进典礼流程后，名单有左上角的按钮随时能看，而主持人手里那一下
-     * 应该推着仪式往前走，不该卡在一个弹窗上。
+     * 压轴揭晓之后，**按键**和**点那颗角落按钮**分工不同：按键把舞台交回
+     * 典礼去切蛋糕，角落按钮开「中奖名单」弹窗（可复制、可重置）。
+     * 主持人手里那一下要推着仪式往前走，不该卡在弹窗上；而名单是散场后
+     * 对奖、补发用的，得留个随手能点开的入口。
      */
     const primary = useCallback((): boolean => {
       const { phase: ph, round: r } = live.current;
@@ -600,7 +601,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
       if (phase === 'ready') return { label: round === 5 ? '开始压轴抽奖' : '开始抽奖', bg: '#fb923c', fg: '#001217' };
       if (phase === 'rolling') return { label: 'STOP', bg: '#f93920', fg: '#ffffff' };
       if (phase === 'stopping') return { label: '抽取中…', bg: 'rgba(255,255,255,.14)', fg: '#ffffff' };
-      if (round === 5) return { label: '去切蛋糕', bg: '#fb923c', fg: '#001217' };
+      if (round === 5) return { label: '查看名单', bg: '#001217', fg: '#ffffff' };
       if (round === 4) return { label: results[5] ? '查看压轴大奖' : '压轴抽奖', bg: '#fb923c', fg: '#001217' };
       return { label: results[round + 1] ? `查看第${LOTTERY_ROUND_CN[round]}轮` : '下一轮', bg: '#fb923c', fg: '#001217' };
     })();
@@ -653,6 +654,12 @@ export const LotteryStage = forwardRef<LotteryHandle>(
                 cursor: 'pointer', color: '#fff', border: '1.5px solid rgba(255,255,255,.35)',
               }}
             >名单</span>
+            {/* 右上角整场都是 iSpace，和背景墙、颁奖、切蛋糕一致 */}
+            <span style={{ width: 1, height: 28, background: 'rgba(255,255,255,.2)', margin: '0 6px' }} />
+            <Mark size={40} tone="orange" />
+            <span style={{
+              fontFamily: 'var(--font-sans)', fontSize: 28, fontWeight: 800, letterSpacing: '-.03em',
+            }}>iSpace</span>
           </div>
         </div>
 
@@ -723,13 +730,21 @@ export const LotteryStage = forwardRef<LotteryHandle>(
           display: 'flex', alignItems: 'center', gap: 28,
           fontSize: 18, fontWeight: 600, opacity: 0.45,
         }}>
-          <span>空格 / → {phase === 'ready' ? '开始' : phase === 'rolling' ? '停' : '下一轮'}</span>
+          <span>
+            空格 / → {phase === 'ready' ? '开始'
+              : phase === 'rolling' ? '停'
+              /* 压轴抽完就没有下一轮了，这一下是出抽奖、进切蛋糕 */
+              : isJackpot ? '去切蛋糕'
+              : '下一轮'}
+          </span>
           <span>← 上一轮</span>
           <span>点「名单」看已抽出的</span>
         </div>
 
         {!isDraw && (
-          <div style={{
+          <div
+            onClick={isJackpot ? (e) => { e.stopPropagation(); setDrawer(true); } : undefined}
+            style={{
             position: 'absolute', right: 96, bottom: 48, zIndex: 70,
             height: 80, boxSizing: 'border-box', padding: '0 48px', borderRadius: 100,
             display: 'flex', alignItems: 'center', cursor: 'pointer',
@@ -773,7 +788,12 @@ function LotteryKeyframes() {
       @keyframes ringOut { from { transform: scale(.2); opacity: .9 } to { transform: scale(1); opacity: 0 } }
       @keyframes bump { from { transform: scale(.8) } to { transform: scale(1) } }
       @keyframes glowText { 0%, 100% { text-shadow: 0 0 30px rgba(251,146,60,.5) } 50% { text-shadow: 0 0 60px rgba(251,146,60,.9) } }
-      @keyframes roll { from { transform: translateY(calc(-20em)) } to { transform: none } }
+      /*
+        奖金那四位的滚动。方向不能反：每一列是 [t+1 … t+20, t] 共 21 行，
+        所以要从第 0 行滚到第 20 行才停在 t 上。写成反的会停在 (t+1)%10——
+        四列合起来就是 2135 而不是 1024，而这个数就是奖金本身，不能错。
+      */
+      @keyframes roll { from { transform: translateY(0) } to { transform: translateY(-20em) } }
       @keyframes spin { to { transform: rotate(360deg) } }
     `}</style>
   );

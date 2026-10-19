@@ -279,9 +279,10 @@ export function Award() {
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24,
           }}>
             {/*
-              左边是活动本身，右边才是「现在走到哪一步」。稿上就是这个顺序：
-              一整场里左边那半句从不变，右边那半句每按一下就换一次——不变的
-              东西放左边、变的放右边，台下扫一眼就知道该看哪儿。
+              左边一整条：点阵 1024 + 活动名 + 现在走到哪一步。稿上活动名在
+              左、步骤在右，但右上角整场都留给 iSpace——背景墙、开场墙、切
+              蛋糕本来就是这样，颁奖这几屏跟着统一，不然一场里标志会跳来跳去。
+              所以步骤跟到活动名后面：两者都是「这是什么」，本来就该挨着。
             */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <div role="img" aria-label="1024" style={{
@@ -296,15 +297,22 @@ export function Award() {
               </div>
               <span style={{ width: 1, height: 28, background: theme.fg, opacity: 0.3 }} />
               <span style={{ fontSize: 24, fontWeight: 700 }}>第 8 届程序员节 · 1024·AI创新赛</span>
+              <span style={{ width: 1, height: 28, background: theme.fg, opacity: 0.3 }} />
+              <span style={{ fontSize: 20, fontWeight: 600, opacity: 0.75 }}>
+                {step.t === 'agenda' ? '下午安排'
+                  : step.t === 'intro' ? '颁奖典礼'
+                  : step.t === 'end' ? '获奖名单'
+                  : step.t === 'award'
+                    ? `${step.award.name} · ${step.reveal ? `NO.${step.award.no}` : '即将揭晓'}`
+                    : ''}
+              </span>
             </div>
-            <span style={{ fontSize: 20, fontWeight: 600, opacity: 0.75 }}>
-              {step.t === 'agenda' ? '下午安排'
-                : step.t === 'intro' ? '颁奖典礼'
-                : step.t === 'end' ? '获奖名单'
-                : step.t === 'award'
-                  ? `${step.award.name} · ${step.reveal ? `NO.${step.award.no}` : '即将揭晓'}`
-                  : ''}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <Mark size={40} tone={theme.fg === '#ffffff' ? 'orange' : 'dark'} />
+              <span style={{
+                fontFamily: 'var(--font-sans)', fontSize: 28, fontWeight: 800, letterSpacing: '-.03em',
+              }}>iSpace</span>
+            </div>
           </div>
         )}
 
@@ -728,7 +736,14 @@ function AwardStage({
         position: 'absolute', left: 96, top: 780, right: 640,
         opacity: reveal ? 1 : 0,
         transform: reveal ? 'none' : 'translateY(16px)',
-        transition: 'opacity .6s ease .9s, transform .6s ease .9s',
+        /*
+          延迟只在**进场**时给。写成固定的 `.9s` 延迟，离场也会照延 0.9 秒：
+          从三等奖揭晓翻到二等奖铺垫时，这块已经换成二等奖的内容了却还挂
+          在屏上，等于在揭晓前先把下一个奖的获奖者报了出去。
+        */
+        transition: reveal
+          ? 'opacity .6s ease .9s, transform .6s ease .9s'
+          : 'opacity .15s ease, transform .15s ease',
         pointerEvents: 'none',
       }}>
         <span style={{ display: 'block', fontSize: 30, fontWeight: 600, opacity: 0.75 }}>
@@ -750,7 +765,10 @@ function AwardStage({
         display: 'flex', flexDirection: 'column', gap: 28,
         opacity: reveal ? 1 : 0,
         transform: reveal ? 'none' : 'translateX(24px)',
-        transition: 'opacity .6s ease 1.1s, transform .6s ease 1.1s',
+        /* 同上：进场留延迟，离场立刻收，别把下一个奖的作品提前亮出来 */
+        transition: reveal
+          ? 'opacity .6s ease 1.1s, transform .6s ease 1.1s'
+          : 'opacity .15s ease, transform .15s ease',
         pointerEvents: 'none',
       }}>
         {/* 作品：编号、名字、一句话。稿上它们在这块面板顶上，和分数同属一栏 */}
