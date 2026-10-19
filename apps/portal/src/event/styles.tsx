@@ -121,6 +121,23 @@ export function EventLayoutStyles() {
 .ev-card-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px;
 }
+/*
+  入围 / 参赛作品卡统一高度，介绍长了在卡内滚动。
+
+  介绍取的是作品一句话、没交作品时退回创意里的「打算怎么做」——后者有人
+  写了八百字，一张卡被撑到别的卡三四倍高，整排对不齐。高度按「标题两行 +
+  介绍六七行」定，短的留白，长的在介绍那一块里滚，作者和「打开作品」始终
+  钉在卡底。overscroll-behavior 让滚到头时不带着整页一起滚。
+*/
+.ev-work-card { height: 252px; }
+.ev-work-desc {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent;
+  padding-right: 6px; margin-right: -6px;
+}
+.ev-work-desc::-webkit-scrollbar { width: 4px; }
+.ev-work-desc::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 4px; }
+.ev-work-desc::-webkit-scrollbar-track { background: transparent; }
 
 /* ── 怎么参加：四格，每格一枚大水印图标 ────────────────────────── */
 .ev-how-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }

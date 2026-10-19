@@ -822,7 +822,7 @@ function FinalistCards({
         const submitted = f.submitted ?? true;
         const voted = !!me && me.votes.includes(f.ideaId);
         return (
-          <article key={f.ideaId} style={{
+          <article key={f.ideaId} className="ev-work-card" style={{
             position: 'relative', overflow: 'hidden', borderRadius: 16,
             backgroundColor: 'var(--dark-bg)',
             backgroundImage: 'radial-gradient(rgba(255,255,255,.07) 1px, transparent 1px)',
@@ -875,7 +875,7 @@ function FinalistCards({
                 }}>我的</span>
               )}
             </div>
-            <p style={{
+            <p className="ev-work-desc" style={{
               position: 'relative', margin: 0, fontSize: 12, lineHeight: 1.6,
               color: 'rgba(255,255,255,.72)',
             }}>{f.desc}</p>
