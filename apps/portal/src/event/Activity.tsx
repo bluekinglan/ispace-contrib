@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CURRENT_EVENT_SLUG, EVENT_PATH, judgeOnScoring, phaseAtLeast,
   type App as AppEntity, type EventConfig, type EventFile, type EventFinalist,
-  type EventPhase, type EventResponse,
+  type EventPhase, type EventResponse, type User,
 } from '@ispace/contracts';
 import { Avatar, Badge, Button, GlobalKeyframes, Input, Tabs, Toast, ToneProvider } from '@ispace/ui';
 import { api } from '../api';
+import { UserMenu } from '../UserMenu';
 import { BitField } from './BitField';
 import { EVENT_JUDGES, judgeAvatar } from './judges';
 import { EventLayoutStyles } from './styles';
@@ -335,7 +336,7 @@ function Hero({ data, onIdea, onWork }: {
           <span style={{ flex: 1 }} />
           {me ? (
             <div style={{ background: 'var(--surface-1)', borderRadius: 100, padding: 2, display: 'flex' }}>
-              <Avatar name={me.displayName} size={28} />
+              <HeroAvatar name={me.displayName} />
             </div>
           ) : (
             /*
@@ -581,6 +582,27 @@ function countdown(data: EventResponse): { num: string; unit: string } {
     default:
       return { num: String(stats.ideaCount), unit: '个创意参与了本届' };
   }
+}
+
+/**
+ * 头图右上角的头像：和「我的页面」顶栏同一张菜单（UserMenu）。
+ *
+ * 活动页的接口（GET /events/:slug）只带名字，不带头像地址和完整的 user——
+ * 菜单里「个人资料」要改的是整份资料，所以这里另取一次 /me。没取到之前
+ * （或者取失败）先摆一个不能点的字母头像，不让右上角空着闪一下。
+ */
+function HeroAvatar({ name }: { name: string }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [phone, setPhone] = useState(() => window.matchMedia('(max-width: 560px)').matches);
+  useEffect(() => {
+    void api.me().then((m) => setUser(m.user)).catch(() => undefined);
+    const mq = window.matchMedia('(max-width: 560px)');
+    const sync = () => setPhone(mq.matches);
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+  if (!user) return <Avatar name={name} size={28} />;
+  return <UserMenu user={user} onUser={setUser} phone={phone} size={28} />;
 }
 
 /**
