@@ -215,13 +215,36 @@ export function Award() {
   }
   if (!data) return <Fullscreen><p style={{ color: 'rgba(255,255,255,.6)', fontSize: 22 }}>正在取获奖名单…</p></Fullscreen>;
   if (!awards?.length) {
+    /*
+      名单对外 15:10 才公布，但组织者在打分锁定、人气投票截止之后就能提前
+      拿到（服务端 canPreviewAwards）。提前进要登录——投屏那台机器多半没
+      登录，所以没登录时给一颗登录按钮，登完回到这一页。
+    */
+    const d = data.event.config.deadlines;
+    const at = (iso?: string) => (iso ? new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date(iso)) : '');
+    /* 打分锁定和人气投票截止，取更晚的那个——和服务端放开的时刻一致 */
+    const openAt = [d.judgeLock, d.vote]
+      .filter((x): x is string => !!x)
+      .reduce<string | undefined>((a, b) => (!a || Date.parse(b) > Date.parse(a) ? b : a), undefined);
     return (
       <Fullscreen>
         <p style={{ color: '#fff', fontSize: 28, fontWeight: 700 }}>获奖名单还没出来</p>
         <p style={{ color: 'rgba(255,255,255,.6)', fontSize: 18, lineHeight: 1.8, textAlign: 'center' }}>
-          等评委打完分、阶段推进到「结果公布」，这块屏就会有内容。<br />
-          控制台的「1024 赛事」屏可以查看排名并推进阶段。
+          {at(d.award)} 颁奖时对所有人开放。<br />
+          {openAt ? `组织者在 ${at(openAt)} 评分和投票都截止后，登录即可提前进入。` : ''}
         </p>
+        {!data.me && (
+          <button
+            type="button"
+            onClick={() => { location.href = `/?redirect=${encodeURIComponent(location.pathname)}`; }}
+            style={{
+              marginTop: 8, height: 44, padding: '0 28px', borderRadius: 100, border: 'none',
+              background: '#fb923c', color: '#001217', fontSize: 16, fontWeight: 700, cursor: 'pointer',
+            }}
+          >组织者登录</button>
+        )}
       </Fullscreen>
     );
   }

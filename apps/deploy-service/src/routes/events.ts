@@ -136,6 +136,32 @@ function summary(ev: EventRow, now: Date): EventSummary {
  * 用 judgeLock 而不是 vote：本届两者不是同一时刻（投票 12:00 截止，打分
  * 11:55 锁）。缺 judgeLock 时回落到 vote——老配置里只有那一个字段。
  */
+/**
+ * 这个人现在能不能提前拿到获奖名单。
+ *
+ * 对外公布是 deadlines.award（结果公布阶段）。在那之前，config.awardPreview
+ * 里列的人和管理员，只要「所有结果都已经定了」就能拿到——给组织者挂颁奖
+ * 大屏、从背景墙走一遍用的。
+ *
+ * 「定了」= 打分锁定（judgeLock）和人气投票截止（vote）都已经过了。只看
+ * 锁定不够：本届人气票比锁分晚 5 分钟才截止，那 5 分钟里人气奖还会变。
+ * 两个时间都没配的话不放——宁可等到正式公布，也不在结果还会变的时候放出去。
+ */
+export function canPreviewAwards(
+  ev: Pick<EventRow, 'config'>,
+  user: Pick<User, 'username' | 'role'> | null,
+  now: Date,
+): boolean {
+  if (!user) return false;
+  const allowed = user.role === 'admin'
+    || (ev.config?.awardPreview ?? []).includes(user.username);
+  if (!allowed) return false;
+  const d = ev.config?.deadlines;
+  const marks = [d?.judgeLock, d?.vote].filter((x): x is string => !!x).map(Date.parse);
+  if (marks.length === 0 || marks.some(Number.isNaN)) return false;
+  return now.getTime() >= Math.max(...marks);
+}
+
 function isLocked(ev: EventRow, now: Date): boolean {
   const phase = resolvePhase(ev, now);
   if (phaseAtLeast(phase, 'result')) return true;
@@ -369,7 +395,12 @@ export function registerEventRoutes(
         }))
       : [];
 
-    const awards = phaseAtLeast(phase, 'result')
+    /*
+      对外 15:10 结果公布才给；组织者（awardPreview 里的人和管理员）在所有
+      结果定下之后就能提前拿到，好把颁奖大屏挂上。名单按请求下发、接口不带
+      缓存，所以只到她自己这一次请求里，不会顺带给到别人。
+    */
+    const awards = phaseAtLeast(phase, 'result') || canPreviewAwards(ev, me, now)
       ? await computeAwards(sql, ev)
       : null;
 
