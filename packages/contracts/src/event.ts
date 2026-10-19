@@ -47,6 +47,26 @@ export function phaseAtLeast(at: EventPhase, least: EventPhase): boolean {
 }
 
 /**
+ * 评委这一侧是否已经翻到「打分」那一页。
+ *
+ * 初筛投票（deadlines.screeningVote）比阶段切换（deadlines.screening，公布
+ * 入围）早半小时封票，这半小时里阶段还是 screening，但票已经投不动了、入围
+ * 名单也已经自动定下——评委该看的是入围作品，不是一页投不了的票。
+ *
+ * `now` 用服务端随 EventSummary 带回的时刻，理由同 derivePhase。
+ */
+export function judgeOnScoring(ev: {
+  phase: EventPhase;
+  now: string;
+  config: { deadlines?: { screeningVote?: string } };
+}): boolean {
+  if (phaseAtLeast(ev.phase, 'building')) return true;
+  if (ev.phase !== 'screening') return false;
+  const shut = ev.config.deadlines?.screeningVote;
+  return !!shut && Date.parse(ev.now) >= Date.parse(shut);
+}
+
+/**
  * 按 `config.deadlines` 推导当前阶段。人工覆盖（events.phase）在服务端优先，
  * 这里只负责「时钟说现在是哪一阶段」。
  *

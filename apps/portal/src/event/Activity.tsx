@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CURRENT_EVENT_SLUG, EVENT_PATH, phaseAtLeast,
+  CURRENT_EVENT_SLUG, EVENT_PATH, judgeOnScoring, phaseAtLeast,
   type App as AppEntity, type EventConfig, type EventFile, type EventFinalist,
   type EventPhase, type EventResponse,
 } from '@ispace/contracts';
@@ -590,7 +590,9 @@ function countdown(data: EventResponse): { num: string; unit: string } {
  * 那几句对他们毫无意义——这一格换成评委入口。放在这里而不是页面深处：
  * 评委打开活动页第一眼就该看到「去投票」，而初筛只有两个小时。
  *
- * /1024/judge 这一个地址按阶段是两件事：初筛期给创意投票，路演给作品打分。
+ * /1024/judge 这一个地址按阶段是两件事：初筛期给创意投票，之后给入围作品
+ * 打分。初筛封票（screeningVote）一过，按钮就换成「去打分」——入围名单那一刻
+ * 已经自动定了，评委点进去能先看作品；真正提交要等路演阶段，打分页上置灰。
  * 打分锁定之后就没有入口了，返回 null，回落到普通的状态行。
  */
 function judgeEntry(data: EventResponse): { title: string; hint: string; label: string } | null {
@@ -602,6 +604,9 @@ function judgeEntry(data: EventResponse): { title: string; hint: string; label: 
     case 'signup':
       return { title, hint: `创意 ${fmtMdHm(d.idea)} 截止后开始初筛投票，现在可以先看创意`, label: '先看创意' };
     case 'screening':
+      if (judgeOnScoring(event)) {
+        return { title, hint: `初筛已封票 · 打分 ${fmtMd(d.award)} 路演时开放，现在可以先看入围作品`, label: '去打分' };
+      }
       return {
         title,
         /* 「几点公布入围」上一行的倒数里已经写了，这里只说投票几点截止 */
@@ -609,7 +614,7 @@ function judgeEntry(data: EventResponse): { title: string; hint: string; label: 
         label: '去投票',
       };
     case 'building':
-      return { title, hint: `${fmtMd(d.award)} 上午路演时打分，现在可以先看入围作品`, label: '看入围作品' };
+      return { title, hint: `打分 ${fmtMd(d.award)} 路演时开放，现在可以先看入围作品`, label: '去打分' };
     case 'demo':
       return { title, hint: `路演现场打分 · ${fmtHm(d.judgeLock ?? d.vote)} 锁定`, label: '去打分' };
     default:
@@ -654,6 +659,16 @@ function myStatus(data: EventResponse): { title: string; hint: string } {
         ? { title: `创意「${idea.name}」已提交`, hint: `评委正在初筛，${fmtHm(d.screening)} 公布入围名单` }
         : { title: '这届没赶上交创意', hint: `${fmtMd(d.award)} 来现场看路演，还能扫码投票` };
     case 'building':
+      /*
+        名单空着进了这一阶段：多半是同票扩到 9 个都装不下、自动入围没写，
+        等组织者在控制台定。这时不能落到下面的「这次没入围」——那句话对
+        每个参赛者都是错的。
+      */
+      if (data.finalists.length === 0) {
+        return idea
+          ? { title: '入围名单还在确认', hint: '组织者正在核对初筛结果，定下来这里会显示' }
+          : { title: '你没参赛', hint: `${fmtMd(d.award)} 上午来看路演，扫码投票选最佳人气奖` };
+      }
       if (idea?.finalist) {
         return work
           ? {

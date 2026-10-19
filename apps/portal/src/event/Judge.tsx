@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  CURRENT_EVENT_SLUG, EVENT_PATH,
+  CURRENT_EVENT_SLUG, EVENT_PATH, judgeOnScoring, phaseAtLeast,
   type EventCriterion, type EventJudgeItem, type EventJudgeResponse,
 } from '@ispace/contracts';
 import { Badge, Button, GlobalKeyframes, Toast, ToneProvider } from '@ispace/ui';
@@ -77,8 +77,12 @@ export function Judge() {
     任一时刻只有一件事是该做的，摆两个入口只会让人点错。
 
     放在 err 之后：「不是本届评委」那层拦截两种形态共用，不必写两遍。
+
+    分界线是初筛封票（judgeOnScoring），不是阶段切换：封票之后阶段还会是
+    screening 半小时（等公布），但那半小时里投票页已经投不动了，入围名单
+    也自动定了——直接给打分页，提交按钮在路演前置灰。
   */
-  if (data && (data.event.phase === 'signup' || data.event.phase === 'screening')) {
+  if (data && !judgeOnScoring(data.event)) {
     return (
       <ToneProvider tone="business">
         <GlobalKeyframes />
@@ -127,6 +131,8 @@ export function Judge() {
   }
 
   const { items, criteria, locked, lockReason, otherJudges } = data;
+  /* 锁着的两种情形按钮要说不同的话：路演还没到 / 已经锁定 */
+  const notYet = locked && !phaseAtLeast(data.event.phase, 'demo');
   const current = items.find((i) => i.ideaId === sel) ?? items[0] ?? null;
   const doneN = items.filter((i) => i.mine?.submitted).length;
 
@@ -281,7 +287,7 @@ export function Judge() {
                 criteria={criteria}
                 draft={readDraft(current)}
                 locked={locked}
-                lockReason={lockReason}
+                notYet={notYet}
                 busy={busy}
                 otherJudges={otherJudges}
                 onChange={(p) => setDraft(current.ideaId, p)}
@@ -328,7 +334,7 @@ export function Judge() {
                 criteria={criteria}
                 draft={readDraft(current)}
                 locked={locked}
-                lockReason={lockReason}
+                notYet={notYet}
                 busy={busy}
                 otherJudges={otherJudges}
                 onChange={(p) => setDraft(current.ideaId, p)}
@@ -401,13 +407,13 @@ function JudgeRow({
 }
 
 function Detail({
-  it, criteria, draft, locked, lockReason, busy, otherJudges, onChange, onSave,
+  it, criteria, draft, locked, notYet, busy, otherJudges, onChange, onSave,
 }: {
   it: EventJudgeItem;
   criteria: EventCriterion[];
   draft: Draft;
   locked: boolean;
-  lockReason: string | null;
+  notYet: boolean;
   busy: boolean;
   otherJudges: number;
   onChange: (p: Partial<Draft>) => void;
@@ -533,7 +539,7 @@ function Detail({
           disabled={locked || busy}
         >
           {locked
-            ? (lockReason?.startsWith('路演') ? '还没开始' : '已锁定')
+            ? (notYet ? '路演时开放' : '已锁定')
             : submitted ? '更新打分' : '提交打分'}
         </Button>
       </div>

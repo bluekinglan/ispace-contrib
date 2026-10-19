@@ -251,8 +251,12 @@ export function scoringWindow(ev: EventRow, now: Date): { open: boolean; reason:
     return {
       open: false,
       reason: at
-        ? `路演 ${mdhm(at)} 开始，到时候这一页才能打分。现在可以先看名单和创意。`
-        : '路演开始后才能打分。现在可以先看名单和创意。',
+        /*
+          at 是作品截止（demo 阶段从那一刻开始），不是路演开场——写成
+          「路演 10.23 00:00 开始」评委会以为半夜要打分。
+        */
+        ? `打分在路演阶段开放（作品 ${mdhm(at)} 截止后）。现在可以先看入围作品，提交按钮到时候亮起来。`
+        : '打分在路演阶段开放。现在可以先看入围作品，提交按钮到时候亮起来。',
     };
   }
   return { open: true, reason: null };
