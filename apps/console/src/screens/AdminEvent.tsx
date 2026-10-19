@@ -44,7 +44,8 @@ const PHASE_DESC: Record<EventPhase, string> = {
 const DEADLINE_ROWS: { key: keyof EventConfig['deadlines']; label: string }[] = [
   { key: 'idea', label: '交创意截止' },
   /*
-    投票截止比公布早半小时，中间那半小时留给评委就第 8 名同票线下商定。
+    投票截止比公布早半小时。截止那一刻入围名单自动定下（前 8，第 8 名同票扩到 9 个），
+    中间那半小时留给组织者核对、调路演顺序；扩到 9 个都装不下的同票得在这里手动定。
     往届没有这一项（配置里可以缺），所以下面渲染时会跳过取不到值的行。
   */
   { key: 'screeningVote', label: '初筛投票截止' },

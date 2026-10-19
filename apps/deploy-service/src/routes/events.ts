@@ -170,20 +170,23 @@ function mdhm(iso: string | undefined): string {
   return `${g('month')}.${g('day')} ${g('hour')}:${g('minute')}`;
 }
 
+/** 第 8 名同票时最多扩出几个名额。本届是 1：8 个扩到 9 个为止。 */
+export const SCREENING_TIE_EXTRA = 1;
+
 /**
  * 把得票数排成榜，并标出谁入围。
  *
  * 入参要求已经按「票数降序、同票时按提交先后」排好——名次和切线都只看顺序
  * 和票数，排序规则留在 SQL 里，这里不再排一遍。
  *
- * ┌─ 第 8 名同票不自动切 ──────────────────────────────────────────────┐
- * │ 票数相同的若干个创意挤在最后一个名额上时，全部标成 'tie'，谁进由   │
- * │ 8 位评委线下商定（投票 20:00 截止、名单 20:30 公布，中间那半小时   │
- * │ 就是留给这件事的）。                                               │
+ * ┌─ 第 8 名同票：扩一个名额，不切 ─────────────────────────────────────┐
+ * │ 本届规则：前 8 入围；第 8 名同票时，**同票的全部入围**，名额最多扩到 │
+ * │ 9 个。扩而不切，是因为任何一种切法（按 id、按提交时间、按名字）都  │
+ * │ 等于让一个 ORDER BY 替人决定谁能进决赛。                            │
  * │                                                                    │
- * │ 按 id、按提交时间、按名字——随便哪个都能切出一个确定的结果，但那    │
- * │ 等于让一个 ORDER BY 替人决定谁能进决赛。同票恰恰是最该由人判的那   │
- * │ 一种，而"系统已经定了"会让这件事根本不被讨论。                     │
+ * │ 扩到 9 个还装不下（三个人卡在第 8 名、或者到点时全员零票）才标成    │
+ * │ 'tie'，交给人在控制台定。不能无限扩：评委一票没投就到点，十几个     │
+ * │ 零票创意全部并列，扩下去就是全员入围。                              │
  * └────────────────────────────────────────────────────────────────────┘
  *
  * 名次用「竞赛排名」：同票同名次，下一个跳号（1,2,2,4）。票数一样却显示成
@@ -199,8 +202,8 @@ export function rankScreening(
   const cut = rows[Math.min(slots, rows.length) - 1]!.votes;
   const above = rows.filter((r) => r.votes > cut).length;
   const atCut = rows.filter((r) => r.votes === cut).length;
-  /* 卡线那一档塞不进剩余名额，才叫同票待定 */
-  const tie = above + atCut > slots;
+  /* 卡线那一档连扩出来的那一个名额也塞不下，才叫同票待定 */
+  const tie = above + atCut > slots + SCREENING_TIE_EXTRA;
 
   let rank = 0;
   let prevVotes = Number.NaN;
@@ -781,8 +784,9 @@ export function registerEventRoutes(
     /*
       投票比阶段早结束半小时。
 
-      阶段还是 screening（名单没公布），但票已经封存——那半小时是留给 8 位
-      评委就第 8 名同票线下商定的。退回用 screening 是为了往届：它们的配置
+      阶段还是 screening（名单没公布），但票已经封存。20:00 一到入围名单就
+      自动定下来（jobs/event-finalists.ts），那半小时留给组织者在控制台核对、
+      调整路演顺序，以及处理扩到 9 个都装不下的那种同票。退回用 screening 是为了往届：它们的配置
       里没有 screeningVote，那时投票本来就开到公布为止。
     */
     const shutAt = ev.config?.deadlines?.screeningVote;
@@ -801,20 +805,8 @@ export function registerEventRoutes(
     phaseAtLeast(resolvePhase(ev, now), 'building');
 
   /**
-   * 初筛得票榜。
-   *
-   * ┌─ 第 8 名同票不自动切 ──────────────────────────────────────────────┐
-   * │ 票数相同的若干个创意挤在最后一个名额上时，全部标成 'tie'，谁进由   │
-   * │ 8 位评委线下商定（投票 14:00 截止、名单 14:30 公布，中间那半小时   │
-   * │ 就是留给这件事的）。                                               │
-   * │                                                                    │
-   * │ 按 id、按提交时间、按名字——随便哪个都能切出一个确定的结果，但那    │
-   * │ 等于让一个 ORDER BY 替人决定谁能进决赛。同票恰恰是最该由人判的那   │
-   * │ 一种，而"系统已经定了"会让这件事根本不被讨论。                     │
-   * └────────────────────────────────────────────────────────────────────┘
-   *
-   * 名次用「竞赛排名」：同票同名次，下一个跳号（1,2,2,4）。票数一样却显示
-   * 成不同名次，看榜的人第一反应是数据错了。
+   * 初筛得票榜。同票怎么处理见 rankScreening 上的说明（第 8 名同票扩到
+   * 9 个；扩到 9 个还装不下才交给人定）。
    */
   const screeningRanking = async (ev: EventRow): Promise<EventScreeningRankRow[]> => {
     const rows = await sql<{ id: string; name: string; who: string; votes: number }[]>`

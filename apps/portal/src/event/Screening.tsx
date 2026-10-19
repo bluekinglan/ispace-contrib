@@ -342,12 +342,14 @@ export function Screening() {
 /**
  * 得票榜。只在名单公布之后出现。
  *
- * 第 8 名同票时那一档全标成「并列待定」，不自己切一刀——谁进由 8 位评委
- * 线下商定，理由写在服务端 screeningRanking 上。
+ * 第 8 名同票时同票的全部入围、名额扩到 9 个；扩到 9 个还装不下才标「并列
+ * 待定」，由组织者在控制台定。规则写在服务端 rankScreening 上。
  */
 function Ranking({ rows, slots }: { rows: EventScreeningRankRow[]; slots: number }) {
   const max = Math.max(1, ...rows.map((r) => r.votes));
   const tie = rows.some((r) => r.status === 'tie');
+  /* 入围的比名额多，说明第 8 名同票、扩了名额 */
+  const extra = rows.filter((r) => r.status === 'in').length - slots;
   return (
     <div style={{
       margin: 16, padding: '16px 20px', borderRadius: 16,
@@ -357,7 +359,10 @@ function Ranking({ rows, slots }: { rows: EventScreeningRankRow[]; slots: number
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-heading)' }}>初筛结果</span>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          得票前 {slots} 入围{tie ? ` · 第 ${slots} 名同票，由评委线下商定` : ''}
+          得票前 {slots} 入围
+          {tie ? ` · 第 ${slots} 名同票，扩名额也装不下，由组织者定`
+            : extra > 0 ? ` · 第 ${slots} 名同票，增设 ${extra} 个名额`
+            : ''}
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

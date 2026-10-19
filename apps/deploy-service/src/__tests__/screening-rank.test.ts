@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rankScreening } from '../routes/events.js';
 
 /**
- * 初筛得票榜，以及第 8 名同票怎么处理。
+ * 初筛得票榜，以及第 8 名同票怎么处理（扩到 9 个为止）。
  *
  * 这段逻辑一年只跑一次，跑的那一次是在 8 位评委和几十位参赛同事面前当场
  * 公布名单——出错没有补救的机会，所以每一种边界都钉在这里。
@@ -34,21 +34,48 @@ describe('常规情况', () => {
 
 describe('卡在第 8 名上的同票', () => {
   /*
-    这是整个函数存在的理由。票数 …,3,3,3 其中两个要挤进最后一个名额——
-    系统不替人选，三个都标 tie，由评委线下商定。
+    本届规则：前 8 入围；第 8 名同票的全部入围，最多扩到 9 个。
+    扩而不切——任何切法都等于让一个 ORDER BY 替人决定谁能进决赛。
   */
-  it('卡线那一档塞不下剩余名额时，整档标成待定', () => {
-    //                      1  2  3  4  5  6  ← 这六个稳进
-    //                                        7  8  9 都是 3 票，抢最后两个名额
+  it('两个并列第 8：扩一个名额，两个都进，共 9 个', () => {
+    //                      1  2  3  4  5  6  7  ← 稳进
+    //                                           8  9 都是 2 票，争最后一个名额
+    const r = rankScreening(mk([9, 8, 7, 6, 5, 4, 3, 2, 2, 1]), 8);
+    expect(st(r)).toEqual([
+      'in', 'in', 'in', 'in', 'in', 'in', 'in',
+      'in', 'in',
+      'out',
+    ]);
+    expect(r.filter((x) => x.status === 'in')).toHaveLength(9);
+  });
+
+  it('三个并列第 7：两个名额 + 扩出来的一个正好装下，共 9 个', () => {
+    // 第 7、8、9 都是 3 票，抢最后两个名额——扩一个就够，三个都进
     const r = rankScreening(mk([9, 8, 7, 6, 5, 4, 3, 3, 3]), 8);
     expect(st(r)).toEqual([
       'in', 'in', 'in', 'in', 'in', 'in',
-      'tie', 'tie', 'tie',
+      'in', 'in', 'in',
     ]);
-    // 排在第 7 位的那个也是 3 票，所以它同样是待定的一员——不能因为 SQL
-    // 把它排在前面就算它进了，那正是「让 ORDER BY 替人做决定」
-    expect(r[6]!.votes).toBe(3);
-    expect(r[6]!.status).toBe('tie');
+  });
+
+  it('三个并列第 8：扩到 9 个也装不下，整档待定，交给人定', () => {
+    // 第 8、9、10 都是 2 票，只剩一个名额——要扩到 10 个才装得下，超出规则
+    const r = rankScreening(mk([9, 8, 7, 6, 5, 4, 3, 2, 2, 2, 1]), 8);
+    expect(st(r)).toEqual([
+      'in', 'in', 'in', 'in', 'in', 'in', 'in',
+      'tie', 'tie', 'tie',
+      'out',
+    ]);
+    // 排在第 8 位的那个也是 2 票，同样是待定——不能因为 SQL 把它排在前面
+    // 就算它进了，那正是「让 ORDER BY 替人做决定」
+    expect(r[7]!.status).toBe('tie');
+  });
+
+  it('到点时全员零票：一个都不判进，全部待定', () => {
+    // 真会发生：评委一票没投就到 20:00 了。「同票全进」不加上限的话，这里
+    // 会变成 17 个创意全部入围
+    const r = rankScreening(mk(Array(17).fill(0)), 8);
+    expect(r.every((x) => x.status === 'tie')).toBe(true);
   });
 
   it('卡线那一档正好填满名额，就不是同票', () => {
@@ -91,8 +118,13 @@ describe('边界', () => {
     expect(rankScreening(mk([3, 2]), 0)).toEqual([]);
   });
 
-  it('名额为 1 且前两名同票：两个都待定', () => {
+  it('名额为 1 且前两名同票：扩一个，两个都进', () => {
     const r = rankScreening(mk([5, 5, 1]), 1);
-    expect(st(r)).toEqual(['tie', 'tie', 'out']);
+    expect(st(r)).toEqual(['in', 'in', 'out']);
+  });
+
+  it('名额为 1 且前三名同票：扩一个也装不下，三个都待定', () => {
+    const r = rankScreening(mk([5, 5, 5, 1]), 1);
+    expect(st(r)).toEqual(['tie', 'tie', 'tie', 'out']);
   });
 });

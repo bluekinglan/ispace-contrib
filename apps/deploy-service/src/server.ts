@@ -56,6 +56,7 @@ import { registerBackendRoutes } from './routes/backends.js';
 import { registerGroupRoutes } from './routes/groups.js';
 import { registerMobileRoutes } from './routes/mobile.js';
 import { startMaintenanceJobs } from './jobs/maintenance.js';
+import { startEventFinalistsJob } from './jobs/event-finalists.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerTokenRoutes, findUserByAccessToken } from './routes/tokens.js';
 import { registerMarketplaceRoutes } from './routes/marketplace.js';
@@ -1055,8 +1056,13 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── 治理定时任务 ────────────────────────────────────────────────
   const stopJobs = startMaintenanceJobs(app, sql);
+  /* 1024 初筛投票一截止就自动定入围名单 */
+  const stopFinalists = startEventFinalistsJob(app, sql);
 
-  app.addHook('onClose', async () => { stopJobs(); await sql.end({ timeout: 5 }); });
+  app.addHook('onClose', async () => {
+    stopJobs(); stopFinalists();
+    await sql.end({ timeout: 5 });
+  });
   return app;
 }
 
