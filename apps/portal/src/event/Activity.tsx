@@ -227,9 +227,15 @@ export function Activity() {
               no={no()}
               cfg={cfg}
               awardDate={fmtMd(cfg.deadlines.award)}
-              /* 评委入口按设计稿放在打分那一栏里，不再单独占一条吸底栏 */
-              showJudgeLink={(!!me?.isJudge || !!me?.isAdmin) && !event.judgingLocked
-                && phaseAtLeast(phase, 'building')}
+              /*
+                评委入口。/1024/judge 这一个地址按阶段是两件事：初筛期是给创意
+                投票，入围之后是给作品打分。入口跟着变——原先只在打分期露出来，
+                初筛那两个小时评委在活动页上找不到地方点。
+              */
+              judgeLink={!(me?.isJudge || me?.isAdmin) ? null
+                : phase === 'screening' ? 'vote'
+                : phaseAtLeast(phase, 'building') && !event.judgingLocked ? 'score'
+                : null}
             />
 
             <ScheduleSection no={no()} cfg={cfg} />
@@ -1055,10 +1061,22 @@ function yuan(s: string): number | null {
   return m?.[1] ? Number(m[1].replace(/,/g, '')) : null;
 }
 
+/** 评委入口那一行。两个阶段同一个地址，只是字不同。 */
+function JudgeLink({ label }: { label: string }) {
+  return (
+    <a href={`${EVENT_PATH}/judge`} style={{
+      alignSelf: 'flex-start', fontSize: 12, fontWeight: 600,
+      color: 'var(--link)',
+    }}>你是本届评委 · {label} →</a>
+  );
+}
+
 function PrizesSection({
-  no, cfg, awardDate, showJudgeLink,
+  no, cfg, awardDate, judgeLink,
 }: {
-  no: string; cfg: EventConfig; awardDate: string; showJudgeLink: boolean;
+  no: string; cfg: EventConfig; awardDate: string;
+  /** vote = 初筛期去投票，score = 入围后去打分，null = 不显示 */
+  judgeLink: 'vote' | 'score' | null;
 }) {
   /*
     前三名上领奖台（二在左、一居中更高、三在右，由 ev-main-prize-rank-N 定位），
@@ -1172,6 +1190,7 @@ function PrizesSection({
               {cfg.screeningNote && (
                 <span className="ev-criteria-note">{cfg.screeningNote}</span>
               )}
+              {judgeLink === 'vote' && <JudgeLink label="打开评委投票页" />}
             </div>
           )}
           <div className="ev-criteria-panel ev-criteria-panel-score">
@@ -1192,12 +1211,9 @@ function PrizesSection({
               {cfg.judgingNote
                 ?? '路演作品全靠评委打分排名次，定一、二、三等奖；现场扫码投票只用来选最佳人气奖。'}
             </span>
-            {showJudgeLink && (
-              <a href={`${EVENT_PATH}/judge`} style={{
-                alignSelf: 'flex-start', fontSize: 12, fontWeight: 600,
-                color: 'var(--link)',
-              }}>你是本届评委 · 打开评委打分页 →</a>
-            )}
+            {judgeLink === 'score' && <JudgeLink label="打开评委打分页" />}
+            {/* 没有「初筛看什么」那一栏时，投票入口无处可放，落到这里 */}
+            {judgeLink === 'vote' && screening.length === 0 && <JudgeLink label="打开评委投票页" />}
           </div>
         </div>
       </div>
