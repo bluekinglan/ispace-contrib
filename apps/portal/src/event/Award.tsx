@@ -8,7 +8,7 @@ import { EVENT_JUDGES } from './judges';
 import { registerEventEffects } from './effects';
 import { LotteryStage, type LotteryHandle } from './Lottery';
 import {
-  BinaryTen, Caret, DOTS_ON_SCREEN, DotMatrix, EIcon, EventKeyframes, Mark,
+  BinaryTen, Caret, DOTS_ON_SCREEN, DotMatrix, dots1024, EIcon, EventKeyframes, Mark,
   type EventIconName,
 } from './visual';
 
@@ -278,10 +278,26 @@ export function Award() {
             position: 'absolute', left: 96, right: 96, top: 72,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24,
           }}>
-            <span className="mono" style={{
-              border: `2px solid ${theme.fg}`, borderRadius: 100,
-              padding: '8px 20px', fontSize: 20, fontWeight: 700, opacity: 0.85,
-            }}>
+            {/*
+              左边是活动本身，右边才是「现在走到哪一步」。稿上就是这个顺序：
+              一整场里左边那半句从不变，右边那半句每按一下就换一次——不变的
+              东西放左边、变的放右边，台下扫一眼就知道该看哪儿。
+            */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <div role="img" aria-label="1024" style={{
+                display: 'grid', gridTemplateColumns: 'repeat(23, 5px)', gap: 1,
+              }}>
+                {dots1024(DOTS_ON_SCREEN).map((d, i) => (
+                  <span key={i} style={{
+                    width: 5, height: 5, borderRadius: 1, background: theme.fg,
+                    opacity: d.bg === DOTS_ON_SCREEN.off ? 0.28 : 1,
+                  }} />
+                ))}
+              </div>
+              <span style={{ width: 1, height: 28, background: theme.fg, opacity: 0.3 }} />
+              <span style={{ fontSize: 24, fontWeight: 700 }}>第 8 届程序员节 · 1024·AI创新赛</span>
+            </div>
+            <span style={{ fontSize: 20, fontWeight: 600, opacity: 0.75 }}>
               {step.t === 'agenda' ? '下午安排'
                 : step.t === 'intro' ? '颁奖典礼'
                 : step.t === 'end' ? '获奖名单'
@@ -289,12 +305,6 @@ export function Award() {
                   ? `${step.award.name} · ${step.reveal ? `NO.${step.award.no}` : '即将揭晓'}`
                   : ''}
             </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <Mark size={40} tone={theme.fg === '#ffffff' ? 'orange' : 'dark'} />
-              <span style={{
-                fontFamily: 'var(--font-sans)', fontSize: 28, fontWeight: 800, letterSpacing: '-.03em',
-              }}>iSpace</span>
-            </div>
           </div>
         )}
 
@@ -337,32 +347,16 @@ export function Award() {
           />
         )}
 
-        {/* 进度条：每一步一格，当前那格变长 */}
-        <div style={{
-          position: 'absolute', left: 96, bottom: 56,
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          {steps.map((_, i) => (
-            <span key={i} style={{
-              height: 6, borderRadius: 100,
-              width: i === clamp(at) ? 64 : 24,
-              background: i <= clamp(at) ? 'currentColor' : 'rgba(127,127,127,.35)',
-              transition: 'width .3s ease, background .3s ease',
-            }} />
-          ))}
-        </div>
         {/*
-          抽奖那一步不要这句：在那儿 → 是「开始 / 停 / 下一轮」而不是「继续」，
-          写着「继续」会让主持人以为按下去就跳过抽奖了；而且它正压在抽奖
-          自己那颗角落按钮上。抽奖屏左下角有自己的键位说明。
+          这里原先有一条进度条和一句「点击或按 → 继续」，都去掉了：稿上
+          1920×1080 这块画面里没有它们——设计稿里那排步骤胶囊和进度条是
+          原型外壳上的东西，是给看稿的人切屏用的，不在投出去的画面里。
+
+          投到会议室那块屏上的每一个像素都是给台下看的，操作提示是给主持
+          人一个人看的。主持人手里有翻页笔，他知道怎么翻；台下不需要知道
+          这一场还剩几页。抽奖那一步是例外，它自己左下角留了键位说明——
+          那一步要在原地按好几下，不说清楚主持人会卡住。
         */}
-        {step.t !== 'lottery' && (
-          <span style={{
-            position: 'absolute', right: 96, bottom: 52, fontSize: 18, opacity: 0.5,
-          }}>
-            点击或按 → 继续
-          </span>
-        )}
       </div>
     </div>
   );
@@ -648,41 +642,61 @@ function AwardStage({
   const topVotes = voteBoard[0]?.votes ?? 0;
   return (
     <>
-      {/* 奖次。铺垫时居中偏上、字很大；揭晓后让位给名字 */}
+      {/*
+        奖次。铺垫与揭晓是**两种版式**，不是同一块东西缩放：
+
+        铺垫时它就是整屏——奖名 200px、金额 120px，照设计稿。这一屏上没有
+        获奖者的任何信息，大字就是全部内容，台下在这几秒里只看得到「要发
+        什么奖」。字小了这一拍就撑不住，会显得只是在等下一页。
+
+        揭晓后缩成左上角一行（奖名 40px），版面让给粒子聚出来的名字。
+      */}
       <div style={{
-        position: 'absolute', left: 96, top: reveal ? 150 : 300,
-        display: 'flex', flexDirection: 'column', gap: 14,
+        position: 'absolute', left: 96, top: reveal ? 228 : 324,
+        display: 'flex', flexDirection: 'column',
         transition: 'top .5s cubic-bezier(.16,1,.3,1)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 14,
-            background: theme.chip, color: theme.chipFg,
-            borderRadius: 100, padding: reveal ? '10px 26px' : '16px 38px',
-            fontSize: reveal ? 28 : 44, fontWeight: 800,
-            transition: 'all .5s cubic-bezier(.16,1,.3,1)',
-          }}>
-            <EIcon name={meta?.icon ?? 'award'} size={reveal ? 28 : 40} />
-            {award.name}
-          </span>
-          <span className="mono" style={{ fontSize: reveal ? 22 : 30, opacity: 0.6 }}>
-            {meta?.en}
-          </span>
-          <span className="mono" style={{ fontSize: reveal ? 26 : 34, fontWeight: 700 }}>
-            {award.money}
-          </span>
-        </div>
-        {/*
-          铺垫时才给这一句——揭晓之后版面让给获奖者，不该再有解释性文字。
-          人气奖这一句是真有信息量的：它交代了「与一二三等奖互斥」，
-          否则台下会以为票王就该是冠军。
-        */}
-        {!reveal && (
-          <span style={{ fontSize: 32, fontWeight: 600, opacity: 0.8 }}>
-            {isPop
-              ? `全员 ${voteTotal} 票选出 · 与一二三等奖互斥`
-              : `1 名 · 评委打分第${meta?.rankCn ?? ''}`}
-          </span>
+        {reveal ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 56, height: 56, borderRadius: 16,
+              background: theme.chip, color: theme.chipFg, flex: 'none',
+            }}>
+              <EIcon name={meta?.icon ?? 'award'} size={28} />
+            </span>
+            <span style={{ fontSize: 40, fontWeight: 800, lineHeight: 1 }}>{award.name}</span>
+            <span className="mono" style={{ fontSize: 32, fontWeight: 700, lineHeight: 1 }}>
+              {award.money}
+            </span>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 46, marginBottom: 10 }}>
+              <EIcon name={meta?.icon ?? 'award'} size={34} />
+              <span className="mono" style={{ fontSize: 26, fontWeight: 700, letterSpacing: '.08em' }}>
+                {meta?.en}
+              </span>
+            </div>
+            <span style={{
+              fontSize: 200, fontWeight: 900, lineHeight: 1, letterSpacing: '-.04em', whiteSpace: 'nowrap',
+            }}>{award.name}</span>
+            {/*
+              金额和这一句并排。稿上这句紧跟在金额右边、与它的底边对齐——
+              人气奖那句是真有信息量的：它交代了「与一二三等奖互斥」，
+              否则台下会以为票王就该是冠军。
+            */}
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 24, marginTop: 42 }}>
+              <span className="mono" style={{ fontSize: 120, fontWeight: 800, lineHeight: 1 }}>
+                {award.money}
+              </span>
+              <span style={{ fontSize: 32, fontWeight: 600, opacity: 0.8 }}>
+                {isPop
+                  ? `京东卡 + 奖杯 · 全员 ${voteTotal} 票选出 · 与一二三等奖互斥`
+                  : `现金 + 奖杯 · 1 名 · 评委打分第${meta?.rankCn ?? ''}`}
+              </span>
+            </div>
+          </>
         )}
       </div>
 
@@ -705,25 +719,22 @@ function AwardStage({
         style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
       />
 
-      {/* 揭晓之后才出现的那些细节 */}
+      {/*
+        名字底下那一行。稿上这里只有这一句——作品叫什么、是干嘛的，全都在
+        右边那块面板里，不在这儿重复一遍。左半屏从上到下是「奖次 → 名字 →
+        这一句」，三样东西，看得过来。
+      */}
       <div style={{
-        position: 'absolute', left: 96, top: 800, right: 96,
+        position: 'absolute', left: 96, top: 780, right: 640,
         opacity: reveal ? 1 : 0,
         transform: reveal ? 'none' : 'translateY(16px)',
         transition: 'opacity .6s ease .9s, transform .6s ease .9s',
         pointerEvents: 'none',
       }}>
-        <span style={{ display: 'block', fontSize: 30, fontWeight: 600, opacity: 0.75, marginBottom: 12 }}>
+        <span style={{ display: 'block', fontSize: 30, fontWeight: 600, opacity: 0.75 }}>
           恭喜 {award.who} · 入围编号 NO.{award.no} ·{' '}
           {isPop ? `全员投票 ${award.votes} 票` : `评委打分第${meta?.rankCn ?? ''}`}
         </span>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 28, flexWrap: 'wrap' }}>
-          <span className="mono" style={{ fontSize: 26, opacity: 0.6 }}>获奖作品 · NO.{award.no}</span>
-          <span style={{ fontSize: 54, fontWeight: 800, lineHeight: 1 }}>{award.ideaName}</span>
-        </div>
-        <p style={{ margin: '14px 0 0', fontSize: 26, lineHeight: 1.5, opacity: 0.72, maxWidth: 1100 }}>
-          {award.desc}
-        </p>
       </div>
 
       {/*
@@ -733,36 +744,54 @@ function AwardStage({
         共用同一块版面，所以位置、动画延迟都一样，切换时不会跳。
       */}
       <div style={{
-        position: 'absolute', right: 96, top: 300, width: 520,
+        position: 'absolute', right: 96, top: 226, width: 524,
         background: theme.panel, color: theme.panelFg,
         borderRadius: 24, padding: '28px 32px',
-        display: 'flex', flexDirection: 'column', gap: 18,
+        display: 'flex', flexDirection: 'column', gap: 28,
         opacity: reveal ? 1 : 0,
         transform: reveal ? 'none' : 'translateX(24px)',
         transition: 'opacity .6s ease 1.1s, transform .6s ease 1.1s',
         pointerEvents: 'none',
       }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-          <span style={{ fontSize: 18, opacity: 0.6 }}>{isPop ? '全员投票' : '评委综合分'}</span>
-          <span style={{ flex: 1 }} />
-          <span className="mono" style={{ fontSize: 56, fontWeight: 800, lineHeight: 1 }}>
-            {isPop ? award.votes : award.judgeScore!.toFixed(1)}
+        {/* 作品：编号、名字、一句话。稿上它们在这块面板顶上，和分数同属一栏 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span className="mono" style={{ fontSize: 16, fontWeight: 700, opacity: 0.6 }}>
+            获奖作品 · NO.{award.no}
           </span>
-          <span className="mono" style={{ fontSize: 20, opacity: 0.5 }}>
-            {isPop ? `票 / ${voteTotal}` : '/ 100'}
+          <span style={{ fontSize: 44, fontWeight: 900, lineHeight: 1.1 }}>{award.ideaName}</span>
+          <span style={{ fontSize: 21, fontWeight: 500, lineHeight: 1.5, opacity: 0.72 }}>
+            {award.desc}
           </span>
         </div>
         <div style={{ height: 1, background: theme.panelLine }} />
 
+        {/* 分数左对齐、单独起一行。稿上它和作品名、维度条共用同一条左边线 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, opacity: 0.6 }}>
+            {isPop ? '全员投票' : '评委综合分'}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
+            <span className="mono" style={{ fontSize: 88, fontWeight: 800, lineHeight: 1 }}>
+              {isPop ? award.votes : award.judgeScore!.toFixed(1)}
+            </span>
+            <span className="mono" style={{ fontSize: 28, fontWeight: 600, opacity: 0.5 }}>
+              {isPop ? `票 / ${voteTotal}` : '/ 100'}
+            </span>
+          </div>
+        </div>
+        <div style={{ height: 1, background: theme.panelLine }} />
+
+        {/* 横条。稿上四行等距 48px，所以这里用固定 gap，不跟外层面板的 gap 走 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
         {isPop
           ? voteBoard.map((w) => (
               <div key={w.name} style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
                   <span style={{
-                    fontSize: 19, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    fontSize: 17, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>{w.name}</span>
                   <span style={{ flex: 1 }} />
-                  <span className="mono" style={{ fontSize: 19, fontWeight: 700 }}>{w.votes} 票</span>
+                  <span className="mono" style={{ fontSize: 17, fontWeight: 700 }}>{w.votes} 票</span>
                 </div>
                 <div style={{ height: 8, borderRadius: 100, background: theme.panelLine, overflow: 'hidden' }}>
                   <div style={{
@@ -779,9 +808,9 @@ function AwardStage({
               return (
                 <div key={c.key} style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-                    <span style={{ fontSize: 19 }}>{c.key}</span>
+                    <span style={{ fontSize: 17 }}>{c.key}</span>
                     <span style={{ flex: 1 }} />
-                    <span className="mono" style={{ fontSize: 19, fontWeight: 700 }}>
+                    <span className="mono" style={{ fontSize: 17, fontWeight: 700 }}>
                       {v == null ? '—' : v.toFixed(1)} / {c.max}
                     </span>
                   </div>
@@ -795,6 +824,7 @@ function AwardStage({
                 </div>
               );
             })}
+        </div>
       </div>
     </>
   );
@@ -828,7 +858,7 @@ function Summary({ awards, judgeCount }: { awards: EventAward[]; judgeCount: num
       position: 'absolute', left: 96, right: 96, top: 170, bottom: 110,
       display: 'flex', flexDirection: 'column', gap: 28,
     }}>
-      <span style={{ fontSize: 68, fontWeight: 900, lineHeight: 1 }}>获奖名单</span>
+      <span style={{ fontSize: 72, fontWeight: 900, lineHeight: 1 }}>本届获奖作品</span>
 
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 24 }}>
         {row.map((a, i) => {
