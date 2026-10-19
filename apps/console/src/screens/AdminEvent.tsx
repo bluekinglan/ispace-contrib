@@ -727,7 +727,7 @@ function RankingCard({
                       {r.rank ?? '—'}
                     </td>
                     <td className="num" style={{ padding: 'var(--space-5) var(--space-8)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                      {r.no}
+                      {r.no ?? '未入围'}
                     </td>
                     <td style={{ padding: 'var(--space-5) var(--space-8)' }}>
                       {r.name}

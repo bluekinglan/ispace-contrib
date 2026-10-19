@@ -9,7 +9,7 @@ import {
   API_BASE, ERROR_CODES, IspaceError,
   eventAdminSchema, ideaInputSchema, scoreInputSchema, workInputSchema,
   derivePhase, phaseAtLeast,
-  type EventAdminIdea, type EventAward, type EventConfig, type EventFile, type EventFinalist,
+  type EventAdminIdea, type EventAward, type EventConfig, type EventFile, type EventFinalist, type EventOpenWork,
   type EventIdeasResponse, type EventJudgeItem, type EventJudgeResponse, type EventPhase,
   type EventScreeningRankRow, type EventScreeningResponse, type EventScreeningTallyRow,
   type EventRankRow, type EventResponse, type EventSummary, type User,
@@ -344,7 +344,8 @@ export function registerEventRoutes(
         SELECT
           (SELECT count(*) FROM ispace.event_ideas WHERE event_id = ${ev.id})                  AS ideas,
           (SELECT count(*) FROM ispace.event_ideas WHERE event_id = ${ev.id} AND finalist)     AS finalists,
-          (SELECT count(*) FROM ispace.event_works WHERE event_id = ${ev.id})                  AS works,
+          (SELECT count(*) FROM ispace.event_works w JOIN ispace.event_ideas i ON i.id = w.idea_id
+            WHERE w.event_id = ${ev.id} AND i.finalist)                                         AS works,
           (SELECT count(*) FROM ispace.event_votes WHERE event_id = ${ev.id})                  AS votes
       `,
     ]);
@@ -362,15 +363,20 @@ export function registerEventRoutes(
     */
     const showVotes = phaseAtLeast(phase, 'result');
 
-    const finalists: EventFinalist[] = showFinalists
+    /*
+      一条查询取两份：入围的（不管交没交作品），和没入围但交了作品的——
+      后者参与最佳人气奖投票，和入围作品一起摆在活动页上。没入围、也没交
+      作品的创意依旧不公开。
+    */
+    const listed = showFinalists
       ? (await sql<{
-          idea_id: string; no: string; idea_name: string; plan: string;
+          idea_id: string; no: string | null; finalist: boolean; idea_name: string; plan: string;
           who: string; owner_username: string;
           kind: string | null; work_name: string | null; pitch: string | null;
           app_slug: string | null; app_owner: string | null;
           submitted: boolean; votes: number;
         }[]>`
-          SELECT i.id AS idea_id, i.finalist_no AS no, i.name AS idea_name, i.plan,
+          SELECT i.id AS idea_id, i.finalist_no AS no, i.finalist, i.name AS idea_name, i.plan,
                  u.display_name AS who, u.username AS owner_username,
                  w.kind, w.name AS work_name, w.pitch,
                  a.slug AS app_slug, au.username AS app_owner,
@@ -382,11 +388,12 @@ export function registerEventRoutes(
             LEFT JOIN ispace.event_works w ON w.idea_id = i.id
             LEFT JOIN ispace.apps a ON a.id = w.app_id
             LEFT JOIN ispace.users au ON au.id = a.owner_id
-           WHERE i.event_id = ${ev.id} AND i.finalist
-           ORDER BY i.finalist_no
+           WHERE i.event_id = ${ev.id} AND (i.finalist OR w.id IS NOT NULL)
+           ORDER BY i.finalist DESC, i.finalist_no, w.created_at
         `).map((r) => ({
+          finalist: r.finalist,
           ideaId: r.idea_id,
-          no: r.no,
+          no: r.no ?? '',
           /* 作品的一句话介绍优先；还没交作品就先用创意里「打算怎么做」。 */
           name: r.work_name ?? r.idea_name,
           desc: r.pitch ?? r.plan,
@@ -398,6 +405,12 @@ export function registerEventRoutes(
           votes: showVotes ? Number(r.votes) : null,
         }))
       : [];
+    const finalists: EventFinalist[] = listed
+      .filter((r) => r.finalist)
+      .map(({ finalist: _f, ...r }) => r);
+    const openWorks: EventOpenWork[] = listed
+      .filter((r) => !r.finalist)
+      .map(({ finalist: _f, no: _n, submitted: _s, ...r }) => r);
 
     /*
       对外 15:10 结果公布才给；组织者（awardPreview 里的人和管理员）在所有
@@ -472,6 +485,7 @@ export function registerEventRoutes(
         judgeCount: judges.length,
       },
       finalists,
+      openWorks,
       awards,
       me: meBlock,
     };
@@ -524,7 +538,9 @@ export function registerEventRoutes(
     return { ok: true, ideaId: rows[0]!.id };
   });
 
-  // ── 交作品（需要登录 + 已入围）────────────────────────────────────
+  // ── 交作品（需要登录 + 交过创意）──────────────────────────────────
+  //
+  // 没入围的也能交：不路演、评委不打分，只参与最佳人气奖投票。
   app.put(`${API_BASE}/events/:slug/work`, async (req) => {
     const { slug } = req.params as { slug: string };
     const me = await requireAuth(req);
@@ -538,15 +554,12 @@ export function registerEventRoutes(
       throw new IspaceError(ERROR_CODES.FORBIDDEN, '交作品已经截止了');
     }
 
-    const ideaRows = await sql<{ id: string; finalist: boolean }[]>`
-      SELECT id, finalist FROM ispace.event_ideas
+    const ideaRows = await sql<{ id: string }[]>`
+      SELECT id FROM ispace.event_ideas
        WHERE event_id = ${ev.id} AND user_id = ${me.id}
     `;
     const idea = ideaRows[0];
     if (!idea) throw new IspaceError(ERROR_CODES.NOT_FOUND, '你这届没有交创意');
-    if (!idea.finalist) {
-      throw new IspaceError(ERROR_CODES.FORBIDDEN, '只有入围的创意才需要交作品');
-    }
 
     let appId: string | null = null;
     let appVersion: number | null = null;
@@ -604,12 +617,14 @@ export function registerEventRoutes(
       throw new IspaceError(ERROR_CODES.FORBIDDEN, '投票还没开始，或者已经截止了');
     }
 
+    /* 能投的：入围作品，和没入围但交了作品的（它们一起竞逐最佳人气奖） */
     const ideaRows = await sql<{ id: string; user_id: string }[]>`
-      SELECT id, user_id FROM ispace.event_ideas
-       WHERE id = ${ideaId} AND event_id = ${ev.id} AND finalist
+      SELECT i.id, i.user_id FROM ispace.event_ideas i
+       WHERE i.id = ${ideaId} AND i.event_id = ${ev.id}
+         AND (i.finalist OR EXISTS (SELECT 1 FROM ispace.event_works w WHERE w.idea_id = i.id))
     `;
     const idea = ideaRows[0];
-    if (!idea) throw new IspaceError(ERROR_CODES.NOT_FOUND, '这个作品不在入围名单里');
+    if (!idea) throw new IspaceError(ERROR_CODES.NOT_FOUND, '这个作品不在投票名单里');
     if (idea.user_id === me.id) {
       throw new IspaceError(ERROR_CODES.FORBIDDEN, '不能投给自己');
     }
@@ -1299,11 +1314,12 @@ export function registerEventRoutes(
 
     /*
       谁能看：
-        作品附件 —— 入围名单公开之后就是公开的（它要显示在活动页上）
+        作品附件 —— 入围名单公开之后就是公开的（它要显示在活动页上）。
+                    没入围交上来的作品也摆在活动页上参与投票，一样公开
         创意附件 —— 只有本人、评委、管理员。「初筛结束前创意只有评委能看到」
     */
     const phase = resolvePhase(ev, new Date());
-    let allowed = ref.is_work && ref.finalist && phaseAtLeast(phase, 'building');
+    let allowed = ref.is_work && phaseAtLeast(phase, 'building');
     if (!allowed) {
       const me = await optionalAuth(req);
       allowed = !!me && (
@@ -1351,10 +1367,13 @@ async function remainingVotes(sql: Sql, ev: EventRow, userId: string): Promise<n
  * 平均而不是求和：评委可能有人没打完，求和会让「少一个人打分」直接等于
  * 低一档名次。平均保留了可比性，同时 judged 把「这个名次由几个人给出」
  * 一并交出去，让调用方知道它够不够硬。
+ *
+ * 没入围但交了作品的也在列表里（no 为 null）：评委不给它们打分，所以永远
+ * 没有名次、拿不到一二三等奖，只在按票数排的人气奖里有份。
  */
 export async function computeRanking(sql: Sql, ev: EventRow): Promise<EventRankRow[]> {
   const rows = await sql<{
-    idea_id: string; no: string; idea_name: string; work_name: string | null;
+    idea_id: string; no: string | null; idea_name: string; work_name: string | null;
     who: string; avg_total: string | null; judged: number; votes: number;
   }[]>`
     SELECT i.id AS idea_id, i.finalist_no AS no, i.name AS idea_name,
@@ -1367,9 +1386,9 @@ export async function computeRanking(sql: Sql, ev: EventRow): Promise<EventRankR
       JOIN ispace.users u ON u.id = i.user_id
       LEFT JOIN ispace.event_works w ON w.idea_id = i.id
       LEFT JOIN ispace.event_scores s ON s.idea_id = i.id AND s.event_id = ${ev.id}
-     WHERE i.event_id = ${ev.id} AND i.finalist
-     GROUP BY i.id, i.finalist_no, i.name, w.name, u.display_name
-     ORDER BY avg_total DESC NULLS LAST, votes DESC, i.finalist_no
+     WHERE i.event_id = ${ev.id} AND (i.finalist OR w.id IS NOT NULL)
+     GROUP BY i.id, i.finalist_no, i.name, w.name, w.created_at, u.display_name
+     ORDER BY avg_total DESC NULLS LAST, votes DESC, i.finalist_no NULLS LAST, w.created_at
   `;
 
   let rank = 0;
@@ -1416,7 +1435,7 @@ export async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[
       LEFT JOIN ispace.event_works w ON w.idea_id = i.id
       LEFT JOIN ispace.apps a ON a.id = w.app_id
       LEFT JOIN ispace.users au ON au.id = a.owner_id
-     WHERE i.event_id = ${ev.id} AND i.finalist
+     WHERE i.event_id = ${ev.id} AND (i.finalist OR w.id IS NOT NULL)
   `;
   const metaById = new Map(meta.map((m) => [m.idea_id, m]));
 
@@ -1466,6 +1485,7 @@ export async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[
     taken.add(row.ideaId);
     const m = metaById.get(row.ideaId);
     out.push({
+      ideaId: row.ideaId,
       key: rule.key,
       name: rule.name,
       money: rule.money,

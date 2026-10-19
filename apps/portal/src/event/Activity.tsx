@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CURRENT_EVENT_SLUG, EVENT_PATH, judgeOnScoring, phaseAtLeast,
-  type App as AppEntity, type EventConfig, type EventFile, type EventFinalist,
-  type EventPhase, type EventResponse, type User,
+  type App as AppEntity, type EventConfig, type EventFile,
+  type EventOpenWork, type EventPhase, type EventResponse, type User,
 } from '@ispace/contracts';
 import { Avatar, Badge, Button, GlobalKeyframes, Input, Tabs, Toast, ToneProvider } from '@ispace/ui';
 import { api } from '../api';
@@ -52,6 +52,7 @@ const SHEET = 560;
 /** 页内小节的锚点。hero 的次按钮靠它滚过去。 */
 const SEC = {
   works: 'ev-sec-works',
+  open: 'ev-sec-open',
   results: 'ev-sec-results',
   rules: 'ev-sec-rules',
   awards: 'ev-sec-awards',
@@ -159,7 +160,10 @@ export function Activity() {
   let n = 0;
   const no = () => `0x0${(n += 1)}`;
 
+  /* 没入围但交了作品的。老接口没有这个字段，按空处理，部署前后错开几秒不至于白屏 */
+  const openWorks = data.openWorks ?? [];
   const showCards = (phase === 'building' || phase === 'demo' || event.votingOpen) && finalists.length > 0;
+  const showOpen = (phase === 'building' || phase === 'demo' || event.votingOpen) && openWorks.length > 0;
   const showAwards = phaseAtLeast(phase, 'result') && !!awards?.length;
   const showRules = phase === 'signup' || phase === 'screening' || phase === 'building';
 
@@ -199,6 +203,27 @@ export function Activity() {
                 </span>
                 <FinalistCards
                   data={data}
+                  items={finalists}
+                  onVoted={load}
+                  say={say}
+                />
+              </section>
+            )}
+
+            {/*
+              没入围、但四天里照样做出来交了的。不路演、评委不打分，只和
+              入围作品一起参与最佳人气奖——所以单列一节，不混进路演顺序里。
+            */}
+            {showOpen && (
+              <section className="ev-section-block ev-section-block--works" id={SEC.open}>
+                <SectionHead no={no()} title="其他参赛作品" en="OPEN ENTRIES" />
+                <span className="ev-section-caption">
+                  {`${openWorks.length} 件 · 没入围但交了作品，不路演，和入围作品一起参与最佳人气奖`}
+                  {event.votingOpen ? ` · 投票 ${fmtHm(cfg.deadlines.vote)} 截止` : ''}
+                </span>
+                <FinalistCards
+                  data={data}
+                  items={openWorks}
                   onVoted={load}
                   say={say}
                 />
@@ -218,7 +243,7 @@ export function Activity() {
                   没拿奖的那几件也要列出来，按票数。八个人做了四天，
                   名单上只留四个名字是不合适的。
                 */}
-                <RestOfField finalists={finalists} awards={awards!} />
+                <RestOfField items={[...finalists, ...openWorks]} awards={awards!} />
               </section>
             )}
 
@@ -702,13 +727,18 @@ function myStatus(data: EventResponse): { title: string; hint: string } {
               hint: `入围奖 ¥200 京东卡 · ${fmtMd(d.work)} 前交作品`,
             };
       }
-      return idea
-        ? { title: '这次没入围', hint: `${fmtMd(d.award)} 上午来看路演，扫码投票选最佳人气奖` }
-        : { title: '你没参赛', hint: `${fmtMd(d.award)} 上午来看路演，扫码投票选最佳人气奖` };
+      if (idea) {
+        return work
+          ? { title: `已交作品「${work.name}」`, hint: `没入围也参与最佳人气奖 · ${fmtMd(d.work)} 截止前可以换` }
+          : { title: '这次没入围', hint: `仍可交作品参与最佳人气奖 · ${fmtMd(d.work)} 前交` };
+      }
+      return { title: '你没参赛', hint: `${fmtMd(d.award)} 上午来看路演，扫码投票选最佳人气奖` };
     case 'demo': {
       const left = cfg.voteLimit - me.votes.length;
       return {
-        title: idea?.finalist ? `你的「${idea.name}」今天路演` : '今天现场投票',
+        title: idea?.finalist
+          ? `你的「${idea.name}」今天路演`
+          : work ? `你的「${work.name}」在争人气奖` : '今天现场投票',
         hint: left > 0
           ? `你还有 ${left} 票，不能投给自己`
           : `${cfg.voteLimit} 票已投完，${fmtHm(d.vote)} 前可以撤回重投`,
@@ -746,14 +776,21 @@ function Progress({ done, total }: { done: number; total: number }) {
   );
 }
 
+/**
+ * 卡片墙里的一张卡：入围作品带编号和「交没交」，没入围的作品两样都没有
+ * （它交了作品才会出现）。
+ */
+type CardItem = EventOpenWork & { no?: string; submitted?: boolean };
+
 function FinalistCards({
-  data, onVoted, say,
+  data, items, onVoted, say,
 }: {
   data: EventResponse;
+  items: CardItem[];
   onVoted: () => Promise<void>;
   say: (m: string, tone?: 'info' | 'error') => void;
 }) {
-  const { event, finalists, me } = data;
+  const { event, me } = data;
   /*
     投票开不开由服务端算好（event.votingOpen）。本届窗口是 10.22 18:00 –
     10.23 12:00，横跨 building 与 demo 两个阶段——用 `phase === 'demo'` 判断
@@ -762,7 +799,7 @@ function FinalistCards({
   const voting = event.votingOpen;
   const [busy, setBusy] = useState<string | null>(null);
 
-  const vote = async (f: EventFinalist) => {
+  const vote = async (f: CardItem) => {
     if (!me) { gotoLogin(); return; }
     setBusy(f.ideaId);
     try {
@@ -780,8 +817,9 @@ function FinalistCards({
 
   return (
     <div className="ev-card-grid">
-      {finalists.map((f) => {
+      {items.map((f) => {
         const isMine = !!me && f.ownerUsername === me.username;
+        const submitted = f.submitted ?? true;
         const voted = !!me && me.votes.includes(f.ideaId);
         return (
           <article key={f.ideaId} style={{
@@ -795,12 +833,12 @@ function FinalistCards({
               position: 'absolute', right: -4, bottom: -24, fontWeight: 800, fontSize: 96,
               lineHeight: 1, letterSpacing: '-.06em', color: 'rgba(251,146,60,.14)',
               pointerEvents: 'none', userSelect: 'none',
-            }}>{f.no}</span>
+            }}>{f.no ?? ''}</span>
 
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="mono" style={{
                 fontSize: 12, fontWeight: 700, letterSpacing: '.04em', color: 'var(--tabby-orange)',
-              }}>NO.{f.no}</span>
+              }}>{f.no ? `NO.${f.no}` : '人气奖参赛'}</span>
               <span style={{ flex: 1 }} />
               {!voting && f.kind && (
                 <span className="mono" style={{
@@ -816,9 +854,9 @@ function FinalistCards({
                 }}>
                   <span style={{
                     width: 6, height: 6, borderRadius: 100,
-                    background: f.submitted ? 'var(--success)' : 'var(--warning)',
+                    background: submitted ? 'var(--success)' : 'var(--warning)',
                   }} />
-                  {f.submitted ? '已交作品' : '制作中'}
+                  {submitted ? '已交作品' : '制作中'}
                 </span>
               )}
               {voting && f.votes != null && (
@@ -968,7 +1006,9 @@ function Awards({ awards, myName }: { awards: EventResponse['awards']; myName?: 
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <span className="mono" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>NO.{a.no}</span>
+            <span className="mono" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+              {a.no ? `NO.${a.no}` : '未入围作品'}
+            </span>
             {a.url ? (
               <a href={a.url} target="_blank" rel="noreferrer" style={{
                 fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', textDecoration: 'none',
@@ -995,19 +1035,20 @@ function Awards({ awards, myName }: { awards: EventResponse['awards']; myName?: 
 
 /** 其余入围作品，按票数从多到少。拿了奖的已经在上面，这里不重复。 */
 function RestOfField({
-  finalists, awards,
+  items, awards,
 }: {
-  finalists: EventFinalist[]; awards: NonNullable<EventResponse['awards']>;
+  items: CardItem[]; awards: NonNullable<EventResponse['awards']>;
 }) {
-  const won = new Set(awards.map((a) => a.no));
-  const rest = finalists
-    .filter((f) => !won.has(f.no))
+  /* 按 ideaId 认人：人气奖可能落到没入围的作品上，它没有编号可比 */
+  const won = new Set(awards.map((a) => a.ideaId));
+  const rest = items
+    .filter((f) => !won.has(f.ideaId))
     .sort((a, b) => (b.votes ?? 0) - (a.votes ?? 0));
   if (rest.length === 0) return null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-      <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>其余入围作品 · 按票数</span>
+      <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>其余参赛作品 · 按票数</span>
       <div style={{
         background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
         borderRadius: 14, padding: '2px 14px',
@@ -1018,7 +1059,7 @@ function RestOfField({
             borderBottom: i === rest.length - 1 ? 'none' : '1px solid var(--border-subtle)',
           }}>
             <span className="mono" style={{ flex: 'none', fontSize: 11, color: 'var(--text-tertiary)' }}>
-              {f.no}
+              {f.no ?? '—'}
             </span>
             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
               {f.url ? (
@@ -1370,7 +1411,8 @@ function HeroCta({
       primary = { label: '看初筛怎么评', run: () => scrollToSection(SEC.awards) };
       break;
     case 'building':
-      if (me?.idea?.finalist) {
+      /* 没入围的也能交：不路演，参与最佳人气奖 */
+      if (me?.idea) {
         primary = { label: me.work ? '更换作品' : '提交作品', run: onWork };
         second = { label: '看入围名单', run: () => scrollToSection(SEC.works) };
       } else {
@@ -1757,7 +1799,7 @@ function WorkSheet({
         </>
       )}
 
-      <Field label="一句话介绍" hint="选填。会显示在入围名单和大屏上。">
+      <Field label="一句话介绍" hint="选填。会显示在活动页的作品卡和大屏上。">
         <Input value={pitch} onChange={(e) => setPitch(e.target.value)} placeholder="它解决什么问题" maxLength={200} />
       </Field>
     </Sheet>

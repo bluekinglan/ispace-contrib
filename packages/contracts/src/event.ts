@@ -313,6 +313,7 @@ export interface EventJudgeInfo {
 export interface EventStats {
   ideaCount: number;
   finalistCount: number;
+  /** 入围作品里已交的件数。没入围交上来的不算——它是「入围 N 件交了几件」那条进度。 */
   workCount: number;
   voteTotal: number;
   /** 已提交打分的评委数 / 评委总数。活动当天给主持人和评委看进度。 */
@@ -344,11 +345,21 @@ export interface EventFinalist {
   votes: number | null;
 }
 
+/**
+ * 没入围、但交了作品的。
+ *
+ * 不路演、评委不打分、没有入围奖——只和入围作品一起参与最佳人气奖投票。
+ * 没有入围编号，也不存在「制作中」：交了作品才会出现在这个列表里。
+ */
+export type EventOpenWork = Omit<EventFinalist, 'no' | 'submitted'>;
+
 export interface EventAward {
+  ideaId: string;
   key: string;
   name: string;
   money: string;
-  no: string;
+  /** 入围编号。人气奖可能落到没入围的作品上，那时为 null。 */
+  no: string | null;
   ideaName: string;
   who: string;
   url: string | null;
@@ -406,6 +417,8 @@ export interface EventResponse {
   judges: EventJudgeInfo[];
   stats: EventStats;
   finalists: EventFinalist[];
+  /** 没入围但交了作品的，和 finalists 一样只在 building 之后返回。 */
+  openWorks: EventOpenWork[];
   awards: EventAward[] | null;
   me: EventMe | null;
 }
@@ -573,7 +586,8 @@ export interface EventScreeningTallyRow {
 /** 汇总排名。评委打分的去处——这就是「分数汇总到项目上」的那张表。 */
 export interface EventRankRow {
   ideaId: string;
-  no: string;
+  /** 入围编号。没入围、只参与人气奖的作品为 null。 */
+  no: string | null;
   name: string;
   who: string;
   /** 评委平均分（只计已提交），一位小数 */

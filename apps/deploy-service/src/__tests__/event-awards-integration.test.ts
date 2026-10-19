@@ -38,8 +38,11 @@ function parseDsn(dsn: string) {
 describe.skipIf(!DSN)('最佳人气奖与一二三等奖互斥（真实 Postgres）', () => {
   let sql: Sql;
   let ev: EventRow;
-  /** 五个入围作品，评委分从高到低：A 90 > B 85 > C 80 > D 75 > E 70 */
-  const idea: Record<'A' | 'B' | 'C' | 'D' | 'E', string> = {} as never;
+  /**
+   * 五个入围作品，评委分从高到低：A 90 > B 85 > C 80 > D 75 > E 70。
+   * 另有两个没入围的：F 交了作品（参与人气奖），G 没交（不参与）。
+   */
+  const idea: Record<'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G', string> = {} as never;
   const voters: string[] = [];
 
   beforeAll(async () => {
@@ -85,6 +88,21 @@ describe.skipIf(!DSN)('最佳人气奖与一二三等奖互斥（真实 Postgres
         `;
       }
     }
+
+    /* 没入围的两个：评委不给它们打分（打分页只列入围作品） */
+    for (const k of ['F', 'G'] as const) {
+      const author = await mkUser(`author${k.toLowerCase()}`);
+      const [row] = await sql<{ id: string }[]>`
+        INSERT INTO ispace.event_ideas (event_id, user_id, name, problem, plan)
+        VALUES (${ev.id}, ${author}, ${`作品${k}`}, 'p', 'p')
+        RETURNING id
+      `;
+      idea[k] = row!.id;
+    }
+    await sql`
+      INSERT INTO ispace.event_works (event_id, idea_id, kind, name, files)
+      VALUES (${ev.id}, ${idea.F}, 'other', '作品F', ${sql.json([])})
+    `;
   });
 
   afterAll(async () => { await sql?.end({ timeout: 5 }); });
@@ -138,5 +156,25 @@ describe.skipIf(!DSN)('最佳人气奖与一二三等奖互斥（真实 Postgres
     const judged = awards.filter((a) => a.judgeScore != null).map((a) => a.no);
     const pop = awards.find((a) => a.key === 'popular')!;
     expect(judged).not.toContain(pop.no);
+  });
+  it('没入围但交了作品的票最多：人气奖给它，没有入围编号', async () => {
+    await vote({ F: 5, D: 4 });
+    const pop = (await computeAwards(sql, ev)).find((a) => a.key === 'popular')!;
+    expect(pop.ideaName).toBe('作品F');
+    expect(pop.no).toBeNull();
+    expect(pop.ideaId).toBe(idea.F);
+  });
+
+  it('没入围的拿不到评委奖：它没有分数，一二三等奖照旧', async () => {
+    await vote({ F: 6 });
+    expect(await winner('first')).toBe('作品A');
+    expect(await winner('second')).toBe('作品B');
+    expect(await winner('third')).toBe('作品C');
+  });
+
+  it('没入围也没交作品的不参与人气奖', async () => {
+    // 接口那边投不进去；这里直接写库，确认结算这一层也不认它
+    await vote({ G: 5, D: 1 });
+    expect(await winner('popular')).toBe('作品D');
   });
 });

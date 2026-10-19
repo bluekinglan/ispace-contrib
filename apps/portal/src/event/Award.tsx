@@ -95,6 +95,15 @@ const ORANGE_THEME = { bg: '#fb923c', dot: '#f97316', fg: '#001217', wm: 'rgba(2
 /** 背景墙与切蛋糕上的深色，不跟随主题。 */
 const INK = '#1c1f23';
 
+
+/**
+ * 获奖作品的编号牌。人气奖可能落到没入围、只交了作品参与投票的项目上——
+ * 它没有入围编号，写「NO.null」或空着都会让台下以为大屏出错了。
+ */
+function noTag(no: string | null): string {
+  return no ? `NO.${no}` : '未入围作品';
+}
+
 const AWARD_META: Record<string, { en: string; rankCn: string; icon: EventIconName; wm: string }> = {
   third: { en: 'THIRD PRIZE', rankCn: '三', icon: 'award', wm: '03' },
   second: { en: 'SECOND PRIZE', rankCn: '二', icon: 'medal', wm: '02' },
@@ -291,7 +300,7 @@ export function Award() {
           whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
         }}>
           {step.t === 'award'
-            ? (step.reveal ? step.award.no : AWARD_META[step.award.key]?.wm ?? '1024')
+            ? (step.reveal ? step.award.no ?? '1024' : AWARD_META[step.award.key]?.wm ?? '1024')
             : '1024'}
         </span>}
 
@@ -326,7 +335,7 @@ export function Award() {
                   : step.t === 'intro' ? '颁奖典礼'
                   : step.t === 'end' ? '获奖名单'
                   : step.t === 'award'
-                    ? `${step.award.name} · ${step.reveal ? `NO.${step.award.no}` : '即将揭晓'}`
+                    ? `${step.award.name} · ${step.reveal ? noTag(step.award.no) : '即将揭晓'}`
                     : ''}
               </span>
             </div>
@@ -770,7 +779,8 @@ function AwardStage({
         pointerEvents: 'none',
       }}>
         <span style={{ display: 'block', fontSize: 30, fontWeight: 600, opacity: 0.75 }}>
-          恭喜 {award.who} · 入围编号 NO.{award.no} ·{' '}
+          恭喜 {award.who} ·{' '}
+          {award.no ? <>入围编号 NO.{award.no} ·{' '}</> : '未入围作品 ·\u00a0'}
           {isPop ? `全员投票 ${award.votes} 票` : `评委打分第${meta?.rankCn ?? ''}`}
         </span>
       </div>
@@ -797,7 +807,7 @@ function AwardStage({
         {/* 作品：编号、名字、一句话。稿上它们在这块面板顶上，和分数同属一栏 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span className="mono" style={{ fontSize: 16, fontWeight: 700, opacity: 0.6 }}>
-            获奖作品 · NO.{award.no}
+            获奖作品 · {noTag(award.no)}
           </span>
           <span style={{ fontSize: 44, fontWeight: 900, lineHeight: 1.1 }}>{award.ideaName}</span>
           <span style={{ fontSize: 21, fontWeight: 500, lineHeight: 1.5, opacity: 0.72 }}>
@@ -920,7 +930,7 @@ function Summary({ awards, judgeCount }: { awards: EventAward[]; judgeCount: num
                 <span className="mono" style={{ fontSize: 22, opacity: 0.7 }}>{a.money}</span>
               </div>
               <span style={{ flex: 1 }} />
-              <span className="mono" style={{ fontSize: 18, opacity: 0.55 }}>NO.{a.no}</span>
+              <span className="mono" style={{ fontSize: 18, opacity: 0.55 }}>{noTag(a.no)}</span>
               <span style={{ fontSize: 34, fontWeight: 800, lineHeight: 1.15 }}>{a.ideaName}</span>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
                 <span style={{ fontSize: 24, opacity: 0.8 }}>{a.who}</span>
