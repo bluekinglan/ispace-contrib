@@ -227,15 +227,6 @@ export function Activity() {
               no={no()}
               cfg={cfg}
               awardDate={fmtMd(cfg.deadlines.award)}
-              /*
-                评委入口。/1024/judge 这一个地址按阶段是两件事：初筛期是给创意
-                投票，入围之后是给作品打分。入口跟着变——原先只在打分期露出来，
-                初筛那两个小时评委在活动页上找不到地方点。
-              */
-              judgeLink={!(me?.isJudge || me?.isAdmin) ? null
-                : phase === 'screening' ? 'vote'
-                : phaseAtLeast(phase, 'building') && !event.judgingLocked ? 'score'
-                : null}
             />
 
             <ScheduleSection no={no()} cfg={cfg} />
@@ -295,6 +286,7 @@ function Hero({ data, onIdea, onWork }: {
 
   const count = countdown(data);
   const mine = myStatus(data);
+  const judge = judgeEntry(data);
 
   /*
     宽屏铺开、窄屏摞起来的是同一棵 DOM：版式差异全在 styles.tsx 的断点里，
@@ -444,12 +436,20 @@ function Hero({ data, onIdea, onWork }: {
                 {me && <Avatar name={me.displayName} size={28} />}
                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-heading)' }}>
-                    {mine.title}
+                    {judge ? judge.title : mine.title}
                   </span>
                   <span style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>
-                    {mine.hint}
+                    {judge ? judge.hint : mine.hint}
                   </span>
                 </div>
+                {/* 评委入口。整页只放这一处，评委打开活动页第一眼就看得到 */}
+                {judge && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => { location.href = `${EVENT_PATH}/judge`; }}
+                  >{judge.label}</Button>
+                )}
               </div>
               <div style={{ height: 1, background: 'var(--border-subtle)' }} />
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -580,6 +580,40 @@ function countdown(data: EventResponse): { num: string; unit: string } {
       };
     default:
       return { num: String(stats.ideaCount), unit: '个创意参与了本届' };
+  }
+}
+
+/**
+ * 评委（和管理员）在「当前阶段」卡里看到的那一行：一句状态 + 一颗按钮。
+ *
+ * 评委不参赛（交创意的入口就拦住了），所以「你还没交创意」「这届没赶上」
+ * 那几句对他们毫无意义——这一格换成评委入口。放在这里而不是页面深处：
+ * 评委打开活动页第一眼就该看到「去投票」，而初筛只有两个小时。
+ *
+ * /1024/judge 这一个地址按阶段是两件事：初筛期给创意投票，路演给作品打分。
+ * 打分锁定之后就没有入口了，返回 null，回落到普通的状态行。
+ */
+function judgeEntry(data: EventResponse): { title: string; hint: string; label: string } | null {
+  const { event, me } = data;
+  if (!me || !(me.isJudge || me.isAdmin) || event.judgingLocked) return null;
+  const d = event.config.deadlines;
+  const title = me.isJudge ? '你是本届评委' : '管理员 · 评委页';
+  switch (event.phase) {
+    case 'signup':
+      return { title, hint: `创意 ${fmtMdHm(d.idea)} 截止后开始初筛投票，现在可以先看创意`, label: '先看创意' };
+    case 'screening':
+      return {
+        title,
+        /* 「几点公布入围」上一行的倒数里已经写了，这里只说投票几点截止 */
+        hint: `初筛投票 ${fmtHm(d.screeningVote ?? d.screening)} 截止，投满 8 票交卷`,
+        label: '去投票',
+      };
+    case 'building':
+      return { title, hint: `${fmtMd(d.award)} 上午路演时打分，现在可以先看入围作品`, label: '看入围作品' };
+    case 'demo':
+      return { title, hint: `路演现场打分 · ${fmtHm(d.judgeLock ?? d.vote)} 锁定`, label: '去打分' };
+    default:
+      return null;
   }
 }
 
@@ -1061,22 +1095,10 @@ function yuan(s: string): number | null {
   return m?.[1] ? Number(m[1].replace(/,/g, '')) : null;
 }
 
-/** 评委入口那一行。两个阶段同一个地址，只是字不同。 */
-function JudgeLink({ label }: { label: string }) {
-  return (
-    <a href={`${EVENT_PATH}/judge`} style={{
-      alignSelf: 'flex-start', fontSize: 12, fontWeight: 600,
-      color: 'var(--link)',
-    }}>你是本届评委 · {label} →</a>
-  );
-}
-
 function PrizesSection({
-  no, cfg, awardDate, judgeLink,
+  no, cfg, awardDate,
 }: {
   no: string; cfg: EventConfig; awardDate: string;
-  /** vote = 初筛期去投票，score = 入围后去打分，null = 不显示 */
-  judgeLink: 'vote' | 'score' | null;
 }) {
   /*
     前三名上领奖台（二在左、一居中更高、三在右，由 ev-main-prize-rank-N 定位），
@@ -1190,7 +1212,6 @@ function PrizesSection({
               {cfg.screeningNote && (
                 <span className="ev-criteria-note">{cfg.screeningNote}</span>
               )}
-              {judgeLink === 'vote' && <JudgeLink label="打开评委投票页" />}
             </div>
           )}
           <div className="ev-criteria-panel ev-criteria-panel-score">
@@ -1211,9 +1232,6 @@ function PrizesSection({
               {cfg.judgingNote
                 ?? '路演作品全靠评委打分排名次，定一、二、三等奖；现场扫码投票只用来选最佳人气奖。'}
             </span>
-            {judgeLink === 'score' && <JudgeLink label="打开评委打分页" />}
-            {/* 没有「初筛看什么」那一栏时，投票入口无处可放，落到这里 */}
-            {judgeLink === 'vote' && screening.length === 0 && <JudgeLink label="打开评委投票页" />}
           </div>
         </div>
       </div>
