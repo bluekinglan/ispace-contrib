@@ -936,9 +936,23 @@ export const fmtBytes = (n: number): string =>
   : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB`
   : `${(n / 1048576).toFixed(1)} MB`;
 
+/**
+ * 「YYYY-MM-DD HH:mm」，按浏览器本地时区。
+ *
+ * 原先是直接切 ISO 字符串的前 16 位。服务端给的时间都是 toISOString()
+ * 出来的、带 Z 的 UTC，切出来就是 UTC——北京时间 17:55 交的创意在后台显示
+ * 成 09:55，整个控制台的时间都早 8 小时。带 +08:00 的配置时间碰巧切对了，
+ * 所以一直没人发现。
+ *
+ * 只有日期的字符串（YYYY-MM-DD）原样返回：new Date 会把它当 UTC 零点，
+ * 换成本地反而多出一个 08:00。
+ */
 export const fmtDate = (d: string | Date): string => {
-  const s = typeof d === 'string' ? d : d.toISOString();
-  return s.slice(0, 16).replace('T', ' ');
+  if (typeof d === 'string' && d.length <= 10) return d;
+  const t = typeof d === 'string' ? new Date(d) : d;
+  if (Number.isNaN(t.getTime())) return typeof d === 'string' ? d.slice(0, 16).replace('T', ' ') : '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`;
 };
 export * from './icons.js';
 export * from './share.js';
