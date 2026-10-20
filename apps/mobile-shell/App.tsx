@@ -16,7 +16,12 @@ import { Settings, type SettingKey } from './src/shell/Settings';
 import { AgentChat, type EditTarget } from './src/shell/AgentChat';
 import { Launcher, type LaunchItem } from './src/shell/Launcher';
 import { WebPage, type WebPageTarget } from './src/shell/WebPage';
-import { Market } from './src/shell/Market';
+import { Explore } from './src/shell/Explore';
+import { Community } from './src/shell/Community';
+import { Messages } from './src/shell/Messages';
+import { Profile } from './src/shell/Profile';
+import { Interests } from './src/shell/Interests';
+import { api, type Listing } from './src/api';
 
 import { ShellTabs, type ShellTab } from './src/shell/ShellTabs';
 import { checkShellUpdate } from './src/runtime/shell-update';
@@ -26,7 +31,8 @@ import {
   switchToUserChannel, versionInfo, type LoadPhase,
 } from './src/runtime/channel';
 import {
-  deviceId, getDefaultHome, session, setDefaultHome, unlockWithBiometrics,
+  deviceId, getDefaultHome, interestsAsked, markInterestsAsked, session,
+  setDefaultHome, unlockWithBiometrics,
 } from './src/runtime/bridge';
 import appJson from './app.json';
 
@@ -65,6 +71,8 @@ const SHELL_VERSION: string = appJson.expo.version;
 interface Me {
   user: { username: string; displayName: string; identity: 'user' | 'developer' };
   spaceUrl: string;
+  /** /me 本来就带着它，改版前壳没用上——「我」那一屏顶上的容量 chip 要。 */
+  quota?: { storageBytesUsed: number; storageBytesLimit: number };
 }
 
 /**
@@ -96,13 +104,23 @@ export default function App() {
  * 壳内的一屏。栈只有两层深（首页 + 一个详情），够用且没有回退迷路的风险。
  */
 type ShellView =
+  /** 首页：用户自己设过默认页就是那一页，没设就是探索 */
   | { kind: 'home' }
   | { kind: 'screen'; route: string; name: string }
   | { kind: 'web'; target: WebPageTarget }
+  /* ── 底栏的五个去处（移动端 v2 稿）────────────────────────── */
+  | { kind: 'explore' }
+  | { kind: 'community' }
+  | { kind: 'msg' }
+  | { kind: 'me' }
+  /** 助手。底栏左边那颗圆钮，不是一个 tab 格子但也是一个去处 */
+  | { kind: 'assistant' }
+  /** 我的页面宫格。从「我」里进去，不再占底栏的位置 */
   | { kind: 'works' }
-  | { kind: 'market' }
-  | { kind: 'chat' }
-  | { kind: 'me' };
+  /** 设置。从「我」右上角那颗齿轮进去，是「我」的下一层 */
+  | { kind: 'settings' }
+  /** 首次登录问一次「你常做什么」 */
+  | { kind: 'interests' };
 
 /** 活动接口里横幅用得上的那几项。只取用到的，不复刻整个响应类型。 */
 type EventPayload = {
@@ -195,6 +213,19 @@ function Root() {
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   /** 只有自己的页面能改，别人分享来的不列进去。 */
   const [myTargets, setMyTargets] = useState<EditTarget[]>([]);
+  /**
+   * 「照这个做一个」带过去的那句话。
+   *
+   * 用一次就清掉（AgentChat 收到后回调 onSeedUsed）：它是一次性的意图，
+   * 留着的话，用户下次自己点开助手会发现输入框里莫名其妙躺着别人的提示词。
+   */
+  const [remixSeed, setRemixSeed] = useState<string | null>(null);
+  /** 发帖时能附的页面；也是「我 · 喜欢」那一栏的数据源。 */
+  const [myListings, setMyListings] = useState<Listing[]>([]);
+  /** 待接受的分享数。只用来在「消息」那格点一个点。 */
+  const [pendingShares, setPendingShares] = useState(0);
+  /** 容量，给「我」那一屏顶上的 chip。拿不到就不显示。 */
+  const [quota, setQuota] = useState<{ usedBytes: number; limitBytes: number } | undefined>(undefined);
   const [prefs, setPrefs] = useState({
     autoUpdate: true, wifiOnly: true, voiceTextOnly: true,
     clearDraftOnLogout: false, biometricLock: false,
@@ -315,6 +346,44 @@ function Root() {
   useEffect(() => { void loadWebApps(); }, [loadWebApps]);
 
   /*
+    社交那几屏要的数据。和 loadWebApps 分开拉：那一份是"我的页面"，
+    这一份是"全公司的东西"，一边挂了不该让另一边空着。
+
+    拉的是整份 /marketplace 而不是只拉我的——「我 · 喜欢」那一栏要从里面
+    筛 liked，而那恰恰是别人的页面。
+  */
+  useEffect(() => {
+    if (!token) return;
+    void api.marketplace(token)
+      .then((r) => setMyListings(r.listings.filter((l) => l.mine)))
+      .catch(() => setMyListings([]));
+    void api.pendingShares(token)
+      .then((r) => setPendingShares(r.shares.length))
+      .catch(() => setPendingShares(0));
+  }, [token]);
+
+  /* 容量跟着 me 走，没有就不显示那颗 chip */
+  useEffect(() => {
+    const q = me?.quota;
+    setQuota(q ? { usedBytes: q.storageBytesUsed, limitBytes: q.storageBytesLimit } : undefined);
+  }, [me]);
+
+  /*
+    首次登录问一次「你常做什么」。
+
+    问过就不再问——哪怕一个都没选（「跳过」也是一种回答）。判断依据是本机
+    的一个标记而不是服务端的 interests 是否为空：空数组既可能是"还没问过"，
+    也可能是"问过、他跳过了"，而把跳过的人每次登录都再拦一次，是这一屏最
+    容易犯的错。
+  */
+  useEffect(() => {
+    if (!me || !token) return;
+    void interestsAsked().then((asked) => {
+      if (!asked) setView({ kind: 'interests' });
+    });
+  }, [me, token]);
+
+  /*
     活动横幅。带上令牌是为了拿到「我交没交创意」那一块；没有令牌也能拉到
     活动本身（接口免登录），所以这一下不等登录完成。
 
@@ -423,7 +492,7 @@ function Root() {
   const homeItem = homeKey ? launchItems.find((i) => i.key === homeKey) : undefined;
 
   const openItem = (it: LaunchItem) => {
-    if (it.kind === 'market') setView({ kind: 'market' });
+    if (it.kind === 'market') setView({ kind: 'explore' });
     else if (it.kind === 'web') setView({ kind: 'web', target: { path: it.path, title: it.name } });
     else setView({ kind: 'screen', route: it.route, name: it.name });
   };
@@ -431,8 +500,26 @@ function Root() {
   if (view.kind === 'web') {
     return <WebPage target={view.target} token={token} onBack={() => setView({ kind: 'home' })} />;
   }
-  /* 底部四个 tab 都是壳自己的屏，切换只是换 view，不入栈 */
+  /* 底栏的几个去处都是壳自己的屏，切换只是换 view，不入栈 */
   const goTab = (t: ShellTab) => setView({ kind: t });
+
+  /** 底栏。五屏共用一份，省得每屏抄一遍那七个 props。 */
+  const tabs = (active: ShellTab, dark = false) => (
+    <ShellTabs
+      active={active}
+      onChange={goTab}
+      avatarLetter={avatarLetter(me.user.displayName)}
+      dark={dark}
+      pageUpdate={updateReady && !bannerHidden}
+      onApplyPageUpdate={() => void applyUpdate(setPhase)}
+      onDismissPageUpdate={() => setBannerHidden(true)}
+      shellUpdate={shellUp}
+      unread={pendingShares > 0}
+    />
+  );
+
+  const openWeb = (path: string, title: string) =>
+    setView({ kind: 'web', target: { path, title } });
 
   if (view.kind === 'works') {
     return (
@@ -450,7 +537,7 @@ function Root() {
               kind: 'web', target: { path: EVENT_PATH, title: '1024 程序员节' },
             }),
           } : {})}
-          onNew={() => { setEditTarget(null); setView({ kind: 'chat' }); }}
+          onNew={() => { setEditTarget(null); setView({ kind: 'assistant' }); }}
           onSetHome={(it) => {
             const next = homeKey === it.key ? null : it.key;
             setHomeKey(next);
@@ -459,83 +546,149 @@ function Root() {
           onEdit={(it) => {
             const slug = it.kind === 'web' ? it.path.split('/').filter(Boolean)[1] : undefined;
             const t = slug ? myTargets.find((m) => m.slug === slug) : undefined;
-            if (t) { setEditTarget(t); setView({ kind: 'chat' }); }
+            if (t) { setEditTarget(t); setView({ kind: 'assistant' }); }
           }}
         />
-        <ShellTabs
-          active="works" onChange={goTab}
-          pageUpdate={updateReady && !bannerHidden}
-          onApplyPageUpdate={() => void applyUpdate(setPhase)}
-          onDismissPageUpdate={() => setBannerHidden(true)}
-          shellUpdate={shellUp}
-        />
+        {tabs('me')}
       </View>
     );
   }
 
-  if (view.kind === 'market') {
+  if (view.kind === 'explore') {
     return (
       <View style={{ flex: 1 }}>
-        <Market token={token} onChanged={() => void loadWebApps()} />
-        <ShellTabs
-          active="market" onChange={goTab}
-          pageUpdate={updateReady && !bannerHidden}
-          onApplyPageUpdate={() => void applyUpdate(setPhase)}
-          onDismissPageUpdate={() => setBannerHidden(true)}
-          shellUpdate={shellUp}
+        <Explore
+          token={token}
+          onOpen={(l) => openWeb(`/${l.owner_username}/${l.slug}/`, l.name)}
+          onRemix={(l) => {
+            /*
+              「照这个做一个」就是带着那句话去助手。目标置空——这是做新的，
+              不是改已有的那个；不置空的话，发布时会覆盖上一次在改的页面。
+            */
+            setEditTarget(null);
+            setRemixSeed(l.source_prompt ?? `做一个和「${l.name}」类似的页面：`);
+            setView({ kind: 'assistant' });
+          }}
+          onAuthor={(u) => openWeb(`/${u}`, u)}
+          onInstalled={() => void loadWebApps()}
         />
+        {tabs('explore', true)}
       </View>
+    );
+  }
+
+  if (view.kind === 'community') {
+    return (
+      <View style={{ flex: 1 }}>
+        <Community
+          token={token}
+          myApps={myListings}
+          onOpenApp={(owner, slug, name) => openWeb(`/${owner}/${slug}/`, name)}
+          onAuthor={(u) => openWeb(`/${u}`, u)}
+        />
+        {tabs('community')}
+      </View>
+    );
+  }
+
+  if (view.kind === 'msg') {
+    return (
+      <View style={{ flex: 1 }}>
+        <Messages
+          token={token}
+          pageUpdate={updateReady}
+          onApplyPageUpdate={() => void applyUpdate(setPhase)}
+          {...(eventBanner ? {
+            event: { title: eventBanner.title, desc: eventBanner.desc },
+            onOpenEvent: () => openWeb(EVENT_PATH, '1024 程序员节'),
+          } : {})}
+          onWorks={() => { void loadWebApps(); setView({ kind: 'me' }); }}
+        />
+        {tabs('msg')}
+      </View>
+    );
+  }
+
+  if (view.kind === 'interests') {
+    return (
+      <Interests
+        token={token}
+        initial={[]}
+        onDone={() => { void markInterestsAsked(); setView({ kind: 'explore' }); }}
+      />
     );
   }
 
   /*
-    对话是从「我的作品」进来的一层，不是一个 tab。
-    它有返回、没有底栏——进来时已经带着主语（改哪个页面，或做个新的），
-    做完就退回作品列表，不是一个要常驻的去处。
+    助手。移动端 v2 把它从「我的作品里的一层」提成了底栏左边那颗圆钮——
+    新稿的首屏是刷别人的页面，"我要做一个"没有别的地方可挂了。
+
+    键盘弹起时收掉底栏：输入法已经占掉半屏，再浮一条 60 的胶囊，正在打字
+    的那一行就被压到看不见了。
   */
-  if (view.kind === 'chat') {
+  if (view.kind === 'assistant') {
     return (
-      <AgentChat
-        username={me.user.username}
-        target={editTarget}
-        targets={myTargets}
-        onPickTarget={setEditTarget}
-        onKeyboard={setKbUp}
-        onBack={() => setView({ kind: 'works' })}
-      />
+      <View style={{ flex: 1 }}>
+        <AgentChat
+          username={me.user.username}
+          target={editTarget}
+          targets={myTargets}
+          seed={remixSeed}
+          onSeedUsed={() => setRemixSeed(null)}
+          onPickTarget={setEditTarget}
+          onKeyboard={setKbUp}
+        />
+        {!kbUp && tabs('assistant')}
+      </View>
     );
   }
 
   if (view.kind === 'me') {
     return (
       <View style={{ flex: 1 }}>
-        <Settings
-          user={me.user}
+        <Profile
+          token={token}
+          username={me.user.username}
+          displayName={me.user.displayName}
           spaceUrl={me.spaceUrl}
-          bundleVersion={v.updateId ? v.updateId.slice(0, 8) : '内嵌包'}
-          updateChannel={channelNameFor(me.user.username)}
-          autoUpdate={prefs.autoUpdate}
-          wifiOnly={prefs.wifiOnly}
-          voiceTextOnly={prefs.voiceTextOnly}
-          clearDraftOnLogout={prefs.clearDraftOnLogout}
-          biometricLock={prefs.biometricLock}
-          onToggle={(k: SettingKey, val) => {
-            setPrefs((p) => ({ ...p, [k]: val }));
-            if (k === 'biometricLock' && val) void unlockWithBiometrics('开启后回到应用需要验证');
-          }}
-          onCheckUpdate={() => void checkQuietly().then((r) => setUpdateReady(r.available))}
-          onRollback={() => void rollbackToPrevious(me.user.username)}
-          onLogout={() => { setMe(null); setView({ kind: 'home' }); }}
-          onClose={() => goTab('home')}
+          {...(quota ? { quota } : {})}
+          pages={launchItems
+            .filter((it): it is Extract<LaunchItem, { kind: 'web' }> => it.kind === 'web')
+            .map((it) => ({
+              key: it.key, name: it.name, letter: it.letter,
+              cover: it.cover ?? null, owner: it.owner, path: it.path,
+            }))}
+          onOpenPath={(path, name) => openWeb(path, name)}
+          onSettings={() => setView({ kind: 'settings' })}
+          onConsole={() => openWeb('/console', '控制台')}
+          onAuthor={(u) => openWeb(`/${u}`, u)}
         />
-        <ShellTabs
-          active="me" onChange={goTab}
-          pageUpdate={updateReady && !bannerHidden}
-          onApplyPageUpdate={() => void applyUpdate(setPhase)}
-          onDismissPageUpdate={() => setBannerHidden(true)}
-          shellUpdate={shellUp}
-        />
+        {tabs('me')}
       </View>
+    );
+  }
+
+  if (view.kind === 'settings') {
+    return (
+      <Settings
+        user={me.user}
+        spaceUrl={me.spaceUrl}
+        bundleVersion={v.updateId ? v.updateId.slice(0, 8) : '内嵌包'}
+        updateChannel={channelNameFor(me.user.username)}
+        autoUpdate={prefs.autoUpdate}
+        wifiOnly={prefs.wifiOnly}
+        voiceTextOnly={prefs.voiceTextOnly}
+        clearDraftOnLogout={prefs.clearDraftOnLogout}
+        biometricLock={prefs.biometricLock}
+        onToggle={(k: SettingKey, val) => {
+          setPrefs((p) => ({ ...p, [k]: val }));
+          if (k === 'biometricLock' && val) void unlockWithBiometrics('开启后回到应用需要验证');
+        }}
+        onCheckUpdate={() => void checkQuietly().then((r) => setUpdateReady(r.available))}
+        onRollback={() => void rollbackToPrevious(me.user.username)}
+        onLogout={() => { setMe(null); setView({ kind: 'home' }); }}
+        onClose={() => setView({ kind: 'me' })}
+      />
     );
   }
 
@@ -544,13 +697,7 @@ function Root() {
       <View style={{ flex: 1 }}>
         {/* 首页是根：不给返回键，出口是底下那条 tab */}
         <WebPage target={{ path: homeItem.path, title: homeItem.name }} token={token} />
-        <ShellTabs
-          active="home" onChange={goTab}
-          pageUpdate={updateReady && !bannerHidden}
-          onApplyPageUpdate={() => void applyUpdate(setPhase)}
-          onDismissPageUpdate={() => setBannerHidden(true)}
-          shellUpdate={shellUp}
-        />
+        {tabs('explore')}
       </View>
     );
   }
@@ -599,16 +746,17 @@ function Root() {
         单页应用（soloPage）也保留这条：它没有启动器，市场就成了到不了的
         地方，而那正是他去看别人做了什么的唯一入口。
       */}
-      {view.kind === 'home' && <ShellTabs
-          active="home" onChange={goTab}
-          pageUpdate={updateReady && !bannerHidden}
-          onApplyPageUpdate={() => void applyUpdate(setPhase)}
-          onDismissPageUpdate={() => setBannerHidden(true)}
-          shellUpdate={shellUp}
-        />}
+      {view.kind === 'home' && tabs('explore')}
 
     </ShellChrome>
   );
+}
+
+/** 头像里的那个字。中文取最后一个字，英文取首字母——与电脑端同一条规则。 */
+function avatarLetter(name: string): string {
+  const t = (name || '').trim();
+  if (!t) return '·';
+  return /[\u4e00-\u9fa5]/.test(t) ? t.slice(-1) : t.slice(0, 1).toUpperCase();
 }
 
 /**
@@ -665,6 +813,8 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const [scanning, setScanning] = useState(false);
+  /** 开了 SSO 时，邮箱表单收在一颗「邮箱」后面——稿上那颗次要胶囊。 */
+  const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
     void fetch(`${API_BASE}/deploy/api/auth/policy`)
@@ -704,80 +854,115 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
     );
   }
 
+  /*
+    版式照移动端 v2 稿第 01 屏：整屏深色、底下一句大字、两颗胶囊。
+    稿上大字上方是一片页面封面拼贴——那些封面要登录才拿得到（/marketplace
+    要会话），所以这里换成同一套品牌色的色块：构图一致，但不假装展示了
+    并不存在的内容。
+  */
+  const emailReady = email.trim().length > 0 && password.length > 0;
+  const showForm = !ssoEnabled || formOpen;
+
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1 }}
+      style={{ flex: 1, backgroundColor: '#100f0e' }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={[s.center, { paddingTop: insets.top }]}>
-        <BrandMark />
-        <Text style={s.greeting}>Happy Working</Text>
-        <Text style={s.title}>你的专属应用</Text>
-
-        <View style={s.form}>
-          <TextInput
-            style={s.input}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="公司邮箱"
-            placeholderTextColor="#909599"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="email"
-            editable={!busy}
-          />
-          <TextInput
-            style={s.input}
-            value={password}
-            onChangeText={setPassword}
-            placeholder="密码"
-            placeholderTextColor="#909599"
-            secureTextEntry
-            autoCapitalize="none"
-            autoComplete="password"
-            editable={!busy}
-            onSubmitEditing={() => { if (email.trim() && password) void login(); }}
-          />
-          {err && <Text style={s.formErr}>{err}</Text>}
-          <Pressable
-            style={[s.btn, s.btnPrimary, (busy || !email.trim() || !password) && { opacity: 0.4 }]}
-            disabled={busy || !email.trim() || !password}
-            onPress={() => void login()}
-          >
-            <Text style={s.btnPrimaryText}>{busy ? '登录中…' : '登录'}</Text>
-          </Pressable>
-
-          {ssoEnabled && (
-            <Pressable
-              style={s.linkBtn}
-              onPress={() => { void openSsoAndAwait().then((m) => m && onLoggedIn(m)); }}
-            >
-              <Text style={s.linkText}>用公司账号（SSO）登录</Text>
-            </Pressable>
-          )}
+      <View style={[s.loginRoot, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 28 }]}>
+        <View style={s.loginBrand}>
+          <BrandMark />
+          <Text style={s.loginWordmark}>iSPACE</Text>
         </View>
 
-        {/* 扫码登录（设计稿第 10 屏的次要入口）：电脑上已登录的话，
-            头像菜单里生成二维码，扫一下就不用在手机上敲密码。 */}
-        <Pressable style={s.linkBtn} onPress={() => setScanning(true)} disabled={busy}>
-          <Text style={s.linkText}>扫码登录</Text>
+        <View style={s.collage} pointerEvents="none">
+          {COLLAGE.map((c, i) => (
+            <View key={i} style={[s.collageTile, { backgroundColor: c.bg, height: c.h, marginTop: c.top }]} />
+          ))}
+        </View>
+
+        <View style={{ flex: 1 }} />
+
+        <Text style={s.loginTitle}>用同事的{'\n'}做自己的</Text>
+        <Text style={s.loginSub}>下一个，做给组里每天都要用它的人。</Text>
+
+        {ssoEnabled && (
+          <Pressable
+            style={s.loginPrimary}
+            onPress={() => { void openSsoAndAwait().then((m) => m && onLoggedIn(m)); }}
+            disabled={busy}
+          >
+            <Text style={s.loginPrimaryText}>用公司账号登录</Text>
+          </Pressable>
+        )}
+
+        {!showForm ? (
+          <Pressable style={s.loginSecondary} onPress={() => setFormOpen(true)}>
+            <Text style={s.loginSecondaryText}>邮箱</Text>
+          </Pressable>
+        ) : (
+          <View style={s.loginForm}>
+            <TextInput
+              style={s.loginInput}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="公司邮箱"
+              placeholderTextColor="rgba(255,255,255,.45)"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              editable={!busy}
+            />
+            <TextInput
+              style={s.loginInput}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="密码"
+              placeholderTextColor="rgba(255,255,255,.45)"
+              secureTextEntry
+              autoCapitalize="none"
+              autoComplete="password"
+              editable={!busy}
+              onSubmitEditing={() => { if (emailReady) void login(); }}
+            />
+            {err && <Text style={s.loginErr}>{err}</Text>}
+            <Pressable
+              style={[s.loginPrimary, !emailReady && { opacity: 0.4 }]}
+              disabled={busy || !emailReady}
+              onPress={() => void login()}
+            >
+              <Text style={s.loginPrimaryText}>{busy ? '登录中…' : '登录'}</Text>
+            </Pressable>
+          </View>
+        )}
+
+        <Pressable style={s.loginLink} onPress={() => setScanning(true)} disabled={busy}>
+          <Text style={s.loginLinkText}>扫码登录 · 电脑上已登录就不用敲密码</Text>
         </Pressable>
 
         {/* 注册引导到桌面端：空间标识那一栏在小屏上很难解释清楚，
             而它是长期对外的地址，值得在电脑前想清楚再定。 */}
-        <Text style={s.hintText}>
-          还没有账号？在电脑上打开 {'\n'}{DISPLAY_HOST} 注册
-        </Text>
-
-        <Text style={s.footnote}>
+        <Text style={s.loginFoot}>
+          还没有账号？在电脑上打开 {DISPLAY_HOST} 注册{'\n'}
           壳 {SHELL_VERSION} · runtimeVersion {v.runtimeVersion}
-          {'\n'}{DISPLAY_HOST}/updates
         </Text>
       </View>
     </KeyboardAvoidingView>
   );
 }
+
+/**
+ * 登录页顶上那片色块。
+ *
+ * 纯装饰：三列错落的圆角块，取的是品牌 wash 那一组色。它替掉了稿上的
+ * 封面拼贴（那些要登录才拿得到），所以刻意不放任何文字——不让人误以为
+ * 这是某个真实页面的缩略图。
+ */
+const COLLAGE = [
+  { bg: '#36241e', h: 150, top: 40 }, { bg: '#2f3b2f', h: 150, top: 110 },
+  { bg: '#34373b', h: 140, top: 70 }, { bg: '#3a3120', h: 130, top: 0 },
+  { bg: '#2a2745', h: 150, top: 0 }, { bg: '#36241e', h: 150, top: 0 },
+];
 
 /**
  * 扫码登录的取景屏。
@@ -1071,6 +1256,43 @@ function Splash() {
 }
 
 const s = StyleSheet.create({
+  // ── 登录（移动端 v2 稿 01）──────────────────────────────────────
+  loginRoot: { flex: 1, paddingHorizontal: 24, gap: 14 },
+  loginBrand: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-end' },
+  loginWordmark: { fontSize: 22, fontWeight: '600', color: '#fff', letterSpacing: -0.2 },
+  collage: {
+    position: 'absolute', left: -40, right: -40, top: 0, height: 320,
+    flexDirection: 'row', flexWrap: 'wrap', gap: 14, opacity: 0.9,
+    transform: [{ rotate: '-9deg' }],
+  },
+  collageTile: { width: 150, borderRadius: 28 },
+  loginTitle: { fontSize: 50, fontWeight: '900', lineHeight: 56, color: '#fff', letterSpacing: -1 },
+  loginSub: { fontSize: 16, color: 'rgba(255,255,255,.72)', paddingBottom: 10 },
+  loginPrimary: {
+    height: 60, borderRadius: 30, backgroundColor: '#ee5c2a',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  loginPrimaryText: { fontSize: 17, fontWeight: '700', color: '#fff' },
+  loginSecondary: {
+    height: 56, borderRadius: 28, backgroundColor: '#1e1c1a',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,.14)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  loginSecondaryText: { fontSize: 17, fontWeight: '700', color: '#fff' },
+  loginForm: { gap: 10 },
+  loginInput: {
+    height: 56, borderRadius: 28, paddingHorizontal: 22,
+    backgroundColor: '#1e1c1a', borderWidth: 1, borderColor: 'rgba(255,255,255,.14)',
+    fontSize: 16, color: '#fff',
+  },
+  loginErr: { fontSize: 14, color: '#ff8a8a', paddingHorizontal: 8 },
+  loginLink: { alignItems: 'center', paddingTop: 6 },
+  loginLinkText: { fontSize: 14, color: 'rgba(255,255,255,.72)' },
+  loginFoot: {
+    paddingTop: 8, textAlign: 'center', fontSize: 12.5, lineHeight: 20,
+    color: 'rgba(255,255,255,.45)',
+  },
+
   center: {
     flex: 1, alignItems: 'center', justifyContent: 'center',
     padding: 32, gap: 8, backgroundColor: '#fcfcf8',

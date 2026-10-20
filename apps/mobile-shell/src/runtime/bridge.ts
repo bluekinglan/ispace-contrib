@@ -174,3 +174,23 @@ export async function setDefaultHome(key: string | null): Promise<void> {
     else await SecureStore.deleteItemAsync(HOME_KEY);
   } catch { /* 存不下就下次再问，不该让设置这个动作报错 */ }
 }
+
+/**
+ * 「选方向」问过没有。
+ *
+ * 存本机而不是看服务端的 interests 是否为空：空数组既可能是"还没问过"，
+ * 也可能是"问过、他跳过了"。把跳过的人每次登录都再拦一次，是这一屏最
+ * 容易犯的错。
+ *
+ * 代价是换一台手机会再问一次——这反而是对的：那台手机上的人可能真的是
+ * 另一个人，而这一屏只问一次、十秒就过。
+ */
+const INTERESTS_ASKED = 'ispace.interests.asked';
+
+export async function interestsAsked(): Promise<boolean> {
+  try { return (await SecureStore.getItemAsync(INTERESTS_ASKED)) === '1'; } catch { return true; }
+}
+
+export async function markInterestsAsked(): Promise<void> {
+  try { await SecureStore.setItemAsync(INTERESTS_ASKED, '1'); } catch { /* 存不下就下次再问一次 */ }
+}

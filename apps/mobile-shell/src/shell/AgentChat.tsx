@@ -42,7 +42,7 @@ export interface EditTarget {
 }
 
 export function AgentChat({
-  username, target, targets, onPickTarget, onKeyboard, onBack,
+  username, target, targets, onPickTarget, onKeyboard, onBack, seed, onSeedUsed,
 }: {
   username: string;
   target: EditTarget | null;
@@ -51,8 +51,16 @@ export function AgentChat({
   onPickTarget: (t: EditTarget | null) => void;
   /** 键盘起落。由外层决定要不要把底部 tab 收起来。 */
   onKeyboard?: (up: boolean) => void;
-  /** 退回「我的作品」。对话不再是 tab，得有路回去。 */
-  onBack?: () => void;
+  /** 退回上一层。助手现在是底栏的一个去处，所以这个是可选的。 */
+  onBack?: (() => void) | undefined;
+  /**
+   * 「照这个做一个」带过来的那句话：填进输入框，**不自动发送**。
+   *
+   * 不自动发是因为这句话是别人写的——用户多半要改几个字（换个名字、
+   * 加一条自己的规矩）。直接发出去，他第一步要做的就是打断它。
+   */
+  seed?: string | null | undefined;
+  onSeedUsed?: (() => void) | undefined;
 }) {
   const insets = useSafeAreaInsets();
   const [picking, setPicking] = useState(false);
@@ -98,6 +106,13 @@ export function AgentChat({
   }, [onKeyboard]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
+
+  /* 带过来的那句话落进输入框，然后立刻清掉外面那份，免得回来又填一次 */
+  useEffect(() => {
+    if (!seed) return;
+    setInput(seed);
+    onSeedUsed?.();
+  }, [seed, onSeedUsed]);
   const [busy, setBusy] = useState(false);
   const [images, setImages] = useState<{ mimeType: string; dataBase64: string }[]>([]);
 
