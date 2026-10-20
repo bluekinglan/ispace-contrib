@@ -549,6 +549,114 @@ const freshGen = (text: string, images: AgentImage[], choice: AgentChoice): Gen 
   choice, steps: [], says: [], busy: true, publishedUrl: null,
 });
 
+// ── 工作区实时预览 ─────────────────────────────────────────────────────
+/** 预览页面回流上来的一条错误。 */
+interface PreviewErr { level: string; text: string }
+
+/** 一页最多留这么多条。页面里一个每帧抛异常的循环能在一秒里产出几十条。 */
+const MAX_ERRS = 50;
+
+/**
+ * 工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）。
+ *
+ * 做三件事：
+ *   1. 开一个预览会话，拿到同源地址与取数令牌
+ *   2. 和 iframe 里的 shim 握手把令牌递进去，并收它回流的报错
+ *   3. 模型每写完一个文件就刷新一次（防抖）
+ *
+ * ┌─ 握手为什么用 event.source 比对，而不是 event.origin ───────────────┐
+ * │ 预览 iframe 没有 allow-same-origin，它的 origin 是字符串 "null"。    │
+ * │ 而**任何**网站开一个沙箱 iframe，发出的消息 origin 都是 "null"——    │
+ * │ 按 origin 判等于谁都放进来。                                         │
+ * │                                                                      │
+ * │ event.source === frame.contentWindow 是对象同一性比较，这个骗不了：  │
+ * │ 只有我们自己挂上去的那个 iframe 才是那个对象。令牌只递给它。         │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+function usePreview(active: boolean) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [rev, setRev] = useState(0);
+  const [errs, setErrs] = useState<PreviewErr[]>([]);
+  const frame = useRef<HTMLIFrameElement | null>(null);
+  const token = useRef('');
+  const id = useRef<string | null>(null);
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!active || id.current) return;
+    let alive = true;
+    void api.previewOpen().then((r) => {
+      if (!alive) return;
+      id.current = r.previewId;
+      token.current = r.token;
+      setUrl(r.url);
+    }).catch(() => {
+      /* 预览开不了不该拦住生成——右栏退回骨架屏，左边照常在做事 */
+    });
+    return () => { alive = false; };
+  }, [active]);
+
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      const win = frame.current?.contentWindow;
+      if (!win || e.source !== win) return;      // ← 见上方说明，这一行是关键
+      const d = e.data as { type?: string; level?: string; text?: string } | null;
+      if (d?.type === 'ispace:preview-ready') {
+        win.postMessage({ type: 'ispace:preview-token', token: token.current }, '*');
+      } else if (d?.type === 'ispace:preview-error' && typeof d.text === 'string') {
+        const one = { level: d.level ?? 'error', text: d.text };
+        setErrs((xs) => (xs.length >= MAX_ERRS ? xs : [...xs, one]));
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  /**
+   * 收掉预览。两处调：离开这一屏时，以及发布成功之后——发布之后右栏换成了
+   * 正式地址，那块工作区预览已经没人看，留着只是白占一个会话名额
+   * （每人同时只有一个）。
+   *
+   * 主动收只是加速，真正兜底的是服务端那两条超时：浏览器崩溃、断网时
+   * 这一下发不出来。所以这里失败了也不重试。
+   */
+  const release = () => {
+    if (pending.current) { clearTimeout(pending.current); pending.current = null; }
+    const pid = id.current;
+    if (!pid) return;
+    id.current = null;          // 收过就不再收第二次
+    token.current = '';
+    const body = new Blob([JSON.stringify({ previewId: pid })], { type: 'application/json' });
+    if (!navigator.sendBeacon?.('/deploy/api/preview-session/release', body)) {
+      void fetch('/deploy/api/preview-session/release', {
+        method: 'POST', credentials: 'same-origin', keepalive: true,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ previewId: pid }),
+      }).catch(() => undefined);
+    }
+  };
+
+  /* 卸载时收。用 ref 存一份，免得把 release 列进依赖让 effect 每次渲染都重挂 */
+  const releaseRef = useRef(release);
+  releaseRef.current = release;
+  useEffect(() => () => { releaseRef.current(); }, []);
+
+  /**
+   * 刷新。防抖 300ms——模型一轮里常连写五个文件，每次都刷会白闪五下。
+   * 刷新同时清掉旧错误：那些是上一版页面报的，留着会让人去修已经不存在的问题。
+   */
+  const refresh = () => {
+    if (pending.current) clearTimeout(pending.current);
+    pending.current = setTimeout(() => {
+      pending.current = null;
+      setErrs([]);
+      setRev((n) => n + 1);
+    }, 300);
+  };
+
+  return { url, rev, errs, frame, refresh, release, clear: () => setErrs([]) };
+}
+
 function Generating({
   me, gen, setGen, onMine, onToast,
 }: {
@@ -563,6 +671,9 @@ function Generating({
   const [follow, setFollow] = useState('');
   const [publishing, setPublishing] = useState(false);
   const log = useRef<HTMLDivElement | null>(null);
+  /* 发布之后右栏换成正式地址，预览就不用再开着了 */
+  const preview = usePreview(gen.publishedUrl === null);
+  const [showErrs, setShowErrs] = useState(false);
 
   /*
     第一句话在挂载时发出去，只发一次。
@@ -601,6 +712,10 @@ function Generating({
           steps: [...g.steps.map((s) => ({ ...s, done: true })), toStep(name, args)],
           site: name === 'request_deploy' && typeof args.site === 'string' ? args.site : g.site,
         })),
+        /* 文件落盘了，右栏跟着换一版 */
+        onToolDone: (name) => {
+          if (name === 'write_file' || name === 'delete_file') preview.refresh();
+        },
         onError: (m) => {
           /*
             错误要留在对话里，不能只弹一个会自己消失的 toast：这一屏的左栏
@@ -645,6 +760,8 @@ function Generating({
       if (vis !== 'private') await api.setVisibility(r.app.id, vis).catch(() => undefined);
       if (vis === 'public') await api.publishToMarket(r.app.id).catch(() => undefined);
       setGen((g) => ({ ...g, publishedUrl: r.url, confirmToken: null, site: r.app.slug }));
+      /* 右栏这就换成正式地址，工作区预览没人看了，收掉它 */
+      preview.release();
       onToast(`已发布到 ${r.url}`);
     } catch (e) {
       onToast(e instanceof Error ? e.message : '发布失败');
@@ -656,6 +773,26 @@ function Generating({
   const url = gen.publishedUrl
     ?? (gen.site ? `${location.origin}/${me.username}/${gen.site}/` : '');
   const shown = url.replace(/^https?:\/\//, '');
+
+  /*
+    iframe 真正装的东西：发布前是工作区实时预览，发布后换成正式地址。
+
+    `?_r=` 是刷新用的——改 src 才会让 iframe 重新加载，而路径本身不能变。
+    预览响应带 no-store，所以这个参数只是为了让 React 认出 src 变了。
+  */
+  const frameUrl = gen.publishedUrl
+    ?? (preview.url ? `${preview.url}?_r=${preview.rev}` : null);
+
+  /** 把预览里的报错作为一次追问发出去，让模型自己改。 */
+  const fixErrors = () => {
+    if (!preview.errs.length || gen.busy) return;
+    const list = preview.errs.slice(0, 12).map((e) => `- ${e.text}`).join('\n');
+    const text = `预览里页面报了这些错，帮我看一下并修掉：\n${list}`;
+    preview.clear();
+    setShowErrs(false);
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text }] }));
+    void run(text, []);
+  };
 
   return (
     <div style={{ height: '100%', minHeight: 560, display: 'flex' }}>
@@ -780,7 +917,11 @@ function Generating({
               size={15}
               color={gen.publishedUrl ? 'var(--success)' : 'var(--tabby-orange)'}
             />
-            {gen.publishedUrl ? '已上线' : gen.busy ? '正在做，做完这里能预览' : '预览 · 还没发布'}
+            {gen.publishedUrl
+              ? '已上线'
+              : !frameUrl
+                ? '正在准备预览'
+                : gen.busy ? '正在做，写一个文件这里刷一次' : '预览 · 还没发布'}
           </span>
           <Segment
             options={[
@@ -803,7 +944,7 @@ function Generating({
               }}
             >
               <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 36, overflow: 'hidden', background: 'var(--surface-1)' }}>
-                <PreviewBody url={gen.publishedUrl} phone />
+                <PreviewBody url={frameUrl} phone frameRef={preview.frame} />
               </div>
             </div>
           ) : (
@@ -841,11 +982,80 @@ function Generating({
                 <div style={{ width: 46 }} />
               </div>
               <div style={{ position: 'relative', aspectRatio: '16 / 10', background: 'var(--surface-1)' }}>
-                <PreviewBody url={gen.publishedUrl} phone={false} />
+                <PreviewBody url={frameUrl} phone={false} frameRef={preview.frame} />
               </div>
             </div>
           )}
         </div>
+
+        {/*
+          预览里页面报的错。
+
+          不自动塞进对话：一个 favicon 404 不值得触发一轮模型调用，而且
+          自动发出去会把用户正要说的话冲掉。这里只摆一条，点「让它修」
+          才真的发——人决定要不要修，模型拿到的是完整的错误文本。
+        */}
+        {!gen.publishedUrl && preview.errs.length > 0 && (
+          <div
+            style={{
+              flex: 'none', padding: '10px 20px', borderTop: '1px solid var(--border-tabby)',
+              background: 'var(--surface-1)', display: 'flex', flexDirection: 'column', gap: 8,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {/* 用 --error 而不是 --danger：深色模式只重定义了前者 */}
+              <Icon name="info" size={14} color="var(--error)" />
+              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-heading)', fontWeight: 'var(--weight-semibold)' }}>
+                页面报了 {preview.errs.length} 个错
+              </span>
+              <button
+                onClick={() => setShowErrs((v) => !v)}
+                style={{
+                  border: 0, background: 'transparent', padding: 0, cursor: 'pointer',
+                  fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
+                }}
+              >
+                {showErrs ? '收起' : '看看'}
+              </button>
+              <div style={{ flex: 1 }} />
+              <button
+                onClick={preview.clear}
+                style={{
+                  height: 30, padding: '0 10px', border: '1px solid var(--border)',
+                  borderRadius: 9, background: 'var(--surface-1)', color: 'var(--text-secondary)',
+                  fontSize: 'var(--text-base)', cursor: 'pointer',
+                }}
+              >
+                先不管
+              </button>
+              <button
+                onClick={fixErrors}
+                disabled={gen.busy}
+                style={{
+                  height: 30, padding: '0 12px', border: 0, borderRadius: 9,
+                  background: gen.busy ? 'var(--surface-3)' : 'var(--accent)',
+                  color: gen.busy ? 'var(--text-tertiary)' : 'var(--accent-fg)',
+                  fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                  cursor: gen.busy ? 'default' : 'pointer',
+                }}
+              >
+                让它修
+              </button>
+            </div>
+            {showErrs && (
+              <div
+                className="mono"
+                style={{
+                  maxHeight: 108, overflow: 'auto', display: 'flex', flexDirection: 'column',
+                  gap: 4, fontSize: 'var(--text-base)', lineHeight: 1.6,
+                  color: 'var(--text-tertiary)', wordBreak: 'break-all',
+                }}
+              >
+                {preview.errs.map((e, i) => <span key={i}>{e.text}</span>)}
+              </div>
+            )}
+          </div>
+        )}
 
         <div
           style={{
@@ -943,12 +1153,26 @@ function Generating({
  * 渲染它——设计稿那块骨架屏画的就是这个状态，这里照着摆。发布之后换成真
  * 页面的 iframe。
  */
-function PreviewBody({ url, phone }: { url: string | null; phone: boolean }) {
+function PreviewBody({ url, phone, frameRef }: {
+  url: string | null;
+  phone: boolean;
+  frameRef: React.RefObject<HTMLIFrameElement | null>;
+}) {
   if (url) {
     return (
       <iframe
+        ref={frameRef}
         src={url}
         title="预览"
+        /*
+          沙箱与详情页、为你推荐一字不差：给脚本和表单，**不给**
+          allow-same-origin——两者同时给等于没有沙箱，被预览的页面就能
+          借平台的 origin 读写平台接口。预览里跑的是模型刚写出来、
+          没人审过的代码，这条更要守。
+
+          代价是页面拿不到会话 cookie，所以取数走的是服务端注入的 shim
+          加一次性只读令牌（见 usePreview 与 services/preview-shim.ts）。
+        */
         sandbox="allow-scripts allow-forms allow-popups"
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0 }}
       />
@@ -1020,6 +1244,13 @@ async function streamAsk(opts: {
   onSession: (id: string) => void;
   onText: (delta: string) => void;
   onTool: (name: string, args: Record<string, unknown>) => void;
+  /**
+   * 一次工具调用**做完了**。预览靠它决定什么时候刷新。
+   *
+   * 必须用 tool_result 而不是 tool_start：start 时文件还没落盘，那一刻
+   * 刷新看到的仍是上一版，人会以为"改了没生效"。
+   */
+  onToolDone: (name: string) => void;
   onError: (message: string) => void;
 }): Promise<void> {
   const res = await fetch('/deploy/api/agent/ask', {
@@ -1073,6 +1304,7 @@ async function streamAsk(opts: {
         if (e.type === 'session') opts.onSession(e.id as string);
         else if (e.type === 'text') opts.onText(e.delta as string);
         else if (e.type === 'tool_start') opts.onTool(e.name as string, (e.args ?? {}) as Record<string, unknown>);
+        else if (e.type === 'tool_result') opts.onToolDone(e.name as string);
         else if (e.type === 'error') opts.onError(String(e.message));
       }
     }

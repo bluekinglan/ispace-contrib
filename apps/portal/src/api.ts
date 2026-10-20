@@ -353,6 +353,21 @@ export const api = {
   agentPublish: (confirmToken: string, name?: string) =>
     post<{ app: App; url: string; summary: string }>('/agent/publish', { confirmToken, name }),
 
+  /**
+   * 开一个工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）。
+   *
+   * `url` 是同源相对路径，直接塞进 iframe 的 src。`token` **不要**拼进地址
+   * ——它是给沙箱里的页面取数用的，经 postMessage 递进去，印在地址里等于
+   * 截个图就泄露了。
+   */
+  previewOpen: () => post<{
+    previewId: string;
+    token: string;
+    url: string;
+    expiresAt: number;
+    idleMs: number;
+  }>('/preview-session'),
+
   /** 「选方向」。为你推荐那一屏按它加权排序。 */
   interests: () => get<{ interests: Interest[] }>('/me/interests'),
   setInterests: (interests: Interest[]) =>
