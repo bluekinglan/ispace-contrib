@@ -60,6 +60,7 @@ import { startEventFinalistsJob } from './jobs/event-finalists.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerTokenRoutes, findUserByAccessToken } from './routes/tokens.js';
 import { registerMarketplaceRoutes } from './routes/marketplace.js';
+import { registerSocialRoutes } from './routes/social.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { registerDataSpaceRoutes } from './routes/dataspace.js';
 import { registerAccountRoutes } from './routes/account.js';
@@ -984,6 +985,9 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── 创意市场 ────────────────────────────────────────────────────
   registerMarketplaceRoutes(app, { sql, requireAuth });
+
+  // ── 社交面：喜欢、评论、关注、动态、兴趣（改版稿 + 移动端 v2）────
+  registerSocialRoutes(app, { sql, requireAuth });
 
   // ── 访问量：shell.js 每次静态页加载时打一下（后端服务的计数在 svc-proxy 里）
   registerVisitRoutes(app, { sql });

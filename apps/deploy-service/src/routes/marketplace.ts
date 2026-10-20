@@ -33,12 +33,18 @@ export function registerMarketplaceRoutes(
     const rows = await sql`
       SELECT m.id, m.app_id, m.published_at, m.install_count, a.category,
              a.slug, a.name, a.description, a.icon_letter, a.cover_path, a.type, a.status,
-             a.source_prompt, a.visit_count,
+             a.source_prompt, a.visit_count, a.like_count, a.comment_count,
              u.username AS owner_username, u.display_name AS owner_name,
              EXISTS (
                SELECT 1 FROM ispace.app_installs i
                 WHERE i.app_id = m.app_id AND i.user_id = ${me.id}
              ) AS installed,
+             -- 探索墙上每张卡的心形要知道自己是不是实心的。放在列表里一次
+             -- 查出来，而不是让前端对着几十张卡各问一次。
+             EXISTS (
+               SELECT 1 FROM ispace.app_likes l
+                WHERE l.app_id = m.app_id AND l.user_id = ${me.id}
+             ) AS liked,
              (a.owner_id = ${me.id}) AS mine
         FROM ispace.marketplace_listings m
         JOIN ispace.apps  a ON a.id = m.app_id
