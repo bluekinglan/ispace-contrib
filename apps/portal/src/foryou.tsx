@@ -133,14 +133,17 @@ export function ForYou({
             那确实治好了挤，但代价是两侧不再等宽：宽屏上中间那块整个被推到
             右边去（2000px 下尤其明显）。
 
-            现在只分成「左栏 / 剩下的全部 / 动作栏」：左栏按内容封顶 340（稿上
-            的值），右边那条动作栏本来就只要 46，中间 1fr 把余下的宽度全部吃掉。
-            这样电脑版的框横向占满可用区，而不是在两侧各留一截空白。
+            只分成两列：左栏（作品信息，按稿上的 340 封顶）和剩下的全部。
+
+            动作栏**不再单独占一列**。它原先是第三列、靠左对齐，于是位置由
+            列边界决定而不是由框决定——电脑版框宽时挨着框，手机版框窄（高度
+            撑出来的 9:19.5）时，两者之间就空出一大截。现在它和框放进同一个
+            flex 行里，中间固定 22 的间距，谁宽谁窄都贴着。
 
             框也不再自己按 vw 算宽——vw 里含着那条 248px 的侧栏，那正是它早先
             算歪、整块被推到右边去的根子。
           */
-          gridTemplateColumns: 'minmax(200px,340px) minmax(0,1fr) auto',
+          gridTemplateColumns: 'minmax(200px,340px) minmax(0,1fr)',
           gridTemplateRows: 'minmax(0,1fr)', alignItems: 'center', gap: 40, padding: '0 40px 32px',
         }}
       >
@@ -197,7 +200,12 @@ export function ForYou({
           )}
         </div>
 
-        <div style={{ height: '100%', minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div
+          style={{
+            height: '100%', minHeight: 0, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', gap: 22,
+          }}
+        >
           {d === 'phone' ? (
             <div
               style={{
@@ -214,7 +222,7 @@ export function ForYou({
           ) : (
             <div
               style={{
-                width: '100%', borderRadius: 14, overflow: 'hidden',
+                flex: 1, minWidth: 0, borderRadius: 14, overflow: 'hidden',
                 background: 'var(--dark-surface)',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.1), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}
@@ -246,42 +254,42 @@ export function ForYou({
               </div>
             </div>
           )}
-        </div>
 
-        <div
-          style={{
-            alignSelf: 'end', justifySelf: 'start', display: 'flex', flexDirection: 'column',
-            alignItems: 'center', gap: 18, paddingBottom: 8,
-          }}
-        >
-          <Round title="上一个" icon="chevUp" onClick={() => move(-1)} />
-          <Round title="下一个" icon="chevDown" onClick={() => move(1)} />
-          <div style={{ height: 10 }} />
-          <button
-            onClick={() => onAuthor(cur.owner_username)}
-            title={cur.owner_name}
+          <div
             style={{
-              width: 46, height: 46, border: '2px solid rgba(255,255,255,.9)',
-              borderRadius: 'var(--radius-pill)', background: washOf(cur.owner_username),
-              color: 'var(--text-heading)', fontSize: 'var(--text-lg)',
-              fontWeight: 'var(--weight-bold)', cursor: 'pointer',
+              alignSelf: 'flex-end', flex: 'none', display: 'flex', flexDirection: 'column',
+              alignItems: 'center', gap: 18, paddingBottom: 8,
             }}
           >
-            {initial(cur.owner_name)}
-          </button>
-          <Rail
-            icon="heart" filled={cur.liked} label={fmt(cur.like_count)} title="喜欢"
-            color={cur.liked ? '#ee5c2a' : '#fff'} onClick={() => void toggleLike()}
-          />
-          <Rail
-            icon={cur.mine ? 'grid' : cur.installed ? 'check' : 'plus'}
-            label={cur.mine ? '我的' : cur.installed ? '已添加' : '添加'}
-            title="添加到我的作品" color="#fff" onClick={() => void toggleAdd()}
-          />
-          <Rail icon="link" label="分享" title="复制链接" color="#fff" onClick={() => void share()} />
-          {cur.source_prompt && (
-            <Rail icon="remix" label="做同款" title="做同款" color="#fff" onClick={() => onRemix(cur)} />
-          )}
+            <Round title="上一个" icon="chevUp" onClick={() => move(-1)} />
+            <Round title="下一个" icon="chevDown" onClick={() => move(1)} />
+            <div style={{ height: 10 }} />
+            <button
+              onClick={() => onAuthor(cur.owner_username)}
+              title={cur.owner_name}
+              style={{
+                width: 46, height: 46, border: '2px solid rgba(255,255,255,.9)',
+                borderRadius: 'var(--radius-pill)', background: washOf(cur.owner_username),
+                color: 'var(--text-heading)', fontSize: 'var(--text-lg)',
+                fontWeight: 'var(--weight-bold)', cursor: 'pointer',
+              }}
+            >
+              {initial(cur.owner_name)}
+            </button>
+            <Rail
+              icon="heart" filled={cur.liked} label={fmt(cur.like_count)} title="喜欢"
+              color={cur.liked ? '#ee5c2a' : '#fff'} onClick={() => void toggleLike()}
+            />
+            <Rail
+              icon={cur.mine ? 'grid' : cur.installed ? 'check' : 'plus'}
+              label={cur.mine ? '我的' : cur.installed ? '已添加' : '添加'}
+              title="添加到我的作品" color="#fff" onClick={() => void toggleAdd()}
+            />
+            <Rail icon="link" label="分享" title="复制链接" color="#fff" onClick={() => void share()} />
+            {cur.source_prompt && (
+              <Rail icon="remix" label="做同款" title="做同款" color="#fff" onClick={() => onRemix(cur)} />
+            )}
+          </div>
         </div>
       </div>
     </div>
