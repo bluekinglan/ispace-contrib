@@ -42,7 +42,23 @@ export function Guide({ me }: { me: Me }) {
 
   return (
     <>
-      <PageTitle title={c('guide.title')} subtitle={c('guide.subtitle')} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 32 }}>
+        <h1 style={{
+          margin: 0, fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 40,
+          lineHeight: 1.15, color: 'var(--text-heading)',
+        }}>
+          接入 AI
+        </h1>
+        {/*
+          稿上这一屏只有一张卡：一段话复制给 AI 就接好了。这里没有照搬那张卡
+          ——屏幕下面「一键接入」那一张做的是同一件事，而且它给的那段话带着
+          真实的令牌（这个平台的 MCP 要 Bearer 认证，稿上的版本没有这一层）。
+          摆两段只会让人不知道该复制哪一段。
+        */}
+        <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-secondary)' }}>
+          把「一键接入」那段话整段复制给 Claude 或 Codex，它会自己完成接入。先在下面创建一个令牌，那段话里就会带上它。
+        </span>
+      </div>
 
       {/* ── 第一步：令牌 ─────────────────────────────────────── */}
       <Card style={{ marginBottom: 'var(--space-8)' }}>

@@ -1,181 +1,129 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Release } from '@ispace/contracts';
 import {
-  AppIcon, Badge, Button, Card, fmtBytes, fmtDate, Icon, Input,
-  PageTitle, Select, ShareDialog, Tabs, Toast, useConfirm, useCopy,
-  type ShareVisibility,
+  Button, Card, Icon, Input, ShareDialog, Toast, fmtBytes, fmtDate, useConfirm, useCopy,
+  type ConfirmRequest, type ShareVisibility,
 } from '@ispace/ui';
 import { api, type AppRow, type Me, type SharePeerInfo } from '../api';
 
-type StatusFilter = 'all' | 'running' | 'building' | 'stopped';
-type TypeFilter = 'all' | 'static' | 'static_backend' | 'h5';
-
 /**
- * 设计稿「我的页面」屏：筛选 + 表格 + 版本抽屉。
+ * 控制台 · 页面与版本（改版稿 §控制台 · 页面与版本）。
  *
- * 状态与类型是两个独立维度，不合成一组——「运行中的静态页」是常见诉求，
- * 合成一组就表达不了。但两个都用 Tabs（设计稿的做法）会占掉两整行，
- * 压着一个通常只有几行的表格，所以类型改用下拉，见筛选区的注释。
+ * 改版前这一屏是一张九列的表格加一个版本抽屉：一眼能看到所有页面的所有
+ * 字段，但要对某一个页面做点什么，得先在行里找到它、再开抽屉。新稿把它
+ * 翻过来——左边一列页面，右边是选中那个的全部：封面、地址、谁能看、版本
+ * 历史、下架。一次只看一个，但看得全。
+ *
+ * 表格里原有的筛选（状态/类型/搜索）没有照搬：一个人的页面是个位数，筛选
+ * 是为几十行准备的。真多到找不着时，左边那列自己会滚。
  */
+type Vis = 'private' | 'shared' | 'public';
+
+const VIS_NOTE: Record<Vis, string> = {
+  public: '全公司可见，已上架到探索。别人点「做同款」能看到做它的那句话。',
+  shared: '只有你分享给的同事能打开。',
+  private: '只有你自己能打开。',
+};
+
 export function MyPages({ me }: { me: Me }) {
   const c = useCopy();
   const [confirmUI, ask] = useConfirm();
   const [apps, setApps] = useState<AppRow[]>([]);
-  const [status, setStatus] = useState<StatusFilter>('all');
-  const [type, setType] = useState<TypeFilter>('all');
-  const [q, setQ] = useState('');
-  const [detail, setDetail] = useState<AppRow | null>(null);
+  const [pick, setPick] = useState<string | null>(null);
   const [sharing, setSharing] = useState<AppRow | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    void api.apps().then((r) => setApps(r.apps)).catch((e: Error) => setErr(e.message));
+    void api.apps().then((r) => setApps(r.apps)).catch((e: Error) => setMsg(e.message));
   }, []);
   useEffect(load, [load]);
 
-  const kw = q.trim().toLowerCase();
-  const shown = apps.filter((a) =>
-    (status === 'all' || a.status === status)
-    && (type === 'all' || a.type === type)
-    && (!kw || a.name.toLowerCase().includes(kw) || a.slug.toLowerCase().includes(kw)));
-  const building = apps.filter((a) => a.status === 'building').length;
+  /*
+    门户「我的作品」里点「管理」会带着 #page=<slug> 过来。认一下这个 hash，
+    否则那条链接只能把人送到这一屏的第一个页面——而他要管的是另一个。
+  */
+  useEffect(() => {
+    const m = /^#\/?page=(.+)$/.exec(location.hash);
+    if (m?.[1]) setPick(decodeURIComponent(m[1]));
+  }, []);
 
-  const countOf = (t: AppRow['type']) => apps.filter((a) => a.type === t).length;
-  /**
-   * 删除页面。
-   *
-   * 此前完全没有这个入口：页面建了就删不掉，试错过的、名字起错的
-   * 全堆在列表里占着配额，还得找管理员上服务器清。
-   *
-   * 确认文案要把**代价**说全：产物、历史版本、已发出去的地址一起消失。
-   * 「离职回收」有意做成只停用不删，正因为那类操作事后常要还原；
-   * 而这个语义就是"不要了"，所以必须让人看清再点。
-   */
-  const remove = async (a: AppRow) => {
-    const ok = await ask({
-      title: `删除「${a.name}」？`,
-      description:
-        `会连同全部历史版本一起删掉，产物从磁盘移除，占用的空间释放回配额。`
-        + `已经发出去的地址 ${location.host}/${me.user.username}/${a.slug}/ 会立刻失效。`
-        + '这个操作不可恢复——只是暂时不想让人看到的话，用「分享」改成「仅自己」就够了。',
-      confirmLabel: '删除',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      const r = await api.deleteApp(a.slug);
-      setMsg(
-        `已删除 ${r.name}，连同 ${r.releases} 个版本，释放 ${fmtBytes(r.freedBytes)}`
-        + (r.filesRemoved ? '' : '（磁盘产物未清干净，已记录告警）'),
-      );
-      load();
-    } catch (e) { setErr((e as Error).message); }
-  };
-
-  const reset = () => { setStatus('all'); setType('all'); setQ(''); };
-  const dirty = status !== 'all' || type !== 'all' || q !== '';
+  const cur = apps.find((a) => a.slug === pick) ?? apps[0] ?? null;
 
   return (
-    <>
-      <PageTitle title={c('pages.title')} subtitle={c('pages.subtitle')} />
-
-      {/*
-        筛选一行放完。
-        设计稿这里状态与类型都是 Tabs，各占一行；实际用起来两行筛选压着一个
-        通常只有几行的表格，太重了。状态留 Tabs——它是主筛选轴，「全部 N」的
-        计数一眼能看出有没有在构建中，收进下拉就看不见了。类型换成下拉：
-        切换频率低，而且「静态页 + 后端」这个标签会把 Tabs 撑得很宽。
-      */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 'var(--space-6)',
-        marginBottom: 'var(--space-8)', flexWrap: 'wrap',
-      }}>
-        <div style={{ width: 240 }}>
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索页面名或路径" />
-        </div>
-        <Tabs
-          value={status}
-          onChange={setStatus}
-          items={[
-            { value: 'all' as const, label: `全部 ${apps.length}` },
-            { value: 'running' as const, label: c('status.running') },
-            { value: 'building' as const, label: c('status.building') },
-            { value: 'stopped' as const, label: c('status.stopped') },
-          ]}
-        />
-        {/*
-          选项带上各类型的条数。下拉的代价是"看不见还有哪些选项"，
-          带上计数能把这个代价补回来一点：展开时就知道点进去有没有东西。
-        */}
-        <Select
-          value={type}
-          onChange={setType}
-          aria-label="按类型筛选"
-          items={[
-            { value: 'all' as const, label: '所有类型' },
-            { value: 'static' as const, label: `${c('type.static')} ${countOf('static')}` },
-            { value: 'static_backend' as const, label: `${c('type.staticBackend')} ${countOf('static_backend')}` },
-            { value: 'h5' as const, label: `${c('type.h5')} ${countOf('h5')}` },
-          ]}
-        />
-        {dirty && <Button size="sm" variant="ghost" onClick={reset}>清空</Button>}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <h1 style={{
+          margin: 0, fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 40,
+          lineHeight: 1.15, color: 'var(--text-heading)',
+        }}>
+          页面与版本
+        </h1>
+        <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-secondary)' }}>
+          每次发布都留一个版本。回滚是秒级的，旧版本一直在。
+        </span>
       </div>
 
-      {err && <Card style={{ marginBottom: 'var(--space-8)', color: 'var(--error)' }}>{err}</Card>}
-      {msg && <Toast message={msg} onClose={() => setMsg(null)} />}
-
-      <GroupManager onChanged={load} />
-
-      {shown.length === 0 ? (
-        <Card style={{ textAlign: 'center', padding: 'var(--space-24)' }}>
-          <p style={{ margin: 0, color: 'var(--text-secondary)' }}>
-            {apps.length === 0 ? c('pages.empty.hint') : '没有符合筛选条件的页面'}
-          </p>
-        </Card>
+      {apps.length === 0 ? (
+        <div style={{ padding: '56px 0', textAlign: 'center', fontSize: 'var(--text-md)', color: 'var(--text-tertiary)' }}>
+          {c('pages.empty.hint')}
+        </div>
       ) : (
-        <Card style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 'var(--space-6)',
-            padding: 'var(--space-8) var(--space-10)',
-          }}>
-            <strong style={{ fontSize: 'var(--text-md)' }}>页面列表</strong>
-            <span className="num" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-              {shown.length} 个{building ? ` · ${building} 个${c('status.building')}` : ''}
-            </span>
+        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 240px', maxWidth: 300, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {apps.map((a) => {
+              const on = cur?.id === a.id;
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => setPick(a.slug)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: 10,
+                    border: 0, borderRadius: 14,
+                    background: on ? 'var(--surface-1)' : 'transparent',
+                    boxShadow: on ? '0 1px 3px rgba(24,23,21,.06), 0 0 0 1px var(--border-subtle)' : 'none',
+                    cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <span style={{
+                    width: 40, height: 40, flex: 'none', borderRadius: 11,
+                    background: 'var(--wash-c)', color: 'var(--text-heading)',
+                    fontSize: 'var(--text-card-title)', fontWeight: 'var(--weight-bold)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {a.iconLetter}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span style={{
+                      fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)',
+                      color: 'var(--text-heading)', overflow: 'hidden',
+                      textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {a.name}
+                    </span>
+                    <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+                      /{a.slug}/
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 'var(--text-base)' }}>
-              <thead>
-                <tr style={{ background: 'var(--surface-2)', textAlign: 'left' }}>
-                  {['页面', '访问地址', '类型', '版本', '入口', '最近发布', '大小', '状态', '操作'].map((h) => (
-                    <th key={h} style={{
-                      padding: 'var(--space-5) var(--space-8)', fontSize: 'var(--text-xs)',
-                      fontWeight: 'var(--weight-semibold)', color: 'var(--text-tertiary)',
-                      letterSpacing: 'var(--tracking-label)', textTransform: 'uppercase',
-                      whiteSpace: 'nowrap',
-                    }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((a) => (
-                  <Row
-                    key={a.id}
-                    app={a}
-                    owner={me.user.username}
-                    onDetail={() => setDetail(a)}
-                    onShare={() => setSharing(a)}
-                    onDelete={() => void remove(a)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+
+          {cur && (
+            <PagePanel
+              key={cur.id}
+              app={cur}
+              owner={me.user.username}
+              onShare={() => setSharing(cur)}
+              onMsg={setMsg}
+              onChanged={load}
+              ask={ask}
+            />
+          )}
+        </div>
       )}
 
-      {detail && <VersionDrawer app={detail} onClose={() => { setDetail(null); load(); }} />}
+      {msg && <Toast message={msg} onClose={() => setMsg(null)} />}
       {confirmUI}
       {sharing && (
         <AppShareDialog
@@ -185,7 +133,238 @@ export function MyPages({ me }: { me: Me }) {
           onChanged={load}
         />
       )}
-    </>
+      <GroupManager onChanged={load} />
+    </div>
+  );
+}
+
+/** 选中那个页面的全部：封面、地址、谁能看、版本、下架。 */
+function PagePanel({
+  app, owner, onShare, onMsg, onChanged, ask,
+}: {
+  app: AppRow;
+  owner: string;
+  onShare: () => void;
+  onMsg: (m: string) => void;
+  onChanged: () => void;
+  ask: (req: ConfirmRequest) => Promise<boolean>;
+}) {
+  const c = useCopy();
+  const [releases, setReleases] = useState<Release[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [vis, setVis] = useState<Vis>(app.visibility as Vis);
+  const [status, setStatus] = useState(app.status);
+
+  const loadReleases = useCallback(() => {
+    void api.releases(app.slug).then((r) => setReleases(r.releases)).catch(() => setReleases([]));
+  }, [app.slug]);
+  useEffect(loadReleases, [loadReleases]);
+
+  const setVisibility = async (v: Vis) => {
+    setBusy(true);
+    try {
+      await api.setVisibility(app.id, v);
+      setVis(v);
+      onChanged();
+      /*
+        「指定同事」选完还要有人可指定，所以顺手把分享弹窗打开——否则这一下
+        只是把可见范围改窄了，而用户想做的是「给某几个人看」。
+      */
+      if (v === 'shared') onShare();
+      else onMsg(v === 'public' ? '已上架到探索，全公司可见' : '已改为仅自己可见');
+    } catch (e) { onMsg((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const rollback = async (v: number) => {
+    setBusy(true);
+    try {
+      const r = await api.rollback(app.slug, v);
+      onMsg(`已切到 v${r.release.version}，秒级生效，其他版本都还在`);
+      loadReleases();
+      onChanged();
+    } catch (e) { onMsg((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const toggleStatus = async () => {
+    const stopping = status !== 'stopped';
+    if (stopping) {
+      const ok = await ask({
+        title: `下架「${app.name}」？`,
+        description:
+          `下架后 ${location.host}/${owner}/${app.slug}/ 会返回 404，已经添加过它的同事也会失去入口。`
+          + '版本和数据都保留，随时可以重新上线。',
+        confirmLabel: '下架',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      await api.setAppStatus(app.slug, stopping ? 'stopped' : 'running');
+      setStatus(stopping ? 'stopped' : 'running');
+      onMsg(stopping ? '已下架，地址现在返回 404' : '已重新上线');
+      onChanged();
+    } catch (e) { onMsg((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const cover = app.coverUrl;
+  const dot = status === 'running' ? 'var(--tabby-teal)' : status === 'building' ? 'var(--warning)' : 'var(--text-tertiary)';
+
+  return (
+    <div style={{ flex: '3 1 480px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div style={{
+        display: 'flex', gap: 24, flexWrap: 'wrap', padding: 20, borderRadius: 22,
+        background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
+      }}>
+        <div style={{
+          position: 'relative', width: 200, aspectRatio: '4 / 3', flex: 'none',
+          borderRadius: 14, overflow: 'hidden', background: 'var(--wash-c)',
+          color: 'var(--cover-ink)', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', fontSize: 'var(--text-base)', textAlign: 'center',
+        }}>
+          {cover
+            ? <img src={cover} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+            : <span style={{ padding: 12, lineHeight: 1.6 }}>发布时从产物里取封面<br />（og:image 或 cover.png）</span>}
+        </div>
+        <div style={{ flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontFamily: 'var(--font-serif)', fontSize: 30, fontWeight: 500, lineHeight: 1.2, color: 'var(--text-heading)' }}>
+              {app.name}
+            </span>
+            <span style={{
+              display: 'flex', alignItems: 'center', gap: 6, height: 24, padding: '0 10px',
+              borderRadius: 'var(--radius-pill)', background: 'var(--surface-2)',
+              fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)',
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: 'var(--radius-pill)', background: dot }} />
+              {c(`status.${status}` as 'status.running')}
+            </span>
+          </div>
+          <a
+            href={`/${owner}/${app.slug}/`}
+            className="mono"
+            style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}
+          >
+            {location.host}/{owner}/{app.slug}/
+          </a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', paddingTop: 4 }}>
+            <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>谁能看</span>
+            <div style={{ display: 'flex', gap: 2, padding: 3, borderRadius: 12, background: 'var(--seg-bg)' }}>
+              {([['private', '仅自己'], ['shared', '指定同事'], ['public', '全公司']] as const).map(([k, label]) => {
+                const on = vis === k;
+                return (
+                  <button
+                    key={k}
+                    disabled={busy}
+                    onClick={() => void setVisibility(k)}
+                    style={{
+                      height: 30, padding: '0 12px', border: 0, borderRadius: 9,
+                      background: on ? 'var(--surface-1)' : 'transparent',
+                      boxShadow: on ? '0 1px 2px rgba(24,23,21,.08)' : 'none',
+                      color: on ? 'var(--text-heading)' : 'var(--text-tertiary)',
+                      fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                      cursor: 'pointer', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
+            {VIS_NOTE[vis]}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <span style={{
+          paddingBottom: 12, fontSize: 'var(--text-card-title)',
+          fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)',
+        }}>
+          版本
+        </span>
+        {releases.length === 0 ? (
+          <span style={{ padding: '14px 4px', borderTop: '1px solid var(--border-tabby)', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+            还没有发布记录。
+          </span>
+        ) : releases.map((r) => (
+          <div
+            key={r.id}
+            style={{
+              display: 'grid', gridTemplateColumns: '56px minmax(0,1fr) auto', alignItems: 'center',
+              gap: 14, padding: '14px 4px', borderTop: '1px solid var(--border-tabby)',
+            }}
+          >
+            <span className="mono" style={{ fontSize: 'var(--text-base)', fontWeight: 500, color: 'var(--text-heading)' }}>
+              v{r.version}
+            </span>
+            <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-primary)' }}>
+                {r.blockedReason ?? `${fmtBytes(r.sizeBytes)} 的产物`}
+              </span>
+              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+                {c(`source.${r.source}` as 'source.mcp')} · {fmtDate(r.publishedAt)}
+              </span>
+            </span>
+            {r.status === 'active' ? (
+              <span style={{
+                display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 12px',
+                borderRadius: 'var(--radius-pill)', background: 'var(--tabby-teal-subtle)',
+                color: 'var(--text-heading)', fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: 'var(--radius-pill)', background: 'var(--tabby-teal)' }} />
+                线上
+              </span>
+            ) : r.status === 'blocked' ? (
+              <span style={{
+                height: 28, padding: '0 12px', borderRadius: 'var(--radius-pill)',
+                background: 'var(--danger-subtle)', color: 'var(--danger)',
+                fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                display: 'flex', alignItems: 'center',
+              }}>
+                {c('status.blocked')}
+              </span>
+            ) : (
+              <button
+                disabled={busy}
+                onClick={() => void rollback(r.version)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px',
+                  border: '1px solid var(--border)', borderRadius: 9, background: 'var(--surface-1)',
+                  color: 'var(--text-primary)', fontSize: 'var(--text-base)',
+                  fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
+                }}
+              >
+                <Icon name="rotate" size={13} />切到这版
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        flexWrap: 'wrap', paddingTop: 20, borderTop: '1px solid var(--border-tabby)',
+      }}>
+        <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+          下架后地址返回 404，版本都保留，随时可以重新上线。
+        </span>
+        <button
+          disabled={busy}
+          onClick={() => void toggleStatus()}
+          style={{
+            height: 34, padding: '0 14px', border: '1px solid var(--border)', borderRadius: 10,
+            background: 'var(--surface-1)',
+            color: status === 'stopped' ? 'var(--text-heading)' : 'var(--danger)',
+            fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
+          }}
+        >
+          {status === 'stopped' ? '重新上线' : '下架这个页面'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -213,207 +392,6 @@ function AppShareDialog({
       onAddPeer={async (u) => { await api.share(app.id, u); loadPeers(); onChanged(); }}
       onRemovePeer={async (u) => { await api.revokeShareTo(app.id, u); loadPeers(); onChanged(); }}
     />
-  );
-}
-
-/**
- * 一行页面。
- *
- * 状态用 Badge 带圆点而不是 StatusDot：设计稿这一列是徽标，
- * 三档配色也在设计稿里写死了——运行中 success、构建中 warning、
- * 已停止 neutral。已停止用中性而不是红色，是因为停用是主动操作，不是故障。
- */
-function Row({
-  app, owner, onDetail, onShare, onDelete,
-}: {
-  app: AppRow; owner: string;
-  onDetail: () => void; onShare: () => void; onDelete: () => void;
-}) {
-  const c = useCopy();
-  const typeKey = app.type === 'static' ? 'type.static'
-    : app.type === 'h5' ? 'type.h5' : 'type.staticBackend';
-  const statusKey = app.status === 'running' ? 'status.running'
-    : app.status === 'building' ? 'status.building' : 'status.stopped';
-  const tone = app.status === 'running' ? 'success'
-    : app.status === 'building' ? 'warning' : 'neutral';
-  const url = `/${owner}/${app.slug}/`;
-  const cell = { padding: 'var(--space-6) var(--space-8)' } as const;
-
-  return (
-    <tr style={{ borderTop: '1px solid var(--border-subtle)' }}>
-      <td style={cell}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)' }}>
-          <AppIcon letter={app.iconLetter} size={26} />
-          <span style={{ fontWeight: 'var(--weight-medium)' }}>{app.name}</span>
-        </div>
-      </td>
-      <td className="mono" style={{ ...cell, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
-        {location.host}{url}
-      </td>
-      <td style={{ ...cell, fontSize: 'var(--text-sm)', whiteSpace: 'nowrap' }}>
-        {c(typeKey as 'type.static')}
-        {/*
-          仅当作者填了"主要服务于"才显示，是个备注不是约束——
-          后端属于用户不属于页面，别的页面照样能调它。
-        */}
-        {app.backendName && (
-          <span title={`作者标注：主要由后端「${app.backendName}」提供接口`}
-                style={{ marginLeft: 'var(--space-4)' }}>
-            <Badge tone="neutral">配后端</Badge>
-          </span>
-        )}
-      </td>
-      <td className="num" style={{ ...cell, whiteSpace: 'nowrap' }}>
-        {app.currentVersion ? `v${app.currentVersion}` : '—'}
-      </td>
-      <td style={{ ...cell, fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-        {app.currentSource ? c(`source.${app.currentSource}` as 'source.mcp') : '—'}
-      </td>
-      <td className="num" style={{ ...cell, fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-        {fmtDate(app.updatedAt)}
-      </td>
-      <td className="num" style={{ ...cell, fontSize: 'var(--text-sm)', whiteSpace: 'nowrap' }}>
-        {fmtBytes(app.sizeBytes)}
-      </td>
-      <td style={{ ...cell, whiteSpace: 'nowrap' }}>
-        <Badge tone={tone} dot>{c(statusKey as 'status.running')}</Badge>
-      </td>
-      <td style={{ ...cell, whiteSpace: 'nowrap' }}>
-        <Button size="sm" variant="ghost" onClick={onDetail}>版本</Button>
-        <Button size="sm" variant="ghost" onClick={onShare}>分享</Button>
-        {/*
-          「访问」开新标签，不在控制台里内嵌——用户的页面是独立应用，
-          套在控制台框架里会让返回、刷新、地址栏全都行为不一致。
-          停用中的页面点了会看到 404，所以直接置灰。
-        */}
-        {app.status === 'stopped' ? (
-          <Button size="sm" variant="ghost" disabled>访问</Button>
-        ) : (
-          <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-            <Button size="sm" variant="ghost">访问</Button>
-          </a>
-        )}
-        {/* 放在最后且用 danger 色：它是这一行里唯一不可恢复的操作，
-            不能和「版本」「访问」长得一样、挨着放。 */}
-        <Button size="sm" variant="ghost" onClick={onDelete}
-          style={{ color: 'var(--error)' }}>删除</Button>
-      </td>
-    </tr>
-  );
-}
-
-/** 版本抽屉：列历史版本并可回滚。设计稿「版本」按钮的落点。 */
-function VersionDrawer({ app, onClose }: { app: AppRow; onClose: () => void }) {
-  const c = useCopy();
-  const [releases, setReleases] = useState<Release[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
-
-  const load = () => void api.releases(app.slug).then((r) => setReleases(r.releases)).catch(() => setReleases([]));
-  useEffect(load, [app.slug]);
-  useEffect(() => { void api.groups().then((r) => setGroups(r.groups)).catch(() => setGroups([])); }, []);
-
-  const rollback = async (v: number) => {
-    setBusy(true); setMsg(null);
-    try {
-      const r = await api.rollback(app.slug, v);
-      setMsg(`已回滚到 v${r.release.version}`);
-      load();
-    } catch (e) {
-      setMsg((e as Error).message);
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.2)', zIndex: 50,
-        display: 'flex', justifyContent: 'flex-end',
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 520, maxWidth: '92vw', height: '100%', overflowY: 'auto',
-          background: 'var(--surface-canvas)', boxShadow: 'var(--shadow-dropdown)',
-          padding: 'var(--space-12)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', marginBottom: 'var(--space-10)' }}>
-          <AppIcon letter={app.iconLetter} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 'var(--weight-semibold)', fontSize: 'var(--text-lg)' }}>{app.name}</div>
-            <div className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>/{app.slug}</div>
-          </div>
-          <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button>
-        </div>
-
-        {msg && (
-          <Card style={{ marginBottom: 'var(--space-8)', fontSize: 'var(--text-base)' }}>{msg}</Card>
-        )}
-
-        <Card style={{ marginBottom: 'var(--space-8)' }}>
-          <strong style={{ fontSize: 'var(--text-md)', display: 'block', marginBottom: 'var(--space-6)' }}>
-            分组
-          </strong>
-          <Select
-            value={app.groupId ?? ''}
-            onChange={(id) => {
-              const v = id || null;
-              setBusy(true);
-              void api.assignGroup(app.slug, v)
-                .then(() => setMsg(v ? '已移入分组' : '已移出分组'))
-                .catch((x: Error) => setMsg(x.message))
-                .finally(() => setBusy(false));
-            }}
-            disabled={busy}
-            style={{ width: '100%' }}
-            items={[
-              { value: '', label: '未分组' },
-              ...groups.map((g) => ({ value: g.id, label: g.name })),
-            ]}
-          />
-        </Card>
-
-        <strong style={{ fontSize: 'var(--text-md)', display: 'block', marginBottom: 'var(--space-6)' }}>
-          历史版本
-        </strong>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {releases.map((r) => (
-            <Card key={r.id} style={{ padding: 'var(--space-6) var(--space-8)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)' }}>
-                <span className="num" style={{ fontWeight: 'var(--weight-semibold)', color: 'var(--tabby-orange-hover)', width: 44 }}>
-                  v{r.version}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="num" style={{ fontSize: 'var(--text-sm)' }}>{fmtDate(r.publishedAt)}</div>
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-                    {c(`source.${r.source}` as 'source.mcp')} · {fmtBytes(r.sizeBytes)}
-                  </div>
-                </div>
-                {r.status === 'active' && <Badge tone="success">当前</Badge>}
-                {r.status === 'blocked' && <Badge tone="danger">{c('status.blocked')}</Badge>}
-                {r.status === 'superseded' && (
-                  <Button size="sm" disabled={busy} onClick={() => void rollback(r.version)}>
-                    {c('action.rollback')}
-                  </Button>
-                )}
-              </div>
-              {r.blockedReason && (
-                <div style={{ marginTop: 'var(--space-4)', fontSize: 'var(--text-sm)', color: 'var(--error)' }}>
-                  {r.blockedReason}
-                </div>
-              )}
-            </Card>
-          ))}
-          {releases.length === 0 && (
-            <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-base)' }}>还没有发布记录</p>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }
 

@@ -33,6 +33,7 @@ import {
   provisionUserSchema,
   refreshStorageUsage,
   runMigrations,
+  setAppStatus,
   writeAudit,
   type Sql,
 } from '@ispace/db';
@@ -827,6 +828,49 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     }
   });
 
+  /**
+   * 下架 / 重新上线一个页面。
+   *
+   * 改版稿「页面与版本」那一屏右下角的「下架这个页面」。它不是删除：
+   * status='stopped' 之后网关一律 404（见 routes/authz.ts），但 release
+   * 和数据都还在，改回 running 就又能打开了。
+   *
+   * 下架同时从探索里撤掉——留着一张点进去 404 的卡片，比没有这张卡更糟。
+   * 重新上线**不会**自动上架：当初要不要给全公司看是另一个决定，
+   * 下架期间作者可能已经改了主意。
+   */
+  app.post(`${API_BASE}/apps/:slug/status`, async (req) => {
+    const user = await requireAuth(req);
+    const { slug } = req.params as { slug: string };
+    const raw = (req.body ?? {}) as { status?: string };
+    if (raw.status !== 'running' && raw.status !== 'stopped') {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, 'status 只能是 running 或 stopped');
+    }
+    const status = raw.status;
+
+    const a = await findApp(sql, user.id, slug);
+    if (!a) throw new IspaceError(ERROR_CODES.NOT_FOUND, `没有找到应用 /${slug}`);
+    /*
+      没发布过的页面谈不上上下架：它的 status 是 building，强行改成 running
+      会让列表显示"运行中"，而那个地址其实什么都没有。
+    */
+    if (status === 'running' && !a.currentReleaseId) {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '这个页面还没有发布过任何版本，没法上线。');
+    }
+
+    await setAppStatus(sql, a.id, status);
+    if (status === 'stopped') {
+      await sql`DELETE FROM ispace.marketplace_listings WHERE app_id = ${a.id}`;
+      await sql`DELETE FROM ispace.app_installs WHERE app_id = ${a.id} AND source = 'marketplace'`;
+    }
+    await writeAudit(sql, {
+      actorId: user.id, action: status === 'stopped' ? 'app.stop' : 'app.resume',
+      targetType: 'app', targetId: a.id, source: 'console', result: 'success',
+      metadata: { slug, status }, ip: req.ip,
+    });
+    return { ok: true, status };
+  });
+
   app.post(`${API_BASE}/apps/:slug/rollback`, async (req) => {
     const user = await requireAuth(req);
     const { slug } = req.params as { slug: string };
@@ -950,11 +994,18 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     const user = await requireAuth(req);
     const q = req.query as { limit?: string; offset?: string };
     // 员工只看自己的，管理员看全部
-    return listAudit(sql, {
+    const r = await listAudit(sql, {
       ...(user.role === 'admin' ? {} : { actorId: user.id }),
       limit: Math.min(Number(q.limit ?? 50), 200),
       offset: Number(q.offset ?? 0),
     });
+    /*
+      repos 那边这个字段叫 blocked，契约（auditListResponseSchema）里叫
+      blockedCount。原样端出去的结果是控制台那颗「被阻断」徽标一直显示
+      undefined——没人看出来，因为它正好长得像个还没加载完的占位。
+      在这里改名，以契约为准。
+    */
+    return { logs: r.logs, total: r.total, blockedCount: r.blocked };
   });
 
   // ── 保留字（供前端注册表单即时校验，避免两处硬编码）──────────────
