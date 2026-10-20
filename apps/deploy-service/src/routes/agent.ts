@@ -81,9 +81,21 @@ export function registerAgentRoutes(
     requireAuth: (req: FastifyRequest) => Promise<User>;
     /** 发布链路。与 CLI / MCP 用的是同一个实例，发布语义只有一份。 */
     deployService: { deploy: (input: DeployInput) => Promise<DeployOutcome> };
+    /**
+     * 这个人此刻有没有一块活着的实时预览（创建屏开着就有，手机壳没有）。
+     *
+     * 查的是**服务端的真实状态**，不收前端的声明——前端能撒谎，而这句话会
+     * 变成系统提示里的一段话（「你每写完一个文件它就刷新一次」）。对一个
+     * 根本没有预览的会话说这句，模型会按"他正看着"去安排顺序，甚至回话里
+     * 提"你右边应该已经能看到了"，而那边根本没有那块东西。
+     *
+     * 不传等同于没有——单测与不接预览的部署都走这一支。
+     */
+    hasLivePreview?: (userId: string) => boolean;
   },
 ): void {
   const { sql, workspaceRoot, requireAuth, deployService } = deps;
+  const hasLivePreview = deps.hasLivePreview ?? (() => false);
 
   // NOTE(多实例)：会话与待确认 token 都在内存。横向扩容时必须外置到
   // Redis 或数据库，否则用户的下一个请求打到另一个实例就找不到会话了。
@@ -189,6 +201,7 @@ export function registerAgentRoutes(
         session: new AgentSession({
           engine, toolCtx: makeToolCtx(user, req.ip),
           connectors: await availableConnectors(user.id),
+          livePreview: hasLivePreview(user.id),
         }),
         userId: user.id,
         touched: Date.now(),
@@ -214,6 +227,7 @@ export function registerAgentRoutes(
       engine,
       toolCtx: makeToolCtx(user, req.ip),
       connectors: await availableConnectors(user.id),
+      livePreview: hasLivePreview(user.id),
       onEvent: send,
     });
     // 继承历史（除 system，构造时已有）
