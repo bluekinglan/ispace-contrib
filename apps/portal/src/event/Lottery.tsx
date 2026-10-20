@@ -362,7 +362,8 @@ export const LotteryStage = forwardRef<LotteryHandle>(
         const solo = stopping && live.current.round === 5 && !live.current.landed;
         let tp = 0;
         if (solo && !s.tickDone && now - stopAt.current > 1500) { tp = soloPid.current; s.tickDone = true; }
-        else if ((rolling || solo) && !s.tickDone && s.pool.length
+        /* 前四轮一次抽二十来个人，中间跳一个名字没有意义——只在压轴（一次一个）时跳 */
+        else if (((rolling && live.current.round === 5) || solo) && !s.tickDone && s.pool.length
           && now - s.tickAt > (solo ? 60 + (now - stopAt.current) * 0.22 : 60)) {
           tp = s.pool[Math.floor(Math.random() * s.pool.length)]!;
         }
@@ -835,7 +836,7 @@ function Sphere({ phase, shown, chipBox, ringBox, tickNick, tickReal, winIdx, la
 }) {
   const rolling = phase === 'rolling';
   const stopping = phase === 'stopping';
-  const tickOn = rolling || (stopping && round === 5 && !landed);
+  const tickOn = round === 5 && (rolling || (stopping && !landed));
   return (
     <>
       {rolling && (
@@ -940,46 +941,115 @@ function RevealGrid({ gridRef, round, list, meta }: {
         </span>
         <span className="mono" style={{ fontSize: 24, fontWeight: 700, opacity: 0.75 }}>{meta}</span>
       </div>
+      {/*
+        6×4，前四轮的现金大奖（666 红包）单独占正中 2×2 一张大卡，其余 20 个
+        普通奖品绕着它自动排。显式定位的格子先占位、自动排的再填空，所以大
+        卡在 DOM 里排第一个也不会把别人挤乱。
+
+        z-index 压过彩纸（40）：彩纸从卡片后面飘，不糊在名字上。
+      */}
       <div ref={gridRef} style={{
-        position: 'absolute', left: 96, right: 96, top: 250, height: 674,
-        display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
-        gridTemplateRows: 'repeat(3, minmax(0, 1fr))', gap: 16,
+        position: 'absolute', left: 96, right: 96, top: 250, height: 674, zIndex: 50,
+        display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+        gridTemplateRows: 'repeat(4, minmax(0, 1fr))', gap: 16,
       }}>
         {list.map((x) => {
           const p = LOTTERY_BY_PID[x.pid]!;
           const pz = LOTTERY_PRIZE_BY_K[x.prize]!;
           const cash = !!pz.cash;
+          if (cash && round < 5) return <HeroCard key={x.pid} pid={x.pid} prize={pz.name} />;
           return (
             <div key={x.pid} data-pid={x.pid} style={{
-              position: 'relative', minWidth: 0, boxSizing: 'border-box', borderRadius: 24,
-              padding: '14px 8px', display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              position: 'relative', minWidth: 0, boxSizing: 'border-box', borderRadius: 22,
+              padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 14,
               background: 'rgba(255,255,255,.06)',
               border: `2px solid ${cash ? 'rgba(251,146,60,.8)' : 'rgba(255,255,255,.1)'}`,
               color: '#fff',
             }}>
               <Face pid={x.pid} />
               <span style={{
-                marginTop: 10, maxWidth: '100%', fontSize: 30, fontWeight: 900, lineHeight: 1.1,
-                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              }}>{p.nick}</span>
-              <span style={{
-                marginTop: 4, maxWidth: '100%', fontSize: 18, fontWeight: 600,
-                color: 'rgba(255,255,255,.62)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              }}>{p.real}</span>
-              <span data-prize="1" style={{
-                marginTop: 10, maxWidth: '100%', boxSizing: 'border-box', borderRadius: 100,
-                padding: cash ? '4px 14px' : '4px 0',
-                background: cash ? '#fb923c' : 'transparent',
-                color: cash ? '#001217' : '#fb923c',
-                fontSize: 18, fontWeight: 800, lineHeight: 1.3,
-                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              }}>{pz.name}</span>
+                flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+                alignItems: 'flex-start', gap: 3,
+              }}>
+                <span style={{
+                  maxWidth: '100%', fontSize: 28, fontWeight: 900, lineHeight: 1.1,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{p.nick}</span>
+                <span style={{
+                  maxWidth: '100%', fontSize: 17, fontWeight: 600,
+                  color: 'rgba(255,255,255,.62)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{p.real}</span>
+                <span data-prize="1" style={{
+                  marginTop: 3, maxWidth: '100%', boxSizing: 'border-box', borderRadius: 100,
+                  padding: cash ? '4px 14px' : '4px 0',
+                  background: cash ? '#fb923c' : 'transparent',
+                  color: cash ? '#001217' : '#fb923c',
+                  fontSize: 17, fontWeight: 800, lineHeight: 1.3,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{pz.name}</span>
+              </span>
             </div>
           );
         })}
       </div>
     </>
+  );
+}
+
+/**
+ * 「本轮大奖」：前四轮各一个的 666 红包，占名单正中 2×2。
+ *
+ * 金额和「红包」两个字分开排（稿上一大一小），从奖品名里拆：写死 666 的话
+ * 哪天改了金额，大屏上就是错的。
+ */
+function HeroCard({ pid, prize }: { pid: number; prize: string }) {
+  const p = LOTTERY_BY_PID[pid]!;
+  const m = /^(\d+)(.*)$/.exec(prize);
+  return (
+    <div data-pid={pid} style={{
+      position: 'relative', gridColumn: '3 / 5', gridRow: '2 / 4', minWidth: 0,
+      boxSizing: 'border-box', borderRadius: 32, padding: '24px 28px',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, textAlign: 'left',
+      background: 'radial-gradient(120% 90% at 50% 0%,rgba(255,210,122,.32),rgba(251,146,60,.14) 60%,rgba(251,146,60,.08))',
+      border: '3px solid #ffb35c',
+      boxShadow: '0 0 0 10px rgba(251,146,60,.16),0 0 120px rgba(251,146,60,.6)',
+      color: '#fff',
+    }}>
+      <span style={{
+        position: 'absolute', top: -22, left: '50%', transform: 'translateX(-50%)',
+        height: 40, padding: '0 20px', borderRadius: 100, background: '#fb923c', color: '#001217',
+        fontSize: 20, fontWeight: 900, letterSpacing: '.12em',
+        display: 'flex', alignItems: 'center', whiteSpace: 'nowrap',
+        boxShadow: '0 6px 18px rgba(251,146,60,.5)',
+      }}>本轮大奖</span>
+      <Face pid={pid} size={150} />
+      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+        <span style={{
+          maxWidth: '100%', fontSize: 56, fontWeight: 900, lineHeight: 1.05,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>{p.nick}</span>
+        <span style={{
+          marginTop: 4, maxWidth: '100%', fontSize: 26, fontWeight: 600, color: 'rgba(255,255,255,.72)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>{p.real}</span>
+        <span data-prize="1" style={{
+          marginTop: 14, alignSelf: 'flex-start', display: 'flex', alignItems: 'baseline', gap: 8,
+          boxSizing: 'border-box', borderRadius: 24, padding: '4px 30px 8px',
+          background: 'linear-gradient(180deg,#ffd27a,#fb923c)', color: '#3a1600',
+          boxShadow: '0 10px 30px rgba(251,146,60,.55),inset 0 2px 0 rgba(255,255,255,.55)',
+          whiteSpace: 'nowrap',
+        }}>
+          {m ? (
+            <>
+              <span className="mono" style={{ fontSize: 72, fontWeight: 900, lineHeight: 1, letterSpacing: '-.03em' }}>{m[1]}</span>
+              <span style={{ fontSize: 34, fontWeight: 900 }}>{m[2]}</span>
+            </>
+          ) : (
+            <span style={{ fontSize: 34, fontWeight: 900 }}>{prize}</span>
+          )}
+        </span>
+      </span>
+    </div>
   );
 }
 
