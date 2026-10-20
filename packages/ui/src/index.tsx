@@ -44,6 +44,52 @@ export function useTone(): Tone {
   return useContext(ToneCtx);
 }
 
+// ── 品牌标记 ──────────────────────────────────────────────────────────
+/**
+ * 两张打开的页面围出个人空间。与 packages/brand/mark.svg 同一组 path。
+ *
+ * 为什么是组件而不是 <img src="…/mark.svg">：侧栏、登录卡、应用详情里的
+ * 浏览器地址栏都要它，尺寸从 22 到 32 不等；内联成组件省掉一次请求，也
+ * 让它跟着 currentColor 之外的品牌色走——mark 的橙是写死的品牌色，
+ * 不随主题变（夜间的侧栏上它也应该是橙的）。
+ */
+export function Mark({ size = 26, style }: { size?: number; style?: CSSProperties }) {
+  return (
+    <svg viewBox="0 0 1024 1024" style={{ width: size, height: size, flex: 'none', ...style }} aria-hidden="true">
+      <rect width="1024" height="1024" rx="276" fill="#ee5c2a" />
+      <path d="M216 304Q216 280 239 272L464 208Q488 201 488 226V766Q488 787 468 794L239 858Q216 865 216 840Z" fill="#ffffff" />
+      <path d="M280 350L424 309V711L280 752Z" fill="#ee5c2a" />
+      <path d="M536 226Q536 201 560 208L785 272Q808 280 808 304V840Q808 865 785 858L556 794Q536 787 536 766Z" fill="#ffffff" />
+      <path d="M600 309L744 350V752L600 711Z" fill="#ee5c2a" />
+    </svg>
+  );
+}
+
+/**
+ * 字标。600 字重、字距收紧 —— 设计稿 iSpace 字标.dc.html 的实测值。
+ *
+ * 设计稿用的是 Outfit，这里**没有**跟着引：Outfit 只有 Google Fonts 一个
+ * 来源，而这套平台是内网部署、还走着明文 http——外链字体要么被拦，要么
+ * 让每次首屏多等一个跨域请求，最后回落的还是 Manrope。与其让字标在"有网
+ * 时一种样子、没网时另一种样子"之间跳，不如从一开始就用仓库里已经打包好
+ * 的 Manrope：两者都是几何无衬线，600 字重下差别只在 a 和 S 的收尾。
+ *
+ * 大小写是 iSPACE（全大写的 SPACE）：设计稿从头到尾这么写，而产品文案里
+ * 是 iSpace。两者不要互相"纠正"——字标是图形，文案是句子。
+ */
+export function Wordmark({ size = 24, style }: { size?: number; style?: CSSProperties }) {
+  return (
+    <span
+      style={{
+        fontFamily: 'var(--font-sans)', fontSize: size, fontWeight: 600,
+        lineHeight: 1, letterSpacing: '-.01em', color: 'var(--text-heading)', ...style,
+      }}
+    >
+      iSPACE
+    </span>
+  );
+}
+
 // ── Button ────────────────────────────────────────────────────────────
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <title>ispace Android adaptive icon foreground concept</title>
   <desc>
-    White foreground for use with an #fb923c adaptiveIcon background.
+    White foreground for use with an #ee5c2a adaptiveIcon background.
     The mark is scaled into Android's central safe area so circular masks do not clip it.
   </desc>
   <g transform="translate(143.36 143.36) scale(.72)">

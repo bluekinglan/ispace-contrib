@@ -1054,7 +1054,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── Coding Agent ────────────────────────────────────────────────
   registerAgentRoutes(app, {
-    sql, requireAuth,
+    sql, requireAuth, deployService,
     workspaceRoot: process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces',
   });
 

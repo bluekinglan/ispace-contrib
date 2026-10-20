@@ -1,5 +1,6 @@
 import type {
   App, AppGroup, Quota, User,
+  AuthorProfile, Comment, CommentSort, Interest,
   EventFile, EventJudgeResponse, EventResponse, EventScreeningResponse,
   IdeaInput, ScoreInput, WorkInput,
 } from '@ispace/contracts';
@@ -104,6 +105,10 @@ export interface Listing {
   category: string | null;
   /** 页面被打开过多少次（shell.js 每次加载打一下，不去重）。 */
   visit_count: number;
+  /** 喜欢数与评论数（物化在 apps 上），以及我自己点过没有。 */
+  like_count: number;
+  comment_count: number;
+  liked: boolean;
   /**
    * 做出这个页面的那段提示词（apps.source_prompt）。
    *
@@ -298,6 +303,53 @@ export const api = {
   adminUnlist: (appId: string) => del<{ ok: boolean }>(`/admin/marketplace/${appId}`),
   loginUrl: (redirect: string) =>
     `${BASE}/auth/login?redirect=${encodeURIComponent(redirect)}`,
+
+  // ── 社交面（改版稿）──────────────────────────────────────────────
+  /*
+    喜欢是两个动词而不是一个 toggle，服务端那边也是——手快点两下，toggle
+    会互相抵消成「点了没反应」。返回的 likeCount 是服务端重算的真数，
+    前端拿它覆盖本地那个 +1，别人同时点的那几下才不会被我这一下抹掉。
+  */
+  like: (appId: string) =>
+    post<{ liked: boolean; likeCount: number }>(`/apps/${appId}/like`),
+  unlike: (appId: string) =>
+    del<{ liked: boolean; likeCount: number }>(`/apps/${appId}/like`),
+  comments: (appId: string, sort: CommentSort = 'new') =>
+    get<{ comments: Comment[] }>(`/apps/${appId}/comments?sort=${sort}`),
+  likeComment: (id: string) =>
+    post<{ liked: boolean; likeCount: number }>(`/comments/${id}/like`),
+  unlikeComment: (id: string) =>
+    del<{ liked: boolean; likeCount: number }>(`/comments/${id}/like`),
+  addComment: (appId: string, body: string) =>
+    post<{ comment: Comment; commentCount: number }>(`/apps/${appId}/comments`, { body }),
+  deleteComment: (id: string) =>
+    del<{ ok: boolean; commentCount: number }>(`/comments/${id}`),
+  /** 作者主页一次把资料和他公开的作品都拿回来，这一屏不分两次闪。 */
+  author: (username: string) =>
+    get<{ profile: AuthorProfile; apps: Listing[] }>(`/authors/${encodeURIComponent(username)}`),
+  follow: (username: string) =>
+    post<{ following: boolean }>(`/authors/${encodeURIComponent(username)}/follow`),
+  unfollow: (username: string) =>
+    del<{ following: boolean }>(`/authors/${encodeURIComponent(username)}/follow`),
+  // ── 创建（Agent）────────────────────────────────────────────────
+  /*
+    /agent/ask 是 SSE，不走这里的 JSON 辅助函数——它要逐字读 body，见
+    create.tsx 的 streamAsk。这里只放它周边那几条普通请求。
+  */
+  agentStatus: () => get<{ configured: boolean; model: string }>('/agent/status'),
+  /** Agent 发起的待确认发布。token 是一次性的，用掉即失效。 */
+  agentPending: () =>
+    get<{ items: { confirmToken: string; site: string; summary: string; createdAt: number }[] }>(
+      '/agent/pending',
+    ),
+  /** 确认并真的发布：核销 token，把工作区走一遍正规发布链路。 */
+  agentPublish: (confirmToken: string, name?: string) =>
+    post<{ app: App; url: string; summary: string }>('/agent/publish', { confirmToken, name }),
+
+  /** 「选方向」。为你推荐那一屏按它加权排序。 */
+  interests: () => get<{ interests: Interest[] }>('/me/interests'),
+  setInterests: (interests: Interest[]) =>
+    send<{ interests: Interest[] }>('PUT', '/me/interests', { interests }),
 
   // ── 1024 程序员节 ──────────────────────────────────────────────
   /**

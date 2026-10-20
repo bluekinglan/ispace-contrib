@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -59,7 +59,21 @@ const AUTO_COVER_FILE = '__ispace_cover.png';
 export interface DeployInput {
   user: User;
   slug: string;
-  zipPath: string;
+  /**
+   * 产物 zip。CLI、MCP、控制台上传走这条。
+   *
+   * 与 srcDir 二选一，两个都不给就是调用方的 bug（下面会抛 INVALID_ARTIFACT）。
+   */
+  zipPath?: string | undefined;
+  /**
+   * 直接拿一个目录当产物，给「在 iSpace 里做」那条路用：Agent 把文件写在
+   * 用户工作区里，没有 zip 这一步。
+   *
+   * 这里是**拷**进暂存目录而不是直接拿它当暂存——发布链路最后一步是把暂存
+   * 目录 move 进 releases，move 掉的话用户的工作区就空了，而他下一句话
+   * 很可能是「再改一处」。
+   */
+  srcDir?: string | undefined;
   name?: string | undefined;
   description?: string | undefined;
   /** 「做同款」的提示词，随发布带上；省略时保留该应用已有的。 */
@@ -112,8 +126,10 @@ export class DeployService {
     const staging = mkdtempSync(join(tmpdir(), `ispace-deploy-${slug}-`));
 
     try {
-      // ── 解压到临时目录 ──────────────────────────────────────────
-      await extractZip(input.zipPath, staging);
+      // ── 取到临时目录 ────────────────────────────────────────────
+      if (input.srcDir) await cp(input.srcDir, staging, { recursive: true });
+      else if (input.zipPath) await extractZip(input.zipPath, staging);
+      else throw new IspaceError(ERROR_CODES.INVALID_ARTIFACT, '没有产物可发布');
       const root = await resolveArtifactRoot(staging);
 
       // ── 扫描。在移入 releases 之前，被阻断的产物不落地 ──────────

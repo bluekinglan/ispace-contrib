@@ -86,8 +86,14 @@ export const commentSchema = z.object({
   }),
   /** 自己写的那几条，前端给一个删除入口。 */
   mine: z.boolean(),
+  likeCount: z.number().int().nonnegative(),
+  liked: z.boolean(),
 });
 export type Comment = z.infer<typeof commentSchema>;
+
+/** 评论面板顶上那个开关。热门按赞数排，最新按时间排。 */
+export const commentSortSchema = z.enum(['new', 'hot']);
+export type CommentSort = z.infer<typeof commentSortSchema>;
 
 // ── 动态（社区）─────────────────────────────────────────────────────────
 export const postBodySchema = z.string().trim().min(1).max(2000);
@@ -154,6 +160,7 @@ export const SOCIAL_ROUTES = {
   like: (appId: string) => `${API_BASE}/apps/${appId}/like`,
   comments: (appId: string) => `${API_BASE}/apps/${appId}/comments`,
   comment: (id: string) => `${API_BASE}/comments/${id}`,
+  commentLike: (id: string) => `${API_BASE}/comments/${id}/like`,
   author: (username: string) => `${API_BASE}/authors/${username}`,
   follow: (username: string) => `${API_BASE}/authors/${username}/follow`,
   posts: `${API_BASE}/posts`,

@@ -185,12 +185,48 @@ describe.skipIf(!DSN)('喜欢 / 评论 / 关注 / 动态（真实 Postgres）', 
     expect(gone.json().commentCount).toBe(1);
   });
 
+  it('评论能点赞，点两次只算一次；热门按赞数排在前', async () => {
+    const hot = await send('POST', `/apps/${appIds.pub}/comments`, { body: '这条会被点赞' }, AS('author'));
+    const id = hot.json().comment.id as string;
+    expect(hot.json().comment).toMatchObject({ likeCount: 0, liked: false });
+
+    expect((await send('POST', `/comments/${id}/like`, undefined, AS('fan'))).json())
+      .toMatchObject({ liked: true, likeCount: 1 });
+    expect((await send('POST', `/comments/${id}/like`, undefined, AS('fan'))).json())
+      .toMatchObject({ liked: true, likeCount: 1 });
+
+    const byHot = await get(`/apps/${appIds.pub}/comments?sort=hot`, AS('fan'));
+    expect(byHot.json().comments[0]).toMatchObject({ id, likeCount: 1, liked: true });
+
+    // 最新那一栏仍按时间，刚写的这条也恰好排第一
+    const byNew = await get(`/apps/${appIds.pub}/comments?sort=new`, AS('stranger'));
+    expect(byNew.json().comments[0].id).toBe(id);
+    expect(byNew.json().comments[0].liked).toBe(false);
+
+    expect((await send('DELETE', `/comments/${id}/like`, undefined, AS('fan'))).json())
+      .toMatchObject({ liked: false, likeCount: 0 });
+  });
+
+  it('看不见的页面下的评论也点不了赞', async () => {
+    const mine = await send('POST', `/apps/${appIds.priv}/comments`, { body: '自己页面下的' }, AS('author'));
+    const id = mine.json().comment.id as string;
+    expect((await send('POST', `/comments/${id}/like`, undefined, AS('stranger'))).statusCode).toBe(404);
+  });
+
   // ── 关注与作者主页 ────────────────────────────────────────────────
   it('作者主页只列公开作品，关注数跟着关注走', async () => {
     const before = await get('/authors/author', AS('fan'));
     expect(before.statusCode).toBe(200);
     expect(before.json().apps).toHaveLength(1);
     expect(before.json().apps[0].slug).toBe('paiban');
+    /*
+      列名要和 /marketplace 对得上——作者页和探索页是同一张卡片组件。
+      少过一次 app_id，整屏白屏（卡片按它取底色）。
+    */
+    expect(before.json().apps[0]).toMatchObject({
+      app_id: appIds.pub, owner_username: 'author', liked: false, mine: false,
+    });
+    expect(before.json().apps[0].id).not.toBe(appIds.pub);
     expect(before.json().profile).toMatchObject({ self: false, following: false });
     expect(before.json().profile.stats).toMatchObject({ publicApps: 1, followers: 0 });
 

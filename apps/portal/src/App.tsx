@@ -1,59 +1,50 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { mergeMarketResults, type MarketItem } from './market-state';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  EVENT_PATH, MARKETPLACE_CATEGORIES,
-  type App as AppEntity, type AppGroup, type User,
+  EVENT_PATH,
+  type App as AppEntity, type Interest,
 } from '@ispace/contracts';
-import { AppDownloadDialog, UserMenu } from './UserMenu';
+import { GlobalKeyframes, Icon, Toast, ToneProvider, copyText } from '@ispace/ui';
 import { Activity } from './event/Activity';
 import { Judge } from './event/Judge';
 import { Screen } from './event/Screen';
 import { Award } from './event/Award';
-import { EventBanner } from './event/Banner';
 import {
-  AppIcon, Avatar, Badge, Button, Card, CoverBanner, Dialog, fmtDate,
-  GlobalKeyframes, Greeting, Icon, Input, SectionLabel, ShareDialog, StatusDot,
-  Tabs, Toast, ToneProvider, copyText, useCopy, type ShareVisibility,
-} from '@ispace/ui';
-import {
-  api, ownerFromPath,
-  type InstalledApp, type Listing, type MeResponse,
-  type PendingShare, type AuthPolicy, type SharePeerInfo, type ExposedBackend,
-  type BackendListing, type InstalledBackend,
+  api, type InstalledApp, type Listing, type MeResponse, type PendingShare,
 } from './api';
+import { Shell, type NavKey, type PinnedApp } from './shell';
+import { Explore, playInNewTab } from './explore';
+import { Detail } from './detail';
+import { Author } from './author';
+import { Mine } from './mine';
+import { ForYou } from './foryou';
+import { Create } from './create';
+import { Login, ResetPassword } from './login';
+import { appHref, initial } from './wall';
 
 /**
- * 统一入口（规格 D8）。
+ * 统一入口。
  *
- * `/`            未登录引导；已登录 302 到 /{me}/
- * `/{user}/`     该用户的「我的页面」聚合卡片墙
+ * ┌─ 改版后的地址表 ──────────────────────────────────────────────────┐
+ * │ /                探索（未登录则登录页）                            │
+ * │ /foryou          为你推荐                                          │
+ * │ /create          创建                                              │
+ * │ /mine            我的作品                                          │
+ * │ /app/{u}/{slug}  应用详情                                          │
+ * │ /{user}          作者主页（改版前这里是「我的页面」，见 author.tsx）│
+ * │ /console         控制台（另一个 SPA，侧栏里那两条通往它）          │
+ * │ /reset、/1024*   原样                                              │
+ * └──────────────────────────────────────────────────────────────────┘
  *
- * 方案 v1.2 原本写的是「登录后 302 直达本人页面」，但设计稿的场景是一个人
- * 有 8 个页面——302 到哪一个？聚合页是设计稿给出的修正，本实现以设计稿为准。
+ * 四条新顶层路径（app/create/foryou/mine）已经进了 RESERVED_PATHS 与
+ * Caddyfile 的排除列表——少一条，网关就会拿 /app/lixiao/ 去 /srv/sites
+ * 里找文件（contracts/reserved.ts 开头那段写了这三处为什么必须同步）。
  */
-
-type TabKey = 'pages' | 'market';
-
-/**
- * 读 ?redirect= 并**只放行站内路径**。
- *
- * 这是个开放重定向的口子：参数由调用方构造，原样信任的话，别人能构造
- * 一条"登录后跳到外站"的链接，而用户看到的域名一直是自己公司的。
- * 与服务端 decideRedirect 同一套判断：
- *   必须 / 开头，且不能是 //（协议相对 URL，会跑到外站）
- */
-function safeRedirect(): string | null {
-  const r = new URLSearchParams(location.search).get('redirect');
-  if (!r || !r.startsWith('/') || r.startsWith('//')) return null;
-  return r;
-}
-
 export function App() {
   const path = location.pathname.replace(/\/$/, '');
 
   /*
     重置密码页在最前面分流：它按定义就是「登不进去的人」才会走到，
-    先去拉 /me 只会拿到 401 然后落到未登录引导页，令牌就白发了。
+    先去拉 /me 只会拿到 401 然后落到登录页，令牌就白发了。
   */
   if (path === '/reset') {
     return (
@@ -68,15 +59,10 @@ export function App() {
     1024 程序员节。三条路径都在 Space 之前分流，理由各不相同：
 
       /1024         活动详情**不要求登录**。走 Space 的话会先拉 /me，
-                    401 之后落到登录引导页——而这一页的全部意义就是
+                    401 之后落到登录页——而这一页的全部意义就是
                     「没登录也能看」。
       /1024/screen  会议室大屏，同样免登录（投屏的那台机器不会有人登录）。
-      /1024/judge   要登录且要是评委，但那层判断由它自己向服务端要，
-                    拿到 401 时显示「登录」而不是整页换成登录表单——
-                    评委是从活动页点进来的，不该丢失上下文。
-
-    `1024` 已加进 RESERVED_PATHS 与 Caddyfile 的排除列表，所以
-    /1024/judge 不会被网关当成 `/{user}/{app}/` 去 /srv/sites 找文件。
+      /1024/judge   要登录且要是评委，但那层判断由它自己向服务端要。
   */
   if (path === EVENT_PATH) return <Activity />;
   if (path === `${EVENT_PATH}/judge`) return <Judge />;
@@ -86,1709 +72,410 @@ export function App() {
   return <Space />;
 }
 
-function Space() {
-  const [me, setMe] = useState<MeResponse | null>(null);
-  const [apps, setApps] = useState<AppEntity[]>([]);
-  const [groups, setGroups] = useState<AppGroup[]>([]);
-  const [shares, setShares] = useState<PendingShare[]>([]);
-  /*
-    别人的页面：同事分享给我的、我从创意市场装的。
-    与 apps 分开存——它们不属于我，不能改不能分享，只能打开和移除。
-  */
-  const [installed, setInstalled] = useState<InstalledApp[]>([]);
-  const [backends, setBackends] = useState<ExposedBackend[]>([]);
-  /** 别人的后端：我从创意市场添加的。与 installed（页面）分开存，理由同上。 */
-  const [installedBackends, setInstalledBackends] = useState<InstalledBackend[]>([]);
-  const [tab, setTab] = useState<TabKey>('pages');
-  const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(true);
-  const owner = ownerFromPath();
+// ── 路由 ────────────────────────────────────────────────────────────────
+type Route =
+  | { k: 'explore' }
+  | { k: 'foryou' }
+  | { k: 'create' }
+  | { k: 'mine' }
+  | { k: 'detail'; owner: string; slug: string }
+  | { k: 'author'; username: string };
 
-  const reloadApps = useCallback(async () => {
-    const [a, i, be, ib] = await Promise.all([
+function parse(path: string): Route {
+  const seg = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (seg.length === 0) return { k: 'explore' };
+  if (seg[0] === 'foryou') return { k: 'foryou' };
+  if (seg[0] === 'create') return { k: 'create' };
+  if (seg[0] === 'mine') return { k: 'mine' };
+  if (seg[0] === 'app' && seg[1] && seg[2]) return { k: 'detail', owner: seg[1], slug: seg[2] };
+  return { k: 'author', username: seg[0]! };
+}
+
+const NAV_OF: Record<Route['k'], NavKey | null> = {
+  explore: 'explore',
+  /* 详情与作者页都算在「探索」下：它们是从那面墙点进来的 */
+  detail: 'explore',
+  author: 'explore',
+  foryou: 'foryou',
+  create: 'create',
+  mine: 'mine',
+};
+
+function Space() {
+  const [route, setRoute] = useState<Route>(() => parse(location.pathname));
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
+  const [apps, setApps] = useState<AppEntity[]>([]);
+  const [installed, setInstalled] = useState<InstalledApp[]>([]);
+  const [shares, setShares] = useState<PendingShare[]>([]);
+  const [listings, setListings] = useState<Listing[]>([]);
+  const [interests, setInterests] = useState<Interest[]>([]);
+  const [q, setQ] = useState('');
+  const [toast, setToast] = useState<string | null>(null);
+  /** 「做同款」弹窗里那个页面。 */
+  const [remix, setRemix] = useState<Listing | null>(null);
+  /** 带进创建页的初稿与来源。 */
+  const [draft, setDraft] = useState('');
+  const [remixFrom, setRemixFrom] = useState<Listing | null>(null);
+
+  /* 前进后退。所有导航都走 pushState，返回键才有东西可回。 */
+  const go = useCallback((to: string, r?: Route) => {
+    history.pushState({}, '', to);
+    setRoute(r ?? parse(to));
+    window.scrollTo(0, 0);
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => setRoute(parse(location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  const reloadMine = useCallback(async () => {
+    const [a, i, s] = await Promise.all([
       api.apps().catch(() => null),
       api.installed().catch(() => null),
-      api.backends().catch(() => null),
-      api.installedBackends().catch(() => null),
+      api.pendingShares().catch(() => null),
     ]);
+    if (a) setApps(a.apps);
     if (i) setInstalled(i.installed);
-    if (be) setBackends(be.backends.filter((b) => b.exposed));
-    if (ib) setInstalledBackends(ib.installed);
-    if (!a) return;
-    setApps(a.apps);
-    setGroups(a.groups);
+    if (s) setShares(s.shares);
+  }, []);
+
+  const reloadListings = useCallback(async () => {
+    const r = await api.marketplace().catch(() => null);
+    if (r) setListings(r.listings);
   }, []);
 
   useEffect(() => {
     void (async () => {
-      try {
-        const m = await api.me();
-        setMe(m);
-        /*
-          根路径且已登录 → 先看有没有 ?redirect=。
-          那是网关鉴权把未登录访客送过来时带上的原地址（见
-          routes/authz.ts）：他本来想看某个页面，登完就该回到那儿，
-          而不是被丢到自己的空间里再自己找回去。
-        */
-        if (!owner) {
-          location.replace(safeRedirect() ?? `/${m.user.username}/`);
-          return;
-        }
-        /*
-          路径上是别人的名字。
-
-          此前这里什么都不做，结果是：标题写着「张三 的页面」，底下列的却是
-          **你自己**的应用——因为 api.apps() 压根没有用户名参数，它返回的永远
-          是当前会话这个人的东西。同时 isOwner 为 false 又把「同事分享给我的」
-          整段藏掉，看起来像卡片凭空消失了。
-
-          界面撒谎比缺功能糟糕得多：它让人怀疑数据出了问题，而实际上数据好好的。
-
-          「逛别人的空间」目前不是这个产品里的概念——看别人做了什么走创意市场，
-          单个页面走分享，两条路都有真实的访问控制。所以这里不假装，直接把人
-          送回自己的空间。真要做这个功能，需要一个"按访问者可见性过滤某人页面"
-          的服务端端点，那是另一件事。
-        */
-        if (owner !== m.user.username) {
-          location.replace(`/${m.user.username}/`);
-          return;
-        }
-        const [a, s, i, be, ib] = await Promise.all([
-          api.apps(),
-          api.pendingShares().catch(() => ({ shares: [] })),
-          api.installed().catch(() => ({ installed: [] })),
-          api.backends().catch(() => ({ backends: [] as ExposedBackend[] })),
-          api.installedBackends().catch(() => ({ installed: [] as InstalledBackend[] })),
-        ]);
-        setApps(a.apps);
-        setGroups(a.groups);
-        setShares(s.shares);
-        setInstalled(i.installed);
-        setBackends(be.backends.filter((b) => b.exposed));
-        setInstalledBackends(ib.installed);
-      } catch {
-        setMe(null);
-      } finally {
-        setLoading(false);
-      }
+      const m = await api.me().catch(() => null);
+      if (!m) { setSignedOut(true); return; }
+      setMe(m);
+      await Promise.all([
+        reloadMine(),
+        reloadListings(),
+        api.interests().then((r) => setInterests(r.interests)).catch(() => undefined),
+      ]);
     })();
-  }, [owner]);
+  }, [reloadMine, reloadListings]);
 
-  if (loading) return <Splash />;
-  if (!me) return <LoggedOut />;
+  /*
+    「常用」。必须在下面那几个 early return **之前**算——hooks 不能有条件地
+    调用，React 会在"未登录 → 已登录"这一跳上数出两套不同的 hook 序列，
+    整页白屏（实测踩过）。
+  */
+  const pinned: PinnedApp[] = useMemo(() => (
+    /*
+      设计稿里这是手工置顶的一栏，但平台没有置顶这件事。退而取自己最近更新
+      的三个页面：它们是作者眼下正在弄的那几个，比按名字排更接近"常用"。
+    */
+    [...apps]
+      .filter((a) => a.status !== 'stopped')
+      .sort((x, y) => new Date(y.updatedAt).getTime() - new Date(x.updatedAt).getTime())
+      .slice(0, 3)
+      .map((a) => ({
+        name: a.name,
+        letter: a.iconLetter || initial(a.name),
+        href: `/${me?.user.username ?? ''}/${a.slug}/`,
+      }))
+  ), [apps, me]);
+
+  if (signedOut) {
+    return (
+      <ToneProvider tone="business">
+        <GlobalKeyframes />
+        <Login />
+      </ToneProvider>
+    );
+  }
+  if (!me) {
+    return (
+      <ToneProvider tone="business">
+        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--text-tertiary)' }}>
+          <span style={{ fontSize: 'var(--text-base)' }}>载入中…</span>
+        </div>
+      </ToneProvider>
+    );
+  }
+
+  const user = me.user;
+
+  /** 一张卡上的喜欢数在三屏之间共享，所以改动回写到 listings 上。 */
+  const applyLike = (appId: string, liked: boolean, likeCount: number) => {
+    setListings((prev) => prev.map((l) => (l.app_id === appId ? { ...l, liked, like_count: likeCount } : l)));
+  };
+
+  const openDetail = (l: Listing) => go(`/app/${l.owner_username}/${l.slug}`, {
+    k: 'detail', owner: l.owner_username, slug: l.slug,
+  });
+  const openAuthor = (username: string) => go(`/${username}`, { k: 'author', username });
+  const openRemix = (l: Listing) => setRemix(l);
+
+  /** 带着一句话进创建页。探索页的输入框和「做同款」都走这条。 */
+  const startCreate = (text: string, from: Listing | null) => {
+    setDraft(text);
+    setRemixFrom(from);
+    go('/create', { k: 'create' });
+  };
+
+  const detailItem = route.k === 'detail'
+    ? listings.find((l) => l.owner_username === route.owner && l.slug === route.slug) ?? null
+    : null;
+
+  const body = (() => {
+    switch (route.k) {
+      case 'explore':
+        return (
+          <Explore
+            listings={listings}
+            q={q}
+            onClearQ={() => setQ('')}
+            onOpen={openDetail}
+            onPlay={playInNewTab}
+            onRemix={openRemix}
+            onAuthor={openAuthor}
+            onPrompt={(text) => startCreate(text, null)}
+          />
+        );
+      case 'author':
+        return (
+          <Author
+            username={route.username}
+            onOpen={openDetail}
+            onPlay={playInNewTab}
+            onRemix={openRemix}
+            onAuthor={openAuthor}
+            onToast={setToast}
+          />
+        );
+      case 'mine':
+        return (
+          <Mine
+            me={user}
+            apps={apps}
+            installed={installed}
+            shares={shares}
+            onOpen={(owner, slug) => { window.open(`/${owner}/${slug}/`, '_blank', 'noopener'); }}
+            onManage={(slug) => { location.href = `/console#page=${encodeURIComponent(slug)}`; }}
+            onShare={(a) => { location.href = `/console#page=${encodeURIComponent(a.slug)}`; }}
+            onReload={() => void reloadMine()}
+            onToast={setToast}
+            onShareDone={() => void reloadMine()}
+          />
+        );
+      case 'create':
+        return (
+          <Create
+            me={user}
+            initialDraft={draft}
+            remix={remixFrom ? { name: remixFrom.name, author: remixFrom.owner_name } : null}
+            onClearRemix={() => setRemixFrom(null)}
+            onMine={() => { void reloadMine(); go('/mine', { k: 'mine' }); }}
+            onToast={setToast}
+          />
+        );
+      case 'detail':
+        if (!detailItem) {
+          return (
+            <div style={{ padding: '80px 32px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+              {listings.length === 0 ? '正在加载…' : (
+                <>
+                  这个页面不在探索里（可能没上架，或者已经下架）。
+                  <br />
+                  <a href={`/${route.owner}/${route.slug}/`} style={{ color: 'var(--text-primary)' }}>
+                    直接打开 /{route.owner}/{route.slug}/ →
+                  </a>
+                </>
+              )}
+            </div>
+          );
+        }
+        return (
+          <Detail
+            item={detailItem}
+            me={user}
+            siblings={listings}
+            onSibling={openDetail}
+            onAuthor={openAuthor}
+            onRemix={openRemix}
+            onManage={(l) => { location.href = `/console#page=${encodeURIComponent(l.slug)}`; }}
+            onToast={setToast}
+            onInstalled={() => { void reloadMine(); void reloadListings(); }}
+            onLiked={applyLike}
+          />
+        );
+      case 'foryou':
+        return null; // 它自带顶栏，见下面 chrome=false 那一支
+    }
+  })();
+
+  const shell = (
+    <Shell
+      me={user}
+      nav={NAV_OF[route.k]}
+      q={q}
+      onQ={(v) => {
+        setQ(v);
+        /* 在别的屏上打字直接回探索——搜索框搜的是那面墙 */
+        if (v && route.k !== 'explore') go('/', { k: 'explore' });
+      }}
+      pinned={pinned}
+      shares={shares}
+      onShareDone={() => void reloadMine()}
+      chrome={route.k !== 'foryou'}
+      {...(route.k === 'detail' || route.k === 'author' ? { back: () => history.back() } : {})}
+    >
+      {route.k === 'foryou' ? (
+        <ForYou
+          listings={listings}
+          interests={interests}
+          onDetail={openDetail}
+          onAuthor={openAuthor}
+          onRemix={openRemix}
+          onToast={setToast}
+          onInstalled={() => { void reloadMine(); void reloadListings(); }}
+          onLiked={applyLike}
+        />
+      ) : body}
+    </Shell>
+  );
 
   return (
     <ToneProvider tone="business">
       <GlobalKeyframes />
-      <Shell
-        me={me}
-        tab={tab}
-        onTab={setTab}
-        q={q}
-        onQ={setQ}
-        onUser={(u) => setMe((m) => (m ? { ...m, user: u } : m))}
-      >
-        {tab === 'pages' ? (
-          <MyPages
-            me={me}
-            owner={owner ?? me.user.username}
-            apps={apps}
-            groups={groups}
-            installed={installed}
-            backends={backends}
-            installedBackends={installedBackends}
-            shares={shares}
-            q={q}
-            onShareResponded={(id) => setShares((prev) => prev.filter((s) => s.id !== id))}
-            reloadApps={reloadApps}
-          />
-        ) : (
-          <Market isAdmin={me.user.role === 'admin'} />
-        )}
-      </Shell>
+      {shell}
+      {remix && (
+        <RemixDialog
+          item={remix}
+          onClose={() => setRemix(null)}
+          onHere={() => {
+            const l = remix;
+            setRemix(null);
+            startCreate(l.source_prompt ?? `做一个和「${l.name}」类似的页面：`, l);
+          }}
+          onCopy={() => {
+            const l = remix;
+            setRemix(null);
+            void copyText(l.source_prompt ?? '')
+              .then((ok) => setToast(ok ? '提示词已复制，粘贴给你的 AI 就行' : '复制不了，去详情页里手动选中'));
+          }}
+        />
+      )}
+      {toast && <Toast message={toast} tone="info" onClose={() => setToast(null)} />}
     </ToneProvider>
   );
 }
 
-// ── 骨架 ──────────────────────────────────────────────────────────────
-function Shell({
-  me, tab, onTab, q, onQ, children, onUser,
+/**
+ * 「做同款」（改版稿那个弹窗）。
+ *
+ * 两条路：在 iSpace 里做（带着提示词进创建页），或者把提示词交给自己的
+ * AI。第二条不是退路——很多人本来就在 Claude / Codex 里写代码，装过
+ * MCP 之后一句「发到我的空间」就上线了，比在网页里等更顺手。
+ */
+function RemixDialog({
+  item, onClose, onHere, onCopy,
 }: {
-  me: MeResponse; tab: TabKey; onTab: (t: TabKey) => void;
-  q: string; onQ: (v: string) => void; children: React.ReactNode;
-  /** 改完资料把新的 user 推回去，顶栏头像和名字立刻跟着变。 */
-  onUser: (u: User) => void;
+  item: Listing;
+  onClose: () => void;
+  onHere: () => void;
+  onCopy: () => void;
 }) {
-  const c = useCopy();
-  const [apkOpen, setApkOpen] = useState(false);
-  const compact = useCompactHeader();
-  const narrow = useMedia(NARROW_HEADER);
-  const phone = useMedia(PHONE_HEADER);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--surface-canvas)' }}>
-      <header style={{
-        position: 'sticky', top: 0, zIndex: 10,
-        display: 'flex', alignItems: 'center',
-        gap: phone ? 'var(--space-4)' : 'var(--space-8)',
-        height: 57, padding: phone ? '0 var(--space-5)' : '0 var(--space-12)',
-        background: 'var(--glass-bg)', backdropFilter: 'var(--glass-blur)',
-        WebkitBackdropFilter: 'var(--glass-blur)',
-        borderBottom: '1px solid var(--border-subtle)',
-      }}>
-        {/*
-          产品标识回「我的空间」。用 a 而不是给 div 挂 onClick：这一块是人
-          从创意市场、从别人的空间里下意识要点回去的地方，而键盘用户和
-          「新标签页打开」都只认真正的链接。
-          负外边距抵消掉 hover 底色需要的内边距，视觉位置与原来一致。
-        */}
-        <a
-          href={`/${me.user.username}/`}
-          aria-label="回到我的空间"
-          onClick={(e) => {
-            // 已经在自己的空间里，切回「我的页面」就够了，不必整页重载
-            if (ownerFromPath() !== me.user.username) return;
-            e.preventDefault();
-            onTab('pages');
-          }}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 'var(--space-5)',
-            padding: 'var(--space-3) var(--space-5)', margin: '0 calc(var(--space-5) * -1)',
-            borderRadius: 'var(--radius-8)', textDecoration: 'none', cursor: 'pointer',
-            color: 'inherit', transition: 'var(--transition-colors)',
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-        >
-          <img src="/favicon.svg" alt="" aria-hidden="true" style={{ width: 26, height: 26, flex: 'none', display: 'block' }} />
-          {!phone && (
-            <strong style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)' }}>
-              {c('app.name')}
-            </strong>
-          )}
-        </a>
-        {/*
-          窄屏不显示：这是顶栏里最长的一段（域名 + 用户名），而顶栏里
-          其余东西都是定宽的，它一出现就把右侧顶出视口、冒出横向滚动条。
-          真要用这个地址的时候走「分享」，那里给的是可复制的完整链接。
-        */}
-        {!compact && (
-          <span className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-            {location.host}/{me.user.username}
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 90, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', padding: 24, boxSizing: 'border-box',
+        background: 'rgba(24,23,21,.32)', backdropFilter: 'blur(6px)',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%', maxWidth: 460, boxSizing: 'border-box', padding: 24,
+          borderRadius: 24, background: 'var(--surface-1)',
+          boxShadow: '0 40px 80px -24px rgba(24,23,21,.35)',
+          display: 'flex', flexDirection: 'column', gap: 16,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--weight-bold)', color: 'var(--text-heading)' }}>
+            做同款
           </span>
-        )}
+          <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+            「{item.name}」· {item.owner_name}
+          </span>
+        </div>
 
-        <div style={{ marginLeft: phone ? 0 : 'var(--space-8)' }}>
-          <Tabs
-            value={tab}
-            onChange={onTab}
-            items={[
-              { value: 'pages' as const, label: c('nav.myPages') },
-              { value: 'market' as const, label: c('nav.market') },
-            ]}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Choice
+            icon="sparkles" tone="brand" title="在 iSpace 里做"
+            desc="带着这句话进创建页，改几个字就能生成，发到你的空间。"
+            onClick={onHere}
+          />
+          <Choice
+            icon="copy" tone="plain" title="交给你自己的 AI"
+            desc="复制提示词，粘贴到 Claude 或 Codex。装过 iSpace 连接的话，最后说一句「发到我的空间」就能上线。"
+            onClick={onCopy}
           />
         </div>
 
-        <div style={{ flex: 1 }} />
-
-        {/* 设计稿顶栏：搜索框内嵌 15px 放大镜，控制台按钮带 12px 滑块图标 */}
-        {!narrow && (
-        <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
-          <Icon
-            name="search"
-            size={15}
-            color="var(--text-tertiary)"
-            style={{ position: 'absolute', left: 10, pointerEvents: 'none' }}
-          />
-          <input
-            value={q}
-            onChange={(e) => onQ(e.target.value)}
-            placeholder="搜索我的页面"
-            style={{
-              width: 240, height: 32, padding: '0 var(--space-8) 0 32px',
-              border: '1px solid var(--border)', borderRadius: 'var(--radius-8)',
-              background: 'var(--surface-1)', fontSize: 'var(--text-sm)', outline: 'none',
-              font: 'var(--weight-regular) var(--text-sm)/1 var(--font-sans)',
-            }}
-          />
-        </div>
-        )}
-        {/*
-          装 App 是"还没装的人"才做的事，而没装的人恰恰不会想到去翻头像菜单。
-          放在顶栏才有被撞见的机会。ghost 而不是描边按钮：它常驻可见，
-          但左边的「我的页面/创意市场」才是这个界面的主干。
-        */}
-        {!phone && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setApkOpen(true)}
-            aria-label="下载手机 App"
-            title="下载手机 App（安卓）"
-          >
-            <Icon name="mobile" size={12} />
-            {!compact && '下载 App'}
-          </Button>
-        )}
-        {!phone && (
-          <a href="/console" style={{ textDecoration: 'none' }}>
-            <Button size="sm">
-              <Icon name="sliders" size={12} />
-              {c('nav.console')}
-            </Button>
-          </a>
-        )}
-        <UserMenu user={me.user} onUser={onUser} phone={phone} />
-      </header>
-
-      {/* 1120 在宽屏上两侧留白太多、卡片墙只排得下三列。提到 1400 挤走留白，
-          能排四列，卡片更充实——「我的页面」与「创意市场」两个 tab 都走这个 main。 */}
-      <main style={{ maxWidth: 1400, margin: '0 auto', padding: 'var(--space-16) var(--space-12) var(--space-24)' }}>
-        {children}
-      </main>
-      {apkOpen && <AppDownloadDialog onClose={() => setApkOpen(false)} />}
+        <span style={{ padding: '6px 2px 0', fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
+          只带走做法，不带走数据：原页面里的数据不会被复制。
+        </span>
+      </div>
     </div>
   );
 }
 
-const COMPACT_HEADER = '(max-width: 900px)';
-
-/*
-  顶栏一共三档，断点是量出来的，不是拍的：
-
-  完整顶栏（产品名 + 标签页 + 240px 搜索框 + 下载 App + 控制台 + 头像）
-  的最小宽度是 **786px**。所以
-
-    > 820   完整
-    561–820 去掉搜索框 → 最小 530px
-    ≤ 560   只留图标、标签页、头像 → 最小约 314px（320 的屏也放得下）
-
-  compact（900）管的是另一件事：把「下载 App」的文字收成纯图标。
-
-  砍掉的都有别的去处：控制台和空间地址在头像菜单里本来就有，
-  下载 App 在最窄那一档挪进头像菜单，搜索在页面主体里还有一个。
-*/
-const NARROW_HEADER = '(max-width: 820px)';
-const PHONE_HEADER = '(max-width: 560px)';
-
-/**
- * 顶栏窄到放不下文字时的信号。
- *
- * 这条顶栏里几乎每样东西都是定宽的——240px 的搜索框、两个标签页、
- * 控制台按钮——横向没有让位的余地，多一段文字就把右侧顶出视口。
- * 图标本身能撑住"这里能下载 App"的意思，文字是锦上添花的那部分，
- * 所以窄屏先舍它。
- *
- * 用 matchMedia 而不是媒体查询：这套界面的样式全写在行内，
- * 没有一张可以挂断点的样式表。
- */
-function useMedia(query: string): boolean {
-  const [on, setOn] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const sync = () => setOn(mq.matches);
-    sync();
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  }, [query]);
-  return on;
-}
-
-function useCompactHeader(): boolean {
-  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_HEADER).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(COMPACT_HEADER);
-    const sync = () => setCompact(mq.matches);
-    // 初值是首次渲染时算的，订阅之前这中间窗口可能已经变过
-    sync();
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  }, []);
-  return compact;
-}
-
-// ── 我的页面 ──────────────────────────────────────────────────────────
-function MyPages({
-  me, owner, apps, groups, installed, backends, installedBackends, shares, q, onShareResponded, reloadApps,
+function Choice({
+  icon, tone, title, desc, onClick,
 }: {
-  me: MeResponse; owner: string; apps: AppEntity[]; groups: AppGroup[];
-  installed: InstalledApp[];
-  backends: ExposedBackend[];
-  installedBackends: InstalledBackend[];
-  shares: PendingShare[]; q: string; onShareResponded: (id: string) => void;
-  reloadApps: () => Promise<void>;
-}) {
-  // 分享对话框由这一层持有：卡片是纯展示，弹窗不该在每张卡里各开一个
-  const [sharing, setSharing] = useState<AppEntity | null>(null);
-  const [shareMsg, setShareMsg] = useState<string | null>(null);
-  const c = useCopy();
-  const isOwner = me.user.username === owner;
-
-  const filtered = useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    if (!kw) return apps;
-    return apps.filter(
-      (a) => a.name.toLowerCase().includes(kw) || a.slug.toLowerCase().includes(kw),
-    );
-  }, [apps, q]);
-
-  const running = apps.filter((a) => a.status === 'running').length;
-  const ungrouped = filtered.filter((a) => !a.groupId);
-
-  const filteredInstalled = useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    if (!kw) return installed;
-    return installed.filter(
-      (a) => a.name.toLowerCase().includes(kw) || a.slug.toLowerCase().includes(kw),
-    );
-  }, [installed, q]);
-
-  const filteredInstalledBackends = useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    if (!kw) return installedBackends;
-    return installedBackends.filter((b) => b.name.toLowerCase().includes(kw));
-  }, [installedBackends, q]);
-
-  return (
-    <>
-      {shares.map((s) => (
-        <ShareCard key={s.id} share={s} onDone={() => onShareResponded(s.id)} />
-      ))}
-
-      {/*
-        1024 横幅。排在待接受的分享之后、问候语之前——分享是别人在等你回应，
-        优先级高于一个活动入口；而活动比自己的页面墙更有时效性。
-        活动结束后它自己不再渲染，不用回来改这里。
-      */}
-      {isOwner && <EventBanner />}
-
-      <div style={{ margin: 'var(--space-16) 0 var(--space-12)' }}>
-        <Greeting>Happy Working</Greeting>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--space-8)', marginTop: 'var(--space-2)' }}>
-          <h1 style={{ margin: 0, font: 'var(--weight-bold) var(--text-2xl)/1.2 var(--font-sans)', color: 'var(--text-heading)' }}>
-            {isOwner ? `${me.user.displayName}的页面` : `${owner} 的页面`}
-          </h1>
-          <StatusDot
-            status="running"
-            label={`${apps.length} 个页面 · ${running} 个运行中`}
-          />
-        </div>
-      </div>
-
-      {apps.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <>
-          {ungrouped.length > 0 && (
-            <Section title={groups.length ? '未分组' : '全部'} apps={ungrouped} owner={owner} onShare={setSharing} />
-          )}
-          {groups.map((g) => {
-            const inGroup = filtered.filter((a) => a.groupId === g.id);
-            if (!inGroup.length) return null;
-            return <Section key={g.id} title={g.name} apps={inGroup} owner={owner} onShare={setSharing} />;
-          })}
-          {filtered.length === 0 && (
-            <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-base)' }}>
-              没有匹配「{q}」的页面
-            </p>
-          )}
-        </>
-      )}
-
-      {isOwner && backends.length > 0 && (
-        <BackendSection items={backends} owner={owner} onChanged={reloadApps} />
-      )}
-      {isOwner && filteredInstalled.length > 0 && (
-        <InstalledSection items={filteredInstalled} onRemoved={reloadApps} />
-      )}
-      {isOwner && filteredInstalledBackends.length > 0 && (
-        <InstalledBackendSection items={filteredInstalledBackends} onRemoved={reloadApps} />
-      )}
-      <p style={{ marginTop: 'var(--space-20)', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-        {c('oneline.scanNote')}
-      </p>
-
-      {shareMsg && (
-        <div style={{
-          position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)',
-          background: 'var(--accent)', color: 'var(--accent-fg)',
-          padding: 'var(--space-6) var(--space-10)', borderRadius: 'var(--radius-pill)',
-          fontSize: 'var(--text-sm)', boxShadow: 'var(--shadow-dropdown)', zIndex: 60,
-        }}>{shareMsg}</div>
-      )}
-      {sharing && (
-        <AppShareDialog
-          app={sharing}
-          owner={owner}
-          onClose={() => setSharing(null)}
-          onChanged={() => void reloadApps()}
-        />
-      )}
-    </>
-  );
-}
-
-function Section({
-  title, apps, owner, onShare,
-}: {
-  title: string; apps: AppEntity[]; owner: string; onShare: (a: AppEntity) => void;
+  icon: 'sparkles' | 'copy';
+  tone: 'brand' | 'plain';
+  title: string;
+  desc: string;
+  onClick: () => void;
 }) {
   return (
-    <section style={{ marginBottom: 'var(--space-16)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)', marginBottom: 'var(--space-8)' }}>
-        <SectionLabel>{title}</SectionLabel>
-        <span className="num" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: -8 }}>
-          {apps.length}
-        </span>
-      </div>
-      <div style={{
-        display: 'grid', gap: 'var(--space-8)',
-        /*
-          min(300px, 100%) 而不是直接 300px：容器比 300 还窄时（320 的手机
-          减掉两侧内边距只剩 272），写死的最小轨道会把整个栅格撑出视口，
-          于是整页多一条横向滚动条。min() 让轨道在这种时候跟着容器缩。
-        */
-        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-      }}>
-        {apps.map((a) => <AppCard key={a.id} app={a} owner={owner} onShare={onShare} />)}
-      </div>
-    </section>
-  );
-}
-
-/**
- * 别人的页面：同事分享给我的、我从创意市场装的。
- *
- * 单独一区而不是混进上面的宫格：这些页面不属于我——改不了、分享不了、
- * 删不掉（只能从自己这儿移除）。混在一起会让人以为「删除」会删掉别人
- * 的东西。归属写在卡片上，点开去的也是对方空间下的地址。
- */
-/**
- * 露出的后端应用（全栈项目）。
- *
- * 与静态页面同处一屏但单列一节：它们是活着的容器、不是文件，能开能停，
- * 访问地址是 /svc/{user}/{name}/ 而非 /{user}/{app}/。混进上面的卡片墙会
- * 让人以为能像页面那样回滚、看版本——那些对后端不成立。
- */
-function BackendSection({
-  items, owner, onChanged,
-}: { items: ExposedBackend[]; owner: string; onChanged: () => Promise<void> }) {
-  const c = useCopy();
-  // 分享弹窗由这一层持有——和页面卡片墙同样的做法（见上面那层的注释）：
-  // 卡片是纯展示，弹窗不该在每张卡里各开一个。
-  const [sharing, setSharing] = useState<ExposedBackend | null>(null);
-  return (
-    <section style={{ marginBottom: 'var(--space-16)' }}>
-      <div style={{ marginBottom: 'var(--space-8)' }}>
-        <SectionLabel>应用（后端）</SectionLabel>
-      </div>
-      <div style={{
-        display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-      }}>
-        {items.map((b) => {
-          const url = `/svc/${owner}/${b.name}/`;
-          const running = b.status === 'running';
-          return (
-            <Card key={b.id} hoverable style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-              {b.hasCover && <CoverBanner src={`/deploy/api/backends/${b.id}/cover`} alt={b.name} />}
-              <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'flex-start' }}>
-                {!b.hasCover && <AppIcon letter={b.name.slice(0, 1)} />}
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <a href={url} style={{
-                    display: 'block', textDecoration: 'none', color: 'var(--text-heading)',
-                    font: 'var(--weight-semibold) var(--text-card-title)/1.3 var(--font-sans)',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{b.name}</a>
-                  <div className="mono" style={{
-                    fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 2,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{location.host}{url}</div>
-                </div>
-                <Badge tone={b.visibility === 'public' ? 'success' : 'brand'}>
-                  {b.visibility === 'public' ? '全公司' : b.visibility === 'shared' ? '指定同事' : '仅自己'}
-                </Badge>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', marginTop: 'auto' }}>
-                <StatusDot status={running ? 'running' : 'stopped'}
-                  label={running ? c('status.running') : c('status.stopped')} />
-                <div style={{ flex: 1 }} />
-                {/* 与页面卡片同一个动作：点「分享」开同一个弹窗，弹窗里就能改三档
-                    可见性、加减同事、复制链接、扫码——后端和页面到这里再无差别。 */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setSharing(b); }}
-                  style={{
-                    border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
-                    fontSize: 'var(--text-sm)', color: 'var(--link)',
-                  }}
-                >{c('action.share')}</button>
-                <a href="/console#/backends" onClick={(e) => e.stopPropagation()} style={{
-                  fontSize: 'var(--text-sm)', color: 'var(--link)', textDecoration: 'none',
-                }}>{c('action.manage')}</a>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-      {sharing && (
-        <BackendShareDialog
-          backend={sharing}
-          owner={owner}
-          onClose={() => setSharing(null)}
-          onChanged={onChanged}
-        />
-      )}
-    </section>
-  );
-}
-
-/**
- * 后端分享弹窗的数据接线——与 AppShareDialog 同构，只是接到 backends 的
- * 那套接口。后端没有「待接受」流程，授权即时生效，所以名单里的人一律标为
- * 已接受（status:'accepted'），弹窗里就不会显示「等对方接受」。
- */
-function BackendShareDialog({
-  backend, owner, onClose, onChanged,
-}: { backend: ExposedBackend; owner: string; onClose: () => void; onChanged: () => Promise<void> }) {
-  const [peers, setPeers] = useState<SharePeerInfo[]>([]);
-
-  const loadPeers = useCallback(() => {
-    void api.backendShares(backend.id)
-      .then((r) => setPeers(r.shares.map((s) => ({
-        shareId: s.username, username: s.username, displayName: s.displayName,
-        avatarUrl: s.avatarUrl, status: 'accepted' as const,
-      }))))
-      .catch(() => setPeers([]));
-  }, [backend.id]);
-  useEffect(loadPeers, [loadPeers]);
-
-  return (
-    <ShareDialog
-      open
-      appName={backend.name}
-      shareUrl={`${location.origin}/svc/${owner}/${backend.name}/`}
-      visibility={backend.visibility as ShareVisibility}
-      peers={peers}
-      onClose={onClose}
-      onVisibilityChange={async (v) => {
-        await api.setBackendVisibility(backend.id, v);
-        loadPeers();
-        await onChanged();
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 14, width: '100%', padding: 16,
+        border: '1px solid var(--border)', borderRadius: 14, background: 'var(--surface-1)',
+        cursor: 'pointer', textAlign: 'left',
       }}
-      onAddPeer={async (username) => {
-        await api.shareBackend(backend.id, username);
-        loadPeers();
-        await onChanged();
-      }}
-      onRemovePeer={async (username) => {
-        await api.revokeBackendShareTo(backend.id, username);
-        loadPeers();
-        await onChanged();
-      }}
-    />
-  );
-}
-
-function InstalledSection({
-  items, onRemoved,
-}: { items: InstalledApp[]; onRemoved: () => Promise<void> }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const remove = async (a: InstalledApp) => {
-    setBusy(a.id); setErr(null);
-    try {
-      await api.removeInstalled(a.id);
-      await onRemoved();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally { setBusy(null); }
-  };
-
-  return (
-    <section style={{ marginBottom: 'var(--space-16)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)', marginBottom: 'var(--space-8)' }}>
-        <SectionLabel>同事的页面</SectionLabel>
-        <span className="num" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: -8 }}>
-          {items.length}
-        </span>
-      </div>
-      {err && (
-        <p role="alert" style={{ margin: '0 0 var(--space-6)', color: 'var(--error)', fontSize: 'var(--text-base)' }}>
-          {err}
-        </p>
-      )}
-      <div style={{
-        display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-      }}>
-        {items.map((a) => {
-          const url = `/${a.owner_username}/${a.slug}/`;
-          return (
-            <Card key={a.id} hoverable style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-              {a.cover_path && <CoverBanner src={a.cover_path} alt={a.name} />}
-              <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'flex-start' }}>
-                {!a.cover_path && <AppIcon letter={a.icon_letter} />}
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <a href={url} style={{
-                    display: 'block', textDecoration: 'none', color: 'var(--text-heading)',
-                    font: 'var(--weight-semibold) var(--text-card-title)/1.3 var(--font-sans)',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{a.name}</a>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 2 }}>
-                    {a.owner_name} 的页面 · {a.source === 'marketplace' ? '来自创意市场' : '同事分享'}
-                  </div>
-                </div>
-              </div>
-
-              {a.description && (
-                <p style={{
-                  margin: 0, fontSize: 'var(--text-base)', color: 'var(--text-secondary)',
-                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                }}>{a.description}</p>
-              )}
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', marginTop: 'auto' }}>
-                <StatusDot
-                  status={a.status === 'running' ? 'running' : a.status === 'building' ? 'building' : 'stopped'}
-                  label={a.status === 'running' ? '运行中' : a.status === 'building' ? '构建中' : '已停止'}
-                />
-                <div style={{ flex: 1 }} />
-                <Button size="sm" variant="ghost" disabled={busy === a.id}
-                  onClick={() => void remove(a)}>
-                  {busy === a.id ? '移除中…' : '从我这儿移除'}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => { location.href = url; }}>打开</Button>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-/**
- * 同事的后端：我从创意市场添加的。
- *
- * 与 InstalledSection 同构，但没有 description/source——后端没有简介字段，
- * 引用只有市场这一条来路（见 backend_installs 表那条注释）。状态展示按
- * BackendSection 同样的口径折成二元 running/stopped：这是别人的服务，
- * 装的人分不清"构建中"和"失败"能做什么不同的事，与其为一个分不出行动
- * 差异的状态多加一档，不如跟同一屏里「我的后端」那张卡保持一致的简单。
- */
-function InstalledBackendSection({
-  items, onRemoved,
-}: { items: InstalledBackend[]; onRemoved: () => Promise<void> }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const remove = async (b: InstalledBackend) => {
-    setBusy(b.id); setErr(null);
-    try {
-      await api.removeInstalledBackend(b.id);
-      await onRemoved();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally { setBusy(null); }
-  };
-
-  return (
-    <section style={{ marginBottom: 'var(--space-16)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)', marginBottom: 'var(--space-8)' }}>
-        <SectionLabel>同事的后端</SectionLabel>
-        <span className="num" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: -8 }}>
-          {items.length}
-        </span>
-      </div>
-      {err && (
-        <p role="alert" style={{ margin: '0 0 var(--space-6)', color: 'var(--error)', fontSize: 'var(--text-base)' }}>
-          {err}
-        </p>
-      )}
-      <div style={{
-        display: 'grid', gap: 'var(--space-8)',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-      }}>
-        {items.map((b) => {
-          const url = `/svc/${b.owner_username}/${b.name}/`;
-          const running = b.status === 'running';
-          return (
-            <Card key={b.id} hoverable style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-              {b.has_cover && <CoverBanner src={`/deploy/api/backends/${b.id}/cover`} alt={b.name} />}
-              <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'flex-start' }}>
-                {!b.has_cover && <AppIcon letter={b.name.slice(0, 1)} />}
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <a href={url} style={{
-                    display: 'block', textDecoration: 'none', color: 'var(--text-heading)',
-                    font: 'var(--weight-semibold) var(--text-card-title)/1.3 var(--font-sans)',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{b.name}</a>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 2 }}>
-                    {b.owner_name} 的后端 · 来自创意市场
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', marginTop: 'auto' }}>
-                <StatusDot status={running ? 'running' : 'stopped'} label={running ? '运行中' : '已停止'} />
-                <div style={{ flex: 1 }} />
-                <Button size="sm" variant="ghost" disabled={busy === b.id}
-                  onClick={() => void remove(b)}>
-                  {busy === b.id ? '移除中…' : '从我这儿移除'}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => { location.href = url; }}>打开</Button>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function AppCard({
-  app, owner, onShare,
-}: { app: AppEntity; owner: string; onShare: (a: AppEntity) => void }) {
-  const c = useCopy();
-  const url = `/${owner}/${app.slug}/`;
-  const statusLabel = c(
-    app.status === 'running' ? 'status.running'
-    : app.status === 'building' ? 'status.building'
-    : 'status.stopped',
-  );
-  return (
-    <Card
-      hoverable
-      onClick={() => { location.href = url; }}
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--text-tertiary)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; }}
     >
-      {app.coverUrl && <CoverBanner src={app.coverUrl} alt={app.name} />}
-      <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'flex-start' }}>
-        {/* 有封面 banner 时字母块是重复的视觉标识，撤掉；没封面才靠它认页面 */}
-        {!app.coverUrl && <AppIcon letter={app.iconLetter} />}
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <a href={url} onClick={(e) => e.stopPropagation()} style={{
-            display: 'block', textDecoration: 'none', color: 'var(--text-heading)',
-            font: 'var(--weight-semibold) var(--text-card-title)/1.3 var(--font-sans)',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{app.name}</a>
-          {/* 副标题用页面简介，不再显示那串地址——地址点标题就到，念它没意义。
-              没简介就留空，不硬塞一行占位。 */}
-          {app.description && (
-            <div style={{
-              fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginTop: 2,
-              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-            }}>{app.description}</div>
-          )}
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', marginTop: 'auto' }}>
-        <StatusDot status={app.status} label={statusLabel} />
-        <div style={{ flex: 1 }} />
-        <span className="num" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-          {fmtDate(app.updatedAt).slice(5, 10)}
+      <span
+        style={{
+          width: 38, height: 38, flex: 'none', borderRadius: 11,
+          background: tone === 'brand' ? 'var(--brand-wash)' : 'var(--surface-2)',
+          color: tone === 'brand' ? 'var(--tabby-orange-hover)' : 'var(--text-primary)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <Icon name={icon} size={19} />
+      </span>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
+          {title}
         </span>
-        {/* 分享是这一屏的主要动作之一，之前只能到控制台深处去做 */}
-        <button
-          onClick={(e) => { e.stopPropagation(); onShare(app); }}
-          style={{
-            border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
-            fontSize: 'var(--text-sm)', color: 'var(--link)',
-          }}
-        >{c('action.share')}</button>
-        {/* 去控制台的「我的页面」tab。原先指 #/apps/{slug}，那不是合法的
-            screen key，控制台会落到默认屏——点「管理」却到了别处。 */}
-        <a href="/console#/pages" onClick={(e) => e.stopPropagation()} style={{
-          fontSize: 'var(--text-sm)', color: 'var(--link)', textDecoration: 'none',
-        }}>{c('action.manage')}</a>
-      </div>
-    </Card>
-  );
-}
-
-/**
- * 分享弹窗的数据接线。
- *
- * 弹窗本体在 @ispace/ui（控制台也用同一个）。这里只负责把它接到 portal 的
- * API 上：打开时拉一次「已分享给谁」，操作后回调上层刷新卡片——
- * 可见范围变了，卡片右上角的徽标也得跟着变，不刷新会让人以为没生效。
- */
-function AppShareDialog({
-  app, owner, onClose, onChanged,
-}: { app: AppEntity; owner: string; onClose: () => void; onChanged: () => void }) {
-  const [peers, setPeers] = useState<SharePeerInfo[]>([]);
-
-  const loadPeers = useCallback(() => {
-    void api.appShares(app.id).then((r) => setPeers(r.peers)).catch(() => setPeers([]));
-  }, [app.id]);
-  useEffect(loadPeers, [loadPeers]);
-
-  return (
-    <ShareDialog
-      open
-      appName={app.name}
-      shareUrl={`${location.origin}/${owner}/${app.slug}/`}
-      visibility={app.visibility as ShareVisibility}
-      peers={peers}
-      onClose={onClose}
-      onVisibilityChange={async (v) => {
-        await api.setVisibility(app.id, v);
-        loadPeers();
-        onChanged();
-      }}
-      onAddPeer={async (username) => {
-        await api.share(app.id, username);
-        loadPeers();
-        onChanged();
-      }}
-      onRemovePeer={async (username) => {
-        await api.revokeShareTo(app.id, username);
-        loadPeers();
-        onChanged();
-      }}
-    />
-  );
-}
-
-function ShareCard({ share, onDone }: { share: PendingShare; onDone: () => void }) {
-  const c = useCopy();
-  const [busy, setBusy] = useState(false);
-  const respond = async (accept: boolean) => {
-    setBusy(true);
-    try { await api.respondShare(share.id, accept); onDone(); }
-    finally { setBusy(false); }
-  };
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 'var(--space-10)',
-      background: 'var(--tabby-orange-subtle)', border: '1px solid var(--tabby-orange)',
-      borderRadius: 'var(--radius-16)', padding: 'var(--space-10) var(--space-12)',
-      marginBottom: 'var(--space-8)',
-    }}>
-      <Avatar name={share.fromUser.displayName} size={36} src={share.fromUser.avatarUrl} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 'var(--weight-semibold)', fontSize: 'var(--text-md)' }}>
-          {share.fromUser.displayName} {c('share.pendingTitle')}「{share.app.name}」
-        </div>
-        <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)', marginTop: 2 }}>
-          {c('share.pendingNote')}
-        </div>
-      </div>
-      <Button variant="primary" size="sm" disabled={busy} onClick={() => void respond(true)}>
-        {c('action.accept')}
-      </Button>
-      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void respond(false)}>
-        {c('action.reject')}
-      </Button>
-    </div>
-  );
-}
-
-function EmptyState() {
-  const c = useCopy();
-  const phrase = '把这个项目部署到我的空间，路径 /zhoubao';
-  // 三态：null 未点 / 'ok' 成功 / 'fail' 复制不了（HTTP 下浏览器可能不给用）
-  const [copied, setCopied] = useState<'ok' | 'fail' | null>(null);
-  return (
-    <Card style={{ textAlign: 'center', padding: 'var(--space-24) var(--space-12)' }}>
-      <div style={{ font: 'var(--weight-semibold) var(--text-lg)/1.4 var(--font-sans)', color: 'var(--text-heading)' }}>
-        {c('pages.empty.title')}
-      </div>
-      <p style={{ margin: 'var(--space-6) auto var(--space-10)', maxWidth: 460, color: 'var(--text-secondary)' }}>
-        {c('pages.empty.hint')}
-      </p>
-      <div className="mono" style={{
-        display: 'inline-block', background: 'var(--accent)', color: 'var(--accent-fg)',
-        padding: 'var(--space-6) var(--space-10)', borderRadius: 'var(--radius-10)',
-        fontSize: 'var(--text-sm)',
-      }}>{phrase}</div>
-      <div style={{ marginTop: 'var(--space-8)' }}>
-        <Button size="sm" onClick={() => {
-          /*
-            失败也要有反馈，但**不能用 alert**——它会阻塞 JS 线程，
-            而这条路径恰恰是在浏览器不给用剪贴板时才走到的，
-            一个堵死页面的弹窗只会让情况更糟。用按钮自身的文案说。
-          */
-          void copyText(phrase).then((done) => {
-            setCopied(done ? 'ok' : 'fail');
-            setTimeout(() => setCopied(null), done ? 1600 : 2600);
-          });
-        }}>
-          {copied === 'ok' ? '已复制'
-            : copied === 'fail' ? '复制不了，请手动选中'
-            : c('pages.empty.copyPhrase')}
-        </Button>
-      </div>
-    </Card>
-  );
-}
-
-/**
- * 创意市场（设计稿顶部第二个 tab）。
- *
- * 与「分享给个人」的区别：那个是定向推送、要对方接受；这个是主动上架、
- * 谁都能自助添加。添加只建立引用不复制内容——原作者更新，使用者下次
- * 打开就是新版；原作者下架，引用随之失效。
- */
-/**
- * 市场里的一条条目：页面或后端。
- *
- * 两边字段形状差太多（见 marketplace.ts 那条"后端和页面的市场数据形状差
- * 太多"的注释），不铸一个大而全的通用类型——直接 kind + 各自原样的字段，
- * 通用字段（id/category/install_count/owner_name...）两边同名，union 上
- * 直接读；kind 专属字段（app_id/slug、backend_id/has_cover 等）先判 kind
- * 再读。
- */
-function Market({ isAdmin }: { isAdmin: boolean }) {
-  const [{ items, errors }, setMarket] = useState<{ items: MarketItem[]; errors: string[] }>({ items: [], errors: [] });
-  const [busy, setBusy] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const loadVersion = useRef(0);
-  /** 正在看提示词的那条 listing。null 表示弹窗关着。做同款只对页面成立。 */
-  const [remix, setRemix] = useState<Listing | null>(null);
-  const [msg, setMsg] = useState<{ text: string; tone: 'info' | 'error' } | null>(null);
-  /** 选中的分类，null=全部。本地搜索词。数据量是一个公司的共享内容，客户端过滤足够。 */
-  const [cat, setCat] = useState<string | null>(null);
-  const [q, setQ] = useState('');
-
-  /*
-    两次请求各自失败不该互相拖累——后端市场接口出问题时，页面市场至少还能看。
-    合并后按安装数/发布时间重新排一遍：两条查询各自在服务端排过，但那只保证
-    各自有序，交错合并后整体顺序要在这里重新算。
-  */
-  const load = useCallback(() => {
-    const version = ++loadVersion.current;
-    setLoading(true);
-    void Promise.allSettled([
-      api.marketplace().then((r) => r.listings.map((l): MarketItem => ({ kind: 'app', ...l }))),
-      api.backendMarketplace().then((r) => r.listings.map((b): MarketItem => ({ kind: 'backend', ...b }))),
-    ]).then(([apps, backends]) => {
-      if (version !== loadVersion.current) return;
-      setMarket((previous) => mergeMarketResults(previous.items, apps, backends));
-      setLoaded(true);
-      setLoading(false);
-    });
-  }, []);
-  useEffect(() => {
-    load();
-    return () => { ++loadVersion.current; };
-  }, [load]);
-
-  /**
-   * 管理员下架别人上架的内容。
-   *
-   * 市场自带的下架只认「published_by = 自己」，管理员管不了别人的东西。
-   * 内部平台上这条一定会用到：有人上架了不该全公司可见的内容，
-   * 而作者可能正在休假。
-   *
-   * 只下架、不删应用——内容仍归作者，管理员该做的是收窄可见范围。
-   */
-  const unlist = async (item: MarketItem) => {
-    const kindLabel = item.kind === 'app' ? '页面' : '后端';
-    if (!confirm(
-      `把「${item.name}」从创意市场下架？\n\n`
-      + `作者是 ${item.owner_name}。${kindLabel}本身和数据都保留，只是不再对全公司可见；`
-      + '已添加过的同事会失去入口。作者可以自己重新上架。',
-    )) return;
-    setBusy(item.id);
-    try {
-      if (item.kind === 'app') await api.adminUnlist(item.app_id);
-      else await api.adminUnlistBackend(item.backend_id);
-      load();
-    } finally { setBusy(null); }
-  };
-
-  const toggle = async (item: MarketItem) => {
-    setBusy(item.id);
-    try {
-      if (item.kind === 'app') {
-        if (item.installed) await api.uninstallFromMarket(item.app_id);
-        else await api.installFromMarket(item.app_id);
-      } else if (item.installed) {
-        await api.uninstallBackendFromMarket(item.backend_id);
-      } else {
-        await api.installBackendFromMarket(item.backend_id);
-      }
-      load();
-    } finally { setBusy(null); }
-  };
-
-  if (!loaded) return <p role="status">正在加载创意市场…</p>;
-
-  const loadError = errors.length > 0 ? (
-    <div role="alert" style={{ marginBottom: 'var(--space-8)' }}>
-      <p>{errors.join('；')}。{items.length > 0 ? '已加载的内容仍可查看，部分内容可能不是最新。' : '请重试。'}</p>
-      <Button onClick={load} disabled={loading}>{loading ? '正在重试…' : '重新加载'}</Button>
-    </div>
-  ) : null;
-
-  if (items.length === 0 && loadError) return loadError;
-
-  if (items.length === 0) {
-    return (
-      <Card style={{ textAlign: 'center', padding: 'var(--space-24) var(--space-12)' }}>
-        <div style={{ font: 'var(--weight-semibold) var(--text-lg)/1.4 var(--font-sans)' }}>
-          市场里还没有内容
-        </div>
-        <p style={{ margin: 'var(--space-6) auto 0', maxWidth: 460, color: 'var(--text-secondary)' }}>
-          把一个页面或后端的可见范围改成「全公司」，就会出现在这里。
-          上架后同事在这里添加即用，不需要你逐个发给他们。
-        </p>
-      </Card>
-    );
-  }
-
-  // 分类：AI 或作者决定、可自造，未分类归「其他」。侧边栏按实际出现的分类聚合——
-  // 不再限定在固定清单里，自造的新分类也会自动成为一档，页面和后端共用一套分类。
-  const catOf = (item: MarketItem) => item.category?.trim() || '其他';
-  const counts = new Map<string, number>();
-  for (const item of items) counts.set(catOf(item), (counts.get(catOf(item)) ?? 0) + 1);
-  // 排序：建议清单里的按清单顺序在前，自造的按名称跟其后，「其他」永远垫底。
-  const cats = [...counts.keys()].sort((a, b) => {
-    if (a === '其他') return 1; if (b === '其他') return -1;
-    const ia = (MARKETPLACE_CATEGORIES as readonly string[]).indexOf(a);
-    const ib = (MARKETPLACE_CATEGORIES as readonly string[]).indexOf(b);
-    if (ia !== -1 && ib !== -1) return ia - ib;
-    if (ia !== -1) return -1; if (ib !== -1) return 1;
-    return a.localeCompare(b);
-  });
-
-  const kw = q.trim().toLowerCase();
-  const visible = items.filter((item) => {
-    const description = item.kind === 'app' ? item.description ?? '' : '';
-    return (cat === null || catOf(item) === cat)
-      && (!kw || `${item.name} ${description} ${item.owner_name}`.toLowerCase().includes(kw));
-  });
-
-  return (
-    <>
-      {loadError}
-      <div style={{ marginBottom: 'var(--space-12)' }}>
-        <Greeting>Made by colleagues</Greeting>
-        <h1 style={{ margin: 'var(--space-2) 0 var(--space-3)', font: 'var(--weight-bold) var(--text-2xl)/1.2 var(--font-sans)', color: 'var(--text-heading)' }}>
-          创意市场
-        </h1>
-        <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-base)' }}>
-          同事选择「分享到全公司」的页面与后端都在这里，添加即用
-        </p>
-      </div>
-
-      {/* 作者卡片上分类输入框的建议：建议清单 + 已有分类，去重 */}
-      <datalist id="ispace-market-cats">
-        {[...new Set([...MARKETPLACE_CATEGORIES, ...cats])].map((cName) => (
-          <option key={cName} value={cName} />
-        ))}
-      </datalist>
-
-      <div style={{ display: 'flex', gap: 'var(--space-16)', alignItems: 'flex-start' }}>
-        {/* 侧边栏：分类。sticky 让它在长列表滚动时留在视野里 */}
-        <aside style={{ width: 168, flex: 'none', position: 'sticky', top: 72 }}>
-          <SectionLabel>分类</SectionLabel>
-          <div style={{ display: 'grid', gap: 2, marginTop: 'var(--space-6)' }}>
-            <CatItem label="全部" count={items.length} on={cat === null} onClick={() => setCat(null)} />
-            {cats.map((cName) => (
-              <CatItem key={cName} label={cName} count={counts.get(cName) ?? 0}
-                on={cat === cName} onClick={() => setCat(cName)} />
-            ))}
-          </div>
-        </aside>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {/* 搜索：本地过滤，按名称/简介/作者。市场不大，不必走服务端 */}
-          <div style={{ position: 'relative', marginBottom: 'var(--space-10)', maxWidth: 360 }}>
-            <Input value={q} onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索页面、简介或作者" />
-          </div>
-
-          {visible.length === 0 ? (
-            <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-base)' }}>
-              {kw ? `没有匹配「${q}」的内容` : '这个分类下还没有内容'}
-            </p>
-          ) : (
-          <div style={{ display: 'grid', gap: 'var(--space-8)', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))' }}>
-        {visible.map((item) => {
-          const href = item.kind === 'app'
-            ? `/${item.owner_username}/${item.slug}/`
-            : `/svc/${item.owner_username}/${item.name}/`;
-          const coverSrc = item.kind === 'app'
-            ? item.cover_path
-            : (item.has_cover ? `/deploy/api/backends/${item.backend_id}/cover` : null);
-          const iconLetter = item.kind === 'app' ? item.icon_letter : item.name.slice(0, 1);
-          return (
-          <Card key={item.id} hoverable style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-            {coverSrc && <CoverBanner src={coverSrc} alt={item.name} />}
-            <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'flex-start' }}>
-              {!coverSrc && <AppIcon letter={iconLetter} />}
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <a href={href} style={{
-                  display: 'block', textDecoration: 'none', color: 'var(--text-heading)',
-                  font: 'var(--weight-semibold) var(--text-card-title)/1.3 var(--font-sans)',
-                }}>{item.name}</a>
-                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', marginTop: 2 }}>
-                  {item.owner_name} · <span className="num">{item.install_count}</span> 人在用
-                  {' · '}<span className="num">{item.visit_count}</span> 次访问
-                  {item.kind === 'backend' && ' · 后端'}
-                </div>
-              </div>
-            </div>
-            {item.kind === 'app' && item.description && (
-              <p style={{
-                margin: 0, fontSize: 'var(--text-base)', color: 'var(--text-secondary)',
-                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-              }}>{item.description}</p>
-            )}
-            <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--space-5)' }}>
-              {item.mine ? (
-                <>
-                  <Badge tone="brand">你发布的</Badge>
-                  {/* 作者就地改分类。可输入的组合框（不是固定下拉）——分类由 AI 或
-                      作者决定、可自造，也该能填清单外的词；datalist 给建议 + 已有分类。
-                      浏览器的 <input list> 弹出建议时按「当前文本」做子串过滤——
-                      defaultValue 一开始就填着现有分类，点进去就只剩它自己一条匹配，
-                      等于看不到其它分类可选。onFocus 先清空腾出一个「空文本」，
-                      建议列表才会把全部选项摆出来；onBlur 如果什么都没选/没打，
-                      把原值还回去，不然卡片上的分类会变成空白。 */}
-                  <input
-                    defaultValue={item.category ?? ''}
-                    list="ispace-market-cats"
-                    placeholder="分类"
-                    onFocus={(e) => { e.target.value = ''; }}
-                    onBlur={(e) => {
-                      const v = e.target.value.trim();
-                      if (!v) { e.target.value = item.category ?? ''; return; }
-                      if (v === (item.category ?? '')) return;
-                      const save = item.kind === 'app'
-                        ? api.setListingCategory(item.app_id, v)
-                        : api.setBackendListingCategory(item.backend_id, v);
-                      void save.then(load);
-                    }}
-                    style={{
-                      width: 96, height: 28, padding: '0 var(--space-5)',
-                      border: '1px solid var(--border)', borderRadius: 'var(--radius-8)',
-                      fontSize: 'var(--text-sm)', background: 'var(--surface-1)', color: 'var(--text-primary)',
-                    }}
-                  />
-                </>
-              ) : (
-                <Button size="sm" variant={item.installed ? 'ghost' : 'primary'}
-                  disabled={busy === item.id} onClick={() => void toggle(item)}>
-                  {item.installed ? '已添加，点此移除' : '添加到我的'}
-                </Button>
-              )}
-              {/*
-                「做同款」只在真有提示词的页面上出现，后端没有这个概念
-                （不是"缺了提示词"，是活容器本来就没法照抄成另一份）。
-                没有的条目**不显示灰按钮**——一个点不动的入口只会引出
-                "为什么我这个不行"，而答案跟看的人一点关系都没有。
-              */}
-              {item.kind === 'app' && item.source_prompt && (
-                <Button size="sm" variant="ghost" onClick={() => { if (item.kind === 'app') setRemix(item); }}>
-                  做同款
-                </Button>
-              )}
-              {/* 管理员才看得到。别人上架的才需要——自己的走上面那条正常路径 */}
-              {isAdmin && !item.mine && (
-                <Button size="sm" variant="ghost" disabled={busy === item.id}
-                  onClick={() => void unlist(item)}>
-                  下架
-                </Button>
-              )}
-            </div>
-          </Card>
-          );
-        })}
-          </div>
-          )}
-        </div>
-      </div>
-
-      {remix && (
-        <RemixDialog
-          listing={remix}
-          onClose={() => setRemix(null)}
-          onNotify={(text, tone) => setMsg({ text, tone })}
-        />
-      )}
-      {msg && <Toast message={msg.text} tone={msg.tone} onClose={() => setMsg(null)} />}
-    </>
-  );
-}
-
-/** 侧边栏的一个分类项：名字 + 条数，选中高亮。 */
-function CatItem({ label, count, on, onClick }: {
-  label: string; count: number; on: boolean; onClick: () => void;
-}) {
-  return (
-    <button onClick={onClick} style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      width: '100%', padding: 'var(--space-3) var(--space-6)', border: 'none',
-      borderRadius: 'var(--radius-8)', cursor: 'pointer', textAlign: 'left',
-      background: on ? 'var(--accent-subtle)' : 'transparent',
-      color: on ? 'var(--text-heading)' : 'var(--text-secondary)',
-      fontSize: 'var(--text-base)', fontWeight: on ? 'var(--weight-semibold)' : 'var(--weight-regular)',
-      transition: 'var(--transition-colors)',
-    }}
-      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
-      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
-    >
-      <span>{label}</span>
-      <span className="num" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>{count}</span>
+        <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+          {desc}
+        </span>
+      </span>
     </button>
   );
 }
 
-/**
- * 「做同款」：把做出这个页面的那段话原样交出去。
- *
- * 这是市场从"装别人做的东西"变成"照着做自己的"的那一步——添加只是拿到
- * 一份引用，改不动；而提示词拿在手里，改几个字就是另一个页面。
- *
- * 提示词整段可滚动、可选中：复制在明文 HTTP 下不是每次都成（见 copyText），
- * 手动选中必须始终是条退路，所以不做 user-select: none 之类的限制。
- */
-function RemixDialog({ listing, onClose, onNotify }: {
-  listing: Listing;
-  onClose: () => void;
-  onNotify: (text: string, tone: 'info' | 'error') => void;
-}) {
-  const prompt = listing.source_prompt ?? '';
-  const [err, setErr] = useState<string | null>(null);
-
-  const copy = () => {
-    /*
-      必须走 copyText，不能用 navigator.clipboard：平台线上跑在明文 HTTP 上，
-      那里 navigator.clipboard 是 undefined，读属性那一步就同步抛，
-      表现为按钮点了完全没反应。copyText 里有 execCommand 的回落。
-    */
-    void copyText(prompt).then((ok) => {
-      if (ok) {
-        /*
-          成功就把弹窗关掉，反馈交给 Toast。
-
-          不能"留着弹窗弹 Toast"：Toast 的 z-index 是 80，而 Dialog 遮罩是
-          1000——那条提示会压在遮罩底下，隔着一层半透明加模糊，等于没提。
-          而且复制完弹窗也没事可做了，关掉正好让 Toast 露出来。
-        */
-        onClose();
-        onNotify('提示词已复制，粘给你的 AI 就行', 'info');
-      } else {
-        /*
-          失败反而**不能**关：文本就在上面，用户接下来要做的正是手动选中它。
-          这时提示得贴着那个点了没反应的按钮，所以走弹窗内联而不是 Toast。
-        */
-        setErr('这个浏览器不让自动复制，请手动选中上面的文字，按 Ctrl/⌘ + C');
-      }
-    });
-  };
-
-  return (
-    <Dialog
-      open
-      title={`做一个同款「${listing.name}」`}
-      description="把下面这段话发给你的 AI，让它照着做一个属于你的版本——改几个字，就是另一个页面。"
-      onClose={onClose}
-      width={560}
-      footer={(
-        <>
-          <Button onClick={onClose}>关闭</Button>
-          <Button variant="primary" onClick={copy}>复制提示词</Button>
-        </>
-      )}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-        {/*
-          pre 而不是 p：提示词里的换行与缩进是作者写下的结构（分点、示例代码），
-          折进一段连排文字里会读不出层次。whiteSpace: pre-wrap 保留换行又允许折行。
-        */}
-        <pre style={{
-          margin: 0, maxHeight: 320, overflowY: 'auto',
-          background: 'var(--surface-2)', borderRadius: 'var(--radius-12)',
-          padding: 'var(--space-8)',
-          font: 'var(--weight-regular) var(--text-sm)/1.7 var(--font-sans)',
-          color: 'var(--text-primary)',
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-          userSelect: 'text',
-        }}>{prompt}</pre>
-
-        {err && (
-          <div role="alert" style={{ fontSize: 'var(--text-sm)', color: 'var(--error)', lineHeight: 1.6 }}>
-            {err}
-          </div>
-        )}
-
-        <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-          这是 {listing.owner_name} 当初发布这个页面时用的原话。做出来的是你自己的页面，
-          存在你自己的空间里，跟这一个互不影响。
-        </p>
-      </div>
-    </Dialog>
-  );
-}
-
-// ── 未登录 / 加载中 ───────────────────────────────────────────────────
-/**
- * 未登录：邮箱密码登录 / 注册。
- *
- * 两个 tab 而不是两个页面：注册与登录之间来回切是很常见的动作
- * （"我是不是注册过？"），跳页会把已填的邮箱丢掉。
- *
- * 注册策略从服务端取，不写死在前端——允许的邮箱后缀是可配置的，
- * 前端写死会在改配置后骗人。
- */
-/**
- * 用一次性链接设新密码（管理员在「员工与开通」里发出来的那个 /reset?token=…）。
- *
- * 平台没有可用的邮件服务，所以没有「忘记密码」自助入口——链接由管理员生成、
- * 当面或经可信渠道交给本人。这一页就是那条链接的落点；在它存在之前，
- * 管理员发出去的链接会 404，整条重置路径是断的。
- *
- * 令牌只从地址栏读，不做任何存储：它是一次性的，用完即失效，
- * 留在 localStorage 里没有用处，只多一份可能泄露的副本。
- */
-function ResetPassword() {
-  const token = new URLSearchParams(location.search).get('token') ?? '';
-  const [pw, setPw] = useState('');
-  const [pw2, setPw2] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-  const [policy, setPolicy] = useState<AuthPolicy | null>(null);
-
-  useEffect(() => { void api.authPolicy().then(setPolicy).catch(() => setPolicy(null)); }, []);
-
-  const min = policy?.passwordMin ?? 12;
-  const mismatch = pw2.length > 0 && pw !== pw2;
-  const ready = pw.length >= min && pw === pw2 && !busy;
-
-  const submit = async () => {
-    setBusy(true); setErr(null);
-    try {
-      await api.resetPassword(token, pw);
-      setDone(true);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Centered>
-      <Greeting>Happy Working</Greeting>
-      <h1 style={{ margin: 'var(--space-4) 0 var(--space-8)', font: 'var(--weight-bold) var(--text-xl)/1.3 var(--font-sans)', color: 'var(--text-heading)' }}>
-        设置新密码
-      </h1>
-
-      {!token ? (
-        <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-base)' }}>
-          这个地址里没有重置令牌。请用管理员发给你的完整链接打开。
-        </p>
-      ) : done ? (
-        <>
-          <p style={{ margin: '0 0 var(--space-8)', color: 'var(--text-secondary)', fontSize: 'var(--text-base)' }}>
-            密码已设好，这条链接同时作废。现在可以用邮箱和新密码登录了——
-            手机上的 App 也是同一个账号。
-          </p>
-          <a href="/" style={{ textDecoration: 'none' }}>
-            <Button variant="primary">去登录</Button>
-          </a>
-        </>
-      ) : (
-        <>
-          <p style={{ margin: '0 0 var(--space-8)', color: 'var(--text-secondary)', fontSize: 'var(--text-base)' }}>
-            至少 {min} 位。长比复杂更管用——一句只有你会说的话就很好。
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)', width: '100%' }}>
-            <Input
-              type="password" value={pw} onChange={(e) => setPw(e.target.value)}
-              placeholder="新密码" autoComplete="new-password" autoFocus disabled={busy}
-            />
-            <Input
-              type="password" value={pw2} onChange={(e) => setPw2(e.target.value)}
-              placeholder="再输一次" autoComplete="new-password" disabled={busy}
-              onKeyDown={(e) => { if (e.key === 'Enter' && ready) void submit(); }}
-            />
-            {mismatch && (
-              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}>两次输入不一致</span>
-            )}
-            {err && (
-              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}>{err}</span>
-            )}
-            <Button variant="primary" disabled={!ready} onClick={() => void submit()}>
-              {busy ? '设置中…' : '设置密码'}
-            </Button>
-          </div>
-        </>
-      )}
-    </Centered>
-  );
-}
-
-/** 登录、注册、重置三页共用的居中卡片容器。 */
-function Centered({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{
-      minHeight: '100vh', display: 'grid', placeItems: 'center',
-      background: 'var(--surface-canvas)', padding: 'var(--space-12)',
-    }}>
-      <Card style={{ width: 380, maxWidth: '100%', padding: 'var(--space-16)' }}>
-        {children}
-      </Card>
-    </div>
-  );
-}
-
-function LoggedOut() {
-  const [tab, setTab] = useState<'login' | 'register'>('login');
-  const [policy, setPolicy] = useState<AuthPolicy | null>(null);
-  const [apkOpen, setApkOpen] = useState(false);
-
-  useEffect(() => { void api.authPolicy().then(setPolicy).catch(() => setPolicy(null)); }, []);
-
-  return (
-    <div style={{
-      minHeight: '100vh', display: 'grid', placeItems: 'center',
-      background: 'var(--surface-canvas)', padding: 'var(--space-12)',
-    }}>
-      <div style={{ width: '100%', maxWidth: 380 }}>
-        <div style={{ textAlign: 'center', marginBottom: 'var(--space-12)' }}>
-          <img src="/favicon.svg" alt="iSpace" style={{ width: 44, height: 44, margin: '0 auto var(--space-10)', display: 'block' }} />
-          <div style={{ font: 'var(--weight-regular) var(--text-3xl)/1.2 var(--font-script)', marginBottom: 'var(--space-4)' }}>
-            Happy Working
-          </div>
-          <h1 style={{ margin: 0, font: 'var(--weight-bold) var(--text-xl)/1.3 var(--font-sans)' }}>
-            你的专属空间
-          </h1>
-        </div>
-
-        <Card>
-          <div style={{ marginBottom: 'var(--space-10)' }}>
-            <Tabs
-              value={tab}
-              onChange={setTab}
-              items={[
-                { value: 'login' as const, label: '登录' },
-                { value: 'register' as const, label: '注册' },
-              ]}
-            />
-          </div>
-          {tab === 'login' ? <LoginForm /> : <RegisterForm policy={policy} />}
-        </Card>
-
-        {policy?.ssoEnabled && (
-          <div style={{ textAlign: 'center', marginTop: 'var(--space-10)' }}>
-            <a href={api.loginUrl(location.pathname)} style={{
-              fontSize: 'var(--text-sm)', color: 'var(--text-secondary)',
-            }}>用公司账号（SSO）登录</a>
-          </div>
-        )}
-
-        {/*
-          未登录也给下载入口。装 App 这件事按定义发生在有会话之前——
-          只把入口挂在头像菜单里，等于要求人先在电脑上登录才能知道有 App 可装。
-          下载路径本身也是免登录的，两边一致。
-        */}
-        <div style={{ textAlign: 'center', marginTop: 'var(--space-10)' }}>
-          <button
-            type="button"
-            onClick={() => setApkOpen(true)}
-            style={{
-              border: 'none', background: 'transparent', padding: 0, cursor: 'pointer',
-              font: 'var(--weight-regular) var(--text-sm)/1.6 var(--font-sans)',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            下载手机 App（安卓）
-          </button>
-        </div>
-      </div>
-      {apkOpen && <AppDownloadDialog onClose={() => setApkOpen(false)} />}
-    </div>
-  );
-}
-
-function LoginForm() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  /** 「忘记密码」提交后服务端那句话。非 null 就把入口换成它。 */
-  const [forgot, setForgot] = useState<string | null>(null);
-
-  /*
-    复用上面已经填好的邮箱，不再单开一个输入框：走到这一步的人刚把邮箱
-    敲进去过，再要一遍只是多一次出错的机会。邮箱还空着时就提示先填。
-  */
-  const askReset = async () => {
-    const addr = email.trim();
-    if (!addr) { setErr('先填上公司邮箱，再点忘记密码'); return; }
-    setBusy(true); setErr(null);
-    try {
-      setForgot((await api.forgotPassword(addr)).message);
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally { setBusy(false); }
-  };
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true); setErr(null);
-    try {
-      await api.login(email.trim(), password);
-      // 整页重载而不是改 state：登录后几乎每份数据都要重取，
-      // 重载最简单也最不容易漏
-      location.reload();
-    } catch (e2) {
-      setErr((e2 as Error).message);
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={(e) => void submit(e)}>
-      <Field label="公司邮箱">
-        <Input type="email" value={email} autoComplete="username" autoFocus
-          onChange={(e) => setEmail(e.target.value)} placeholder="lixiao@example.com" />
-      </Field>
-      <Field label="密码">
-        <Input type="password" value={password} autoComplete="current-password"
-          onChange={(e) => setPassword(e.target.value)} />
-      </Field>
-      {err && <p style={{ margin: '0 0 var(--space-8)', fontSize: 'var(--text-sm)', color: 'var(--danger)' }}>{err}</p>}
-      <Button variant="primary" type="submit" disabled={busy || !email.trim() || !password}
-        style={{ width: '100%' }}>
-        {busy ? '登录中…' : '登录'}
-      </Button>
-      {forgot ? (
-        <p role="status" style={{
-          margin: 'var(--space-8) 0 0', padding: 'var(--space-6)',
-          borderRadius: 'var(--radius-8)', background: 'var(--surface-2)',
-          fontSize: 'var(--text-sm)', lineHeight: 1.6, color: 'var(--text-secondary)',
-        }}>{forgot}</p>
-      ) : (
-        <p style={{ margin: 'var(--space-8) 0 0', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-          {/*
-            button 而不是 a：它不导航，只发一个请求。写成链接的话键盘用户
-            按空格不会触发，右键「新标签打开」还会开出一个空页面。
-          */}
-          <button
-            type="button"
-            onClick={() => void askReset()}
-            disabled={busy}
-            style={{
-              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-              font: 'inherit', color: 'var(--link)', textDecoration: 'underline',
-            }}
-          >忘记密码</button>
-          {' '}· 会通知管理员给你发一条设密码链接
-        </p>
-      )}
-    </form>
-  );
-}
-
-function RegisterForm({ policy }: { policy: AuthPolicy | null }) {
-  const [email, setEmail] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [password, setPassword] = useState('');
-  const [username, setUsername] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  // 从邮箱现推一个空间标识给用户看——地址是长期对外的，
-  // 注册时就该让他知道自己将来是哪个路径，而不是注册完才发现
-  const suggested = guessUsername(email);
-  const effective = username.trim() || suggested;
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true); setErr(null);
-    try {
-      await api.register({
-        email: email.trim(),
-        password,
-        displayName: displayName.trim(),
-        ...(username.trim() ? { username: username.trim() } : {}),
-      });
-      location.reload();
-    } catch (e2) {
-      setErr((e2 as Error).message);
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={(e) => void submit(e)}>
-      <Field label="公司邮箱">
-        <Input type="email" value={email} autoComplete="username" autoFocus
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder={policy ? `name@${policy.emailDomains[0]}` : 'name@example.com'} />
-      </Field>
-      <Field label="姓名">
-        <Input value={displayName} autoComplete="name"
-          onChange={(e) => setDisplayName(e.target.value)} placeholder="李骁" />
-      </Field>
-      <Field label={`密码（至少 ${policy?.passwordMin ?? 12} 位）`}>
-        <Input type="password" value={password} autoComplete="new-password"
-          onChange={(e) => setPassword(e.target.value)} />
-      </Field>
-      <Field label="空间标识">
-        <Input value={username} onChange={(e) => setUsername(e.target.value)}
-          placeholder={suggested || '自己填一个'} />
-        <p style={{ margin: '4px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-          {effective
-            ? <>你的地址会是 <span className="mono">{location.host}/{effective}/</span>。注册后很难改，想清楚。</>
-            : '从这个邮箱推不出标识，请自己填（小写字母开头，可含数字与连字符）。'}
-        </p>
-      </Field>
-      {err && <p style={{ margin: '0 0 var(--space-8)', fontSize: 'var(--text-sm)', color: 'var(--danger)' }}>{err}</p>}
-      <Button variant="primary" type="submit"
-        disabled={busy || !email.trim() || !displayName.trim() || !password || !effective}
-        style={{ width: '100%' }}>
-        {busy ? '注册中…' : '注册并开通空间'}
-      </Button>
-      {policy && (
-        <p style={{ margin: 'var(--space-8) 0 0', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-          仅限 {policy.emailDomains.map((d) => `@${d}`).join('、')} 邮箱。注册即开通你的空间与数据库。
-        </p>
-      )}
-    </form>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: 'block', marginBottom: 'var(--space-8)' }}>
-      <span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 4 }}>
-        {label}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-/**
- * 前端侧的空间标识推导。
- *
- * 与服务端 usernameFromEmail 同一套规则——这里只是为了让用户在提交前
- * 就看到自己将来的地址。真正的判定仍在服务端，前端算错了顶多是提示不准，
- * 不会放进一个非法标识。
- */
-function guessUsername(email: string): string {
-  const local = email.split('@')[0] ?? '';
-  return local
-    .toLowerCase()
-    .replace(/[._+]+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function Splash() {
-  return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--text-tertiary)' }}>
-      <span style={{ fontSize: 'var(--text-base)' }}>载入中…</span>
-    </div>
-  );
-}
+export { appHref };

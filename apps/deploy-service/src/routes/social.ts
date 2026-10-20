@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   API_BASE, ERROR_CODES, IspaceError, avatarUrlFor,
-  commentInputSchema, interestsInputSchema, postFeedSchema, postInputSchema,
+  commentInputSchema, commentSortSchema, interestsInputSchema, postFeedSchema, postInputSchema,
   type User,
 } from '@ispace/contracts';
 import type { Sql } from '@ispace/db';
@@ -86,6 +86,27 @@ export function registerSocialRoutes(
 ): void {
   const { sql, requireAuth } = deps;
 
+  /** 能看见这条评论所在的页面，才能给它点赞。 */
+  const commentVisible = async (me: User, commentId: string) => {
+    const [row] = await sql<{ app_id: string }[]>`
+      SELECT app_id FROM ispace.app_comments WHERE id = ${commentId}
+    `;
+    if (!row) throw new IspaceError(ERROR_CODES.NOT_FOUND, '这条评论已经不在了');
+    await visibleApp(sql, me, row.app_id);
+  };
+
+  const recountComment = async (commentId: string): Promise<number> => {
+    const [row] = await sql<{ like_count: number }[]>`
+      UPDATE ispace.app_comments
+         SET like_count = (
+               SELECT count(*) FROM ispace.app_comment_likes WHERE comment_id = ${commentId}
+             )
+       WHERE id = ${commentId}
+      RETURNING like_count
+    `;
+    return Number(row?.like_count ?? 0);
+  };
+
   // ── 喜欢 ────────────────────────────────────────────────────────────
   //
   // POST / DELETE 两个动词，而不是一个 toggle：设计稿里心形是个状态开关，
@@ -116,17 +137,31 @@ export function registerSocialRoutes(
   app.get(`${API_BASE}/apps/:appId/comments`, async (req) => {
     const me = await requireAuth(req);
     const { appId } = req.params as { appId: string };
+    const { sort } = z.object({ sort: commentSortSchema.default('new') }).parse(req.query ?? {});
     await visibleApp(sql, me, appId);
+    /*
+      排序在服务端做，不是前端拿到后再 sort：面板有 LIMIT，热门与最新取到
+      的本来就该是不同的两百条——前端排只会把"最新的两百条里最热的几条"
+      当成热门。
+    */
     const rows = await sql<
-      (AuthorRow & { id: string; body: string; created_at: Date; user_id: string })[]
+      (AuthorRow & {
+        id: string; body: string; created_at: Date; user_id: string;
+        like_count: number; liked: boolean;
+      })[]
     >`
-      SELECT c.id, c.body, c.created_at, c.user_id,
-             u.username, u.display_name, a.etag AS avatar_etag
+      SELECT c.id, c.body, c.created_at, c.user_id, c.like_count,
+             u.username, u.display_name, a.etag AS avatar_etag,
+             EXISTS (
+               SELECT 1 FROM ispace.app_comment_likes l
+                WHERE l.comment_id = c.id AND l.user_id = ${me.id}
+             ) AS liked
         FROM ispace.app_comments c
         JOIN ispace.users u ON u.id = c.user_id
         LEFT JOIN ispace.user_avatars a ON a.user_id = u.id
        WHERE c.app_id = ${appId}
-       ORDER BY c.created_at DESC
+       -- 热门里再按时间兜一层：全是 0 赞的新页面上，热门不该是随机顺序
+       ORDER BY ${sort === 'hot' ? sql`c.like_count DESC,` : sql``} c.created_at DESC
        LIMIT 200
     `;
     return {
@@ -136,8 +171,32 @@ export function registerSocialRoutes(
         createdAt: r.created_at.toISOString(),
         author: author(r),
         mine: r.user_id === me.id,
+        likeCount: Number(r.like_count),
+        liked: r.liked,
       })),
     };
+  });
+
+  // 评论点赞。两个动词、ON CONFLICT 幂等、计数重算，和页面的喜欢同一套。
+  app.post(`${API_BASE}/comments/:id/like`, async (req) => {
+    const me = await requireAuth(req);
+    const { id } = req.params as { id: string };
+    await commentVisible(me, id);
+    await sql`
+      INSERT INTO ispace.app_comment_likes (comment_id, user_id) VALUES (${id}, ${me.id})
+      ON CONFLICT (comment_id, user_id) DO NOTHING
+    `;
+    return { liked: true, likeCount: await recountComment(id) };
+  });
+
+  app.delete(`${API_BASE}/comments/:id/like`, async (req) => {
+    const me = await requireAuth(req);
+    const { id } = req.params as { id: string };
+    await commentVisible(me, id);
+    await sql`
+      DELETE FROM ispace.app_comment_likes WHERE comment_id = ${id} AND user_id = ${me.id}
+    `;
+    return { liked: false, likeCount: await recountComment(id) };
   });
 
   app.post(`${API_BASE}/apps/:appId/comments`, async (req) => {
@@ -164,6 +223,8 @@ export function registerSocialRoutes(
         createdAt: row!.created_at.toISOString(),
         author: author(u!),
         mine: true,
+        likeCount: 0,
+        liked: false,
       },
       commentCount: comments,
     };
@@ -208,10 +269,15 @@ export function registerSocialRoutes(
     `;
     if (!u) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个人');
 
+    /*
+      列名与 /marketplace 那条**逐字对齐**：作者页用的是同一张卡片组件，
+      少一个 app_id，组件里按 id 取底色那一下就会炸（实测白屏）。
+    */
     const apps = await sql`
-      SELECT a.id, a.slug, a.name, a.description, a.icon_letter, a.cover_path,
+      SELECT m.id, a.id AS app_id, m.published_at, m.install_count,
+             a.slug, a.name, a.description, a.icon_letter, a.cover_path,
              a.type, a.status, a.category, a.visit_count, a.like_count, a.comment_count,
-             a.source_prompt, m.install_count, m.published_at,
+             a.source_prompt,
              u.username AS owner_username, u.display_name AS owner_name,
              EXISTS (
                SELECT 1 FROM ispace.app_installs i
@@ -460,6 +526,16 @@ export function registerSocialRoutes(
 
   // ── 兴趣 ────────────────────────────────────────────────────────────
   //
+  // 单独一条 GET，而不是塞进 /me：/me 是每个页面都要拉的那一下，
+  // 而兴趣只有「选方向」和「为你推荐」两处用。
+  app.get(`${API_BASE}/me/interests`, async (req) => {
+    const me = await requireAuth(req);
+    const [row] = await sql<{ interests: string[] }[]>`
+      SELECT interests FROM ispace.users WHERE id = ${me.id}
+    `;
+    return { interests: row?.interests ?? [] };
+  });
+
   // PUT 而不是 POST：这是「把我的方向设成这几个」，重复提交结果一样。
   // 移动端那一屏可以反复进、反复改，幂等省掉了「先删再插」的来回。
   app.put(`${API_BASE}/me/interests`, async (req) => {

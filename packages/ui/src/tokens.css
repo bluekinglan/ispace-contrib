@@ -1,69 +1,132 @@
 @import "./fonts.css";
 
 /* Tabby 设计系统 token（移植自设计稿 _ds/tabby-design-system/tokens/）。
-   只保留 ispace 实际用到的子集，未用到的不搬——搬进来就要维护。 */
+   只保留 ispace 实际用到的子集，未用到的不搬——搬进来就要维护。
+
+   ⚠️ 色值整体换过一轮：改版稿（iSpace 改版.dc.html）把画布从冷白
+   #fcfcf8 换成了暖米 #faf8f3，橙色从 #fb923c 加深到 #ee5c2a，正文色从
+   带蓝的 #1c1f23 换成带褐的 #292724。变量名一个没动，所以旧组件不用改
+   就跟着换了皮——这也是当初把色值全收进 token 的目的。 */
 :root {
   /* ── 品牌 ────────────────────────────────────────────────────
-     用色克制是这套设计的核心：近黑是主操作色，橙色是佐料不是主菜
-     （约 10% 法则），青色只承担链接、焦点环与"存活"状态。 */
-  --tabby-orange: #fb923c;
-  --tabby-orange-hover: #f97316;
-  --tabby-orange-subtle: rgba(251, 146, 60, 0.1);
-  --tabby-teal: #3db9ce;
-  --tabby-teal-subtle: rgba(61, 185, 206, 0.08);
-  --tabby-cream: #fcfcf8;
-  --tabby-ink: #042028;
+     用色克制仍是这套设计的核心：近黑是主操作色，橙色是佐料不是主菜
+     （约 10% 法则）。
 
-  /* 深色块。设计系统 dark-* 那一族里只搬了实际用到的两个：1024 活动页的
-     作品卡与「正在路演」条是深底浅字，正文其余部分仍是浅色。 */
-  --dark-bg: #0d0d10;
-  --dark-surface: #1a1a1f;
+     改版稿里橙色的角色变了一点：它不再只是点缀，还承担"开始做"这一类
+     号召性按钮（--cta）和当前选中（--sel）。但承担的仍然只有这两类，
+     普通主按钮依旧是近黑。 */
+  --tabby-orange: #ee5c2a;
+  --tabby-orange-hover: #b93b07;
+  --tabby-orange-subtle: rgba(238, 92, 42, 0.1);
+  /* 改版稿把 teal 这一族直接指向了绿：它在新稿里只剩"存活/成功"一个
+     语义（状态点、发布成功），而那个语义本来就该是绿的。变量名保留，
+     免得十几处引用一起改。 */
+  --tabby-teal: #008233;
+  --tabby-teal-subtle: #e8f8ee;
+  --tabby-cream: #faf8f3;
+  --tabby-ink: #181715;
+
+  /* 深色块。1024 活动页的作品卡与「正在路演」条是深底浅字，
+     改版稿里的 --wash-d 卡片也用它。 */
+  --dark-bg: #1a1816;
+  --dark-surface: #282522;
 
   /* ── 表面 ──────────────────────────────────────────────────── */
-  --surface-canvas: #fcfcf8;
+  --surface-canvas: #faf8f3;
   --surface-1: #ffffff;
-  --surface-2: #f5f5f3;
-  --surface-3: #eeeeeb;
-  --surface-sidebar: #f4f3ee;
-  --surface-sidebar-hover: #edece5;
-  --surface-sidebar-active: #e7e5dc;
+  --surface-2: #efece6;
+  --surface-3: #e4e1d9;
+  --surface-sidebar: #f6f4ee;
+  --surface-sidebar-hover: #efece6;
+  --surface-sidebar-active: #e4e1d9;
 
   /* ── 文字 ──────────────────────────────────────────────────── */
-  --text-heading: #001217;
-  --text-primary: #1c1f23;
-  --text-secondary: #545659;
-  --text-tertiary: #787c80;
-  --text-placeholder: #787c80;
+  --text-heading: #181715;
+  --text-primary: #292724;
+  --text-secondary: #54524e;
+  --text-tertiary: #72706a;
+  /* 占位符比 tertiary 再浅一档。改版稿把这两个分开了：输入框里的提示字
+     和卡片上的次要信息不是一回事，前者该更退后。 */
+  --text-placeholder: #a2a09b;
   --text-inverse: #ffffff;
 
-  /* ── 线 ────────────────────────────────────────────────────── */
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-hover: rgba(0, 0, 0, 0.12);
+  /* ── 线 ──────────────────────────────────────────────────────
+     --border-tabby 是改版稿新加的一条：侧栏与主区之间、卡片外框这类
+     "结构线"用它（实色、偏暖），而 --border 那条半透明的仍用在控件上。
+     两者混用会让侧栏边界在白卡上消失。 */
+  --border-tabby: #e4e1d9;
+  --border-subtle: rgba(24, 23, 21, 0.06);
+  --border: rgba(24, 23, 21, 0.1);
+  --border-hover: #d8d0c8;
 
   /* ── 操作色（近黑，刻意的）───────────────────────────────── */
-  --accent: #1c1f23;
-  --accent-hover: #222b39;
-  --accent-subtle: rgba(28, 31, 35, 0.06);
+  --accent: #181715;
+  --accent-hover: #292724;
+  --accent-subtle: rgba(24, 23, 21, 0.06);
   --accent-fg: #ffffff;
 
+  /* ── 号召与选中 ──────────────────────────────────────────────
+     与 --accent 分开的理由：近黑按钮是"确认这一步"，橙色按钮是"开始做
+     一件新事"（一句话做页面、照这个做一个、发布）。两者同屏出现时，
+     用户要能一眼看出哪个是向前走的那个。 */
+  --cta: #ee5c2a;
+  --cta-hover: #dd5628;
+  --cta-fg: #ffffff;
+  --sel: #ee5c2a;
+  --sel-fg: #ffffff;
+
+  /* 侧栏当前项。不用 --accent 的浅色版，而是品牌橙的 wash：
+     设计稿里侧栏选中是暖橙底 + 深橙字，近黑底会把整条侧栏压得很重。 */
+  --nav-on-bg: #ffede0;
+  --nav-on-fg: #b93b07;
+
+  /* 首页那条输入框的描边与光晕。它是整个探索页唯一一个被"点亮"的控件，
+     值写死在 token 里，免得三处（探索、创建、移动端）各调一遍。 */
+  --prompt-border: rgba(238, 92, 42, 0.5);
+  --prompt-sh: 0 0 0 4px rgba(238, 92, 42, 0.12), 0 18px 44px -20px rgba(238, 92, 42, 0.45);
+
+  /* ── 品牌漂白与卡片底色 ──────────────────────────────────────
+     wash-* 是改版稿给卡片封面兜底的一组低饱和底色：页面没有封面图时，
+     卡片按作者/分类取一个 wash 当底，比一片灰白更像"一面墙"。
+     字母后缀对应色相（o 橙 y 黄 p 紫 g 绿 b 蓝 t 褐 c 米 s 石 d 深），
+     刻意不起语义名——它们不表达状态，只是在排版上互相区分。 */
+  --brand-wash: #ffede0;
+  --brand-ink: #b93b07;
+  --wash-o: #ffede0;
+  --wash-y: #f5ecd5;
+  --wash-p: #f1f0fb;
+  --wash-g: #e8f8ee;
+  --wash-b: #ebf2fd;
+  --wash-t: #fbf3e0;
+  --wash-c: #efece6;
+  --wash-s: #e4e1d9;
+  --wash-d: #282522;
+  /* 封面占位文字（"排班表 · 手机截图"）的颜色，深底卡片上会被改写。 */
+  --cover-ink: rgba(24, 23, 21, 0.5);
+  /* 分段控件（手机/电脑、最新/热门）的槽底。 */
+  --seg-bg: rgba(24, 23, 21, 0.05);
+
   /* ── 功能色 ────────────────────────────────────────────────── */
-  --success: #00a365;
-  --success-subtle: rgba(0, 163, 101, 0.1);
-  --warning: #edc337;
-  --warning-subtle: rgba(237, 195, 55, 0.12);
-  --error: #f8672f;
-  --error-subtle: rgba(248, 103, 47, 0.08);
-  --danger: #f93920;
-  --link: #2657bb;
-  --info-subtle: rgba(38, 87, 187, 0.08);
+  --success: #008233;
+  --success-subtle: #e8f8ee;
+  --warning: #a26000;
+  --warning-subtle: #f5ecd5;
+  --error: #cd2f3a;
+  --error-subtle: #feecec;
+  --danger: #cd2f3a;
+  --danger-subtle: #feecec;
+  --link: #b93b07;
+  --info-subtle: #ebf2fd;
 
   /* ── 字体 ──────────────────────────────────────────────────── */
   --font-sans: "Manrope", "Inter", -apple-system, "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
   --font-script: "Caveat", cursive;
-  /* 衬线只用在 iSpace 这个字标上（设计系统注释写的 slab wordmark），正文不用 */
-  --font-serif: Georgia, "Times New Roman", serif;
+  /* 衬线。改版稿把它从"只用在字标上"扩成了大标题的字体：探索页那句「把想法
+     变成同事能打开的页面。」、作者名、为你推荐的作品名都是衬线。中文落到
+     Noto Serif SC / 宋体——不列的话中文会回落到系统无衬线，一句话里中英文
+     一半衬线一半不衬线。 */
+  --font-serif: Georgia, "Noto Serif SC", "Songti SC", "Times New Roman", serif;
 
   /* 正文主力字号是紧凑的 13px，这是设计稿的刻意选择，不要放大 */
   --text-2xs: 10px;
@@ -114,7 +177,9 @@
   --shadow-rest: 0 1px 3px rgba(0, 0, 0, 0.04);
   --shadow-card: 0 4px 8px 0 rgba(0, 0, 0, 0.08);
   --shadow-dropdown: 0 8px 24px rgba(0, 0, 0, 0.08);
-  --shadow-focus: 0 0 0 2px rgba(61, 185, 206, 0.25);
+  /* 焦点环跟着品牌色走。原来是 teal，而 teal 在改版稿里改指绿色——
+     绿色的焦点环会被当成"校验通过"。 */
+  --shadow-focus: 0 0 0 2px rgba(238, 92, 42, 0.25);
   /* 对话框专用：比 dropdown 大一档，把模态明确抬离页面。 */
   --shadow-elevated: 0 18px 60px rgba(0, 0, 0, 0.08);
 
@@ -126,6 +191,79 @@
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-fast: 0.15s;
   --transition-colors: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* ── 夜间 ──────────────────────────────────────────────────────────────
+   改版稿带了一整套夜间色值（设计稿顶部「氛围」那个开关）。搬进来是因为
+   色值只有设计稿这一份，补的时候对着稿抄最省事；但**不跟随系统**，而是
+   认 data-theme：
+
+     prefers-color-scheme 一开，每个用户页面（别人写的、我们不控制的
+     HTML）都会连带进入夜间，而那些页面自己写死的白底不会跟着变——
+     结果是平台外壳黑、内容白，像坏了。
+
+   所以夜间目前只能由平台自己打开（html[data-theme="dark"]）。UI 上还没有
+   这个开关：改版稿的那个是设计稿的调试旋钮，不是产品里的设置项。 */
+:root[data-theme="dark"] {
+  --surface-canvas: #1a1816;
+  --surface-1: #282522;
+  --surface-2: #322e2b;
+  --surface-3: #403c39;
+  --surface-sidebar: #1e1c1a;
+  --surface-sidebar-hover: #282522;
+  --surface-sidebar-active: #322e2b;
+
+  --text-heading: #f3f1ef;
+  --text-primary: #f3f1ef;
+  --text-secondary: #a29d99;
+  --text-tertiary: #8c8682;
+  --text-placeholder: #67625e;
+  --text-inverse: #181715;
+
+  --border-tabby: rgba(255, 255, 255, 0.1);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.1);
+  --border-hover: rgba(255, 255, 255, 0.16);
+
+  /* 夜间的主操作色翻成浅色、字翻成深色——近黑按钮在近黑底上会消失。 */
+  --accent: #f3f1ef;
+  --accent-hover: #ffffff;
+  --accent-subtle: rgba(255, 255, 255, 0.07);
+  --accent-fg: #181715;
+
+  --tabby-orange-hover: #ff8965;
+  --brand-wash: #36241e;
+  --brand-ink: #ff8965;
+  --nav-on-bg: #36241e;
+  --nav-on-fg: #ff8965;
+
+  --dark-bg: #100f0e;
+  --dark-surface: #322e2b;
+  --seg-bg: rgba(255, 255, 255, 0.07);
+  --cover-ink: rgba(243, 241, 239, 0.5);
+
+  --wash-o: #36241e;
+  --wash-y: #3a3120;
+  --wash-p: #2a2745;
+  --wash-g: #2f3b2f;
+  --wash-b: #34373b;
+  --wash-t: #3e3528;
+  --wash-c: #282522;
+  --wash-s: #322e2b;
+  --wash-d: #100f0e;
+
+  --success: #5fd98d;
+  --success-subtle: #2f3b2f;
+  --warning: #e0ac55;
+  --warning-subtle: #3a3120;
+  --error: #ff8a8a;
+  --error-subtle: #42312e;
+  --danger: #ff8a8a;
+  --danger-subtle: #42312e;
+  --tabby-teal: #5fd98d;
+  --tabby-teal-subtle: #2f3b2f;
+  --link: #ff8965;
+  --info-subtle: #34373b;
 }
 
 *, *::before, *::after { box-sizing: border-box; }

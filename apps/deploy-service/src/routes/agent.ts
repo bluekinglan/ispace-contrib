@@ -12,6 +12,7 @@ import {
   type AvailableConnector, type SessionEvent, type ToolContext,
 } from '@ispace/agent';
 import { z } from 'zod';
+import type { DeployInput, DeployOutcome } from '../services/deploy.js';
 
 /**
  * Coding Agent 子系统（技术方案 §6）。
@@ -69,9 +70,11 @@ export function registerAgentRoutes(
     sql: Sql;
     workspaceRoot: string;
     requireAuth: (req: FastifyRequest) => Promise<User>;
+    /** 发布链路。与 CLI / MCP 用的是同一个实例，发布语义只有一份。 */
+    deployService: { deploy: (input: DeployInput) => Promise<DeployOutcome> };
   },
 ): void {
-  const { sql, workspaceRoot, requireAuth } = deps;
+  const { sql, workspaceRoot, requireAuth, deployService } = deps;
 
   // NOTE(多实例)：会话与待确认 token 都在内存。横向扩容时必须外置到
   // Redis 或数据库，否则用户的下一个请求打到另一个实例就找不到会话了。
@@ -257,6 +260,58 @@ export function registerAgentRoutes(
       summary: p.summary,
       next: `已确认。请用 ai-deploy up 或 MCP 的 deploy 工具把工作区发布到 /${p.site}。`,
     };
+  });
+
+  /**
+   * 确认并真的发布。
+   *
+   * ┌─ 为什么 /confirm 之外还要这一条 ──────────────────────────────────┐
+   * │ /confirm 只是「人点头了」：它核销 token、写一条审计，然后回一句  │
+   * │ 「请用 ai-deploy up 或 MCP 的 deploy 工具把工作区发到 /xxx」。在  │
+   * │ 手机壳里这句话说得通——那边的人本来就是回电脑上接着用 CLI 的。    │
+   * │                                                                   │
+   * │ 改版稿的「创建」屏不是这样：人在浏览器里说一句话、看着预览、点   │
+   * │ 「发布到我的空间」，这一下之后页面就该在线。中间再让他去装个 CLI  │
+   * │ 等于这一屏没做完。所以这里把最后一步接上：核销 token，然后把工作 │
+   * │ 区当产物走一遍正规发布链路（扫描、base path 校验、注入 chrome、  │
+   * │ 落 release、切软链），和 CLI 发布一字不差。                       │
+   * └───────────────────────────────────────────────────────────────────┘
+   *
+   * 二次确认没有被绕过：token 仍然由 Agent 的 request_deploy 发起、由人这
+   * 一次点击核销，一次性。少掉的只是「换个工具再发一遍」。
+   */
+  app.post(`${API_BASE}/agent/publish`, async (req) => {
+    const user = await requireAuth(req);
+    const { confirmToken, name } = z
+      .object({ confirmToken: z.string().min(1), name: z.string().max(32).optional() })
+      .parse(req.body);
+
+    const p = pending.get(confirmToken);
+    if (!p) {
+      throw new IspaceError(
+        ERROR_CODES.NOT_FOUND,
+        '确认令牌无效或已过期（有效期 10 分钟）。请让 Agent 重新发起发布请求。',
+      );
+    }
+    if (p.userId !== user.id) {
+      throw new IspaceError(ERROR_CODES.NOT_OWNER, '这个发布请求不属于你');
+    }
+    pending.delete(confirmToken);
+
+    /*
+      产物就是这个人的工作区。Agent 的文件工具只能写在这里面
+      （makeToolCtx 的 ws.root），所以"工作区"与"他刚做出来的东西"是同一
+      回事；deploy 会把它拷进暂存目录再发，不动原件。
+    */
+    const outcome = await deployService.deploy({
+      user,
+      slug: p.site,
+      srcDir: join(workspaceRoot, user.username),
+      name,
+      source: 'agent',
+      clientIp: req.ip,
+    });
+    return { ...outcome, summary: p.summary };
   });
 
   // ── 待确认列表（手机端拉取）──────────────────────────────────────
