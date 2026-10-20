@@ -112,6 +112,8 @@ function Space() {
   const [interests, setInterests] = useState<Interest[]>([]);
   const [q, setQ] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  /** 创建屏进没进工作台。进了就把外层的顶栏与滚动容器让出来。 */
+  const [workbench, setWorkbench] = useState(false);
   /** 「做同款」弹窗里那个页面。 */
   const [remix, setRemix] = useState<Listing | null>(null);
   /** 带进创建页的初稿与来源。 */
@@ -272,6 +274,7 @@ function Space() {
             remix={remixFrom ? { name: remixFrom.name, author: remixFrom.owner_name } : null}
             onClearRemix={() => setRemixFrom(null)}
             onMine={() => { void reloadMine(); go('/mine', { k: 'mine' }); }}
+            onWorkbench={setWorkbench}
             onToast={setToast}
           />
         );
@@ -323,7 +326,12 @@ function Space() {
       pinned={pinned}
       shares={shares}
       onShareDone={() => void reloadMine()}
-      chrome={route.k !== 'foryou'}
+      /*
+        工作台自己管顶栏和滚动：它是三栏两页的固定版面，外面再套一层
+        会滚动的容器，右栏那三页就各自滚各自的，预览框还会被顶出视野。
+        离开创建屏时 workbench 跟着归位（见 setWorkbench 那个 effect）。
+      */
+      chrome={route.k !== 'foryou' && !(route.k === 'create' && workbench)}
       {...(route.k === 'detail' || route.k === 'author' ? { back: () => history.back() } : {})}
     >
       {route.k === 'foryou' ? (

@@ -21,10 +21,17 @@ import { initial, washOf } from './wall';
 
 export type NavKey = 'explore' | 'foryou' | 'create' | 'mine';
 
-const NAV: { key: NavKey; label: string; icon: IconName; href: string }[] = [
+/**
+ * 四个平级的地方。
+ *
+ * 「创建」叫 iDo，而且比另外三项**大一号也重一档**（16px/700 对 14px/500）：
+ * 新稿把侧栏底下那颗「一句话做页面」的橙色大按钮删了，入口只剩这一行——
+ * 它要自己顶住那个位置。两处是同一件事的两个做法，不是少了一个按钮。
+ */
+const NAV: { key: NavKey; label: string; icon: IconName; href: string; big?: boolean }[] = [
   { key: 'explore', label: '探索', icon: 'compass', href: '/' },
   { key: 'foryou', label: '为你推荐', icon: 'sparkles', href: '/foryou' },
-  { key: 'create', label: '创建', icon: 'pen', href: '/create' },
+  { key: 'create', label: 'iDo', icon: 'pen', href: '/create', big: true },
   { key: 'mine', label: '我的作品', icon: 'grid', href: '/mine' },
 ];
 
@@ -65,12 +72,21 @@ export function Shell({
     >
       <Sidebar me={me} nav={nav} q={q} onQ={onQ} pinned={pinned} wide={wide} />
       <main style={{ flex: 1, minWidth: 0, height: '100vh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-        {chrome ? (
-          <>
-            <TopBar me={me} back={back} shares={shares} onShareDone={onShareDone} />
-            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>{children}</div>
-          </>
-        ) : children}
+        {/*
+          顶栏可有可无，**容器这一层不能变**。
+
+          原来 chrome=false 时是把 children 直接挂在 main 下面，和有顶栏时
+          的树形不一样——于是在同一屏里把 chrome 从 true 切到 false（创建屏
+          进工作台就是这样），React 认定这是两个位置，把里面的组件卸载重挂，
+          刚输入的那句话、刚开的会话全没了。实测就是这个状态。
+
+          所以结构固定：顶栏按 chrome 决定出不出，滚动容器始终在，只换
+          overflow——自带版面的那两屏（为你推荐、创建工作台）自己管滚动。
+        */}
+        {chrome && <TopBar me={me} back={back} shares={shares} onShareDone={onShareDone} />}
+        <div style={{ flex: 1, minHeight: 0, overflow: chrome ? 'auto' : 'hidden' }}>
+          {children}
+        </div>
       </main>
     </div>
   );
@@ -185,7 +201,7 @@ function Sidebar({
             <NavRow
               key={n.key}
               href={n.href} label={n.label} icon={n.icon} iconSize={19}
-              on={nav === n.key} wide={wide.on} height={42}
+              on={nav === n.key} wide={wide.on} height={42} big={n.big ?? false}
             />
           ))}
         </div>
@@ -193,21 +209,6 @@ function Sidebar({
 
       {wide.on && (
         <>
-          <div style={{ padding: '18px 12px 0' }}>
-            <a
-              href="/create"
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                width: '100%', height: 44, borderRadius: 12, background: 'var(--cta)',
-                color: 'var(--cta-fg)', fontSize: 'var(--text-md)',
-                fontWeight: 'var(--weight-semibold)', cursor: 'pointer', textDecoration: 'none',
-                boxShadow: '0 10px 24px -12px rgba(238,92,42,.7)',
-              }}
-            >
-              <Icon name="sparkles" size={16} />一句话做页面
-            </a>
-          </div>
-
           {pinned.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '24px 12px 0' }}>
               <span
@@ -322,7 +323,7 @@ function Sidebar({
 }
 
 function NavRow({
-  href, label, icon, iconSize, on, wide, height,
+  href, label, icon, iconSize, on, wide, height, big = false,
 }: {
   href: string;
   label: string;
@@ -331,6 +332,8 @@ function NavRow({
   on: boolean;
   wide: boolean;
   height: number;
+  /** 大一号也重一档。眼下只有 iDo 这一项。 */
+  big?: boolean;
 }) {
   return (
     <a
@@ -340,9 +343,12 @@ function NavRow({
         display: 'flex', alignItems: 'center', gap: 12, width: '100%', height,
         padding: '0 14px', borderRadius: height > 38 ? 12 : 10,
         background: on ? 'var(--nav-on-bg)' : 'transparent',
+        boxShadow: on ? 'var(--nav-on-sh)' : 'none',
         color: on ? 'var(--nav-on-fg)' : 'var(--text-secondary)',
-        fontSize: 'var(--text-md)',
-        fontWeight: on ? 'var(--weight-semibold)' : 'var(--weight-medium)',
+        fontSize: big ? 16 : 'var(--text-md)',
+        fontWeight: big
+          ? 'var(--weight-bold)'
+          : on ? 'var(--weight-semibold)' : 'var(--weight-medium)',
         cursor: 'pointer', textAlign: 'left', whiteSpace: 'nowrap', textDecoration: 'none',
       }}
       onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-sidebar-hover)'; }}

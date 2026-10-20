@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync } from 'node:fs';
 import { cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { Sql } from '@ispace/db';
 import {
@@ -98,6 +98,25 @@ export interface DeployOutcome {
   url: string;
 }
 
+/**
+ * 工作区里哪些东西不该跟着发布出去。
+ *
+ * 下划线开头的**顶层**目录是平台自己放的草稿（眼下是设计扇出的 `_fanout`）：
+ * 它们在工作区里，是因为预览要能直接看到；但它们不是这个页面的一部分，发
+ * 出去只会让线上多出几个没人认识的地址，还会把草案算进这个人的配额。
+ *
+ * 判据写在"从 srcDir 数起的第一段"上，不是"路径里出现过下划线"：用户自己
+ * 在 assets 下面建一个 `_icons`，那是他的东西，照发。
+ */
+export function scratchFilter(srcDir: string): (src: string) => boolean {
+  return (src: string) => {
+    const rel = relative(srcDir, src);
+    if (!rel) return true;
+    const first = rel.split(sep)[0] ?? '';
+    return !first.startsWith('_');
+  };
+}
+
 export class DeployService {
   constructor(
     private readonly sql: Sql,
@@ -127,7 +146,9 @@ export class DeployService {
 
     try {
       // ── 取到临时目录 ────────────────────────────────────────────
-      if (input.srcDir) await cp(input.srcDir, staging, { recursive: true });
+      if (input.srcDir) {
+        await cp(input.srcDir, staging, { recursive: true, filter: scratchFilter(input.srcDir) });
+      }
       else if (input.zipPath) await extractZip(input.zipPath, staging);
       else throw new IspaceError(ERROR_CODES.INVALID_ARTIFACT, '没有产物可发布');
       const root = await resolveArtifactRoot(staging);

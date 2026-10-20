@@ -4,6 +4,10 @@ import { Icon, copyText } from '@ispace/ui';
 import { api } from './api';
 import { Segment } from './detail';
 import { type Device } from './wall';
+import {
+  AskCard, CodePane, DesignGallery, PLATFORM_ASKS, ProcessBlock, PublishMenu, RefineBar, TabBar,
+  useFanout, type Ask, type AskOption, type FanDir,
+} from './workbench';
 
 /**
  * 创建（改版稿 §创建 / §创建 · 生成）。
@@ -27,7 +31,7 @@ import { type Device } from './wall';
  * └──────────────────────────────────────────────────────────────────┘
  */
 export function Create({
-  me, initialDraft, remix, onClearRemix, onMine, onToast,
+  me, initialDraft, remix, onClearRemix, onMine, onWorkbench, onToast,
 }: {
   me: User;
   /** 从探索页那句话或「做同款」带进来的初稿。 */
@@ -35,12 +39,17 @@ export function Create({
   remix: { name: string; author: string } | null;
   onClearRemix: () => void;
   onMine: () => void;
+  /** 进没进工作台。外壳据此让出顶栏与滚动容器。 */
+  onWorkbench: (on: boolean) => void;
   onToast: (t: string) => void;
 }) {
   const [draft, setDraft] = useState(initialDraft);
   const [gen, setGen] = useState<Gen | null>(null);
 
   useEffect(() => { setDraft(initialDraft); }, [initialDraft]);
+  useEffect(() => { onWorkbench(gen !== null); }, [gen, onWorkbench]);
+  /* 离开这一屏（去我的作品、点侧栏别处）要归位，否则外壳一直没有顶栏 */
+  useEffect(() => () => onWorkbench(false), [onWorkbench]);
 
   return gen
     ? (
@@ -546,7 +555,12 @@ interface Gen {
 
 const freshGen = (text: string, images: AgentImage[], choice: AgentChoice): Gen => ({
   text, images, title: titleOf(text), site: null, confirmToken: null, sessionId: null,
-  choice, steps: [], says: [], busy: true, publishedUrl: null,
+  /*
+    busy 从 false 起。新稿里一上来不是"已经在做"，而是"先问你两句"
+    （见 Generating 的 askStep）——写 true 会让进度区立刻出现「正在做…」，
+    而那一刻一个模型请求都还没发出去。
+  */
+  choice, steps: [], says: [], busy: false, publishedUrl: null,
 });
 
 // ── 工作区实时预览 ─────────────────────────────────────────────────────
@@ -671,6 +685,13 @@ function usePreview(active: boolean) {
   return { url, rev, kind, errs, frame, refresh, release, clear: () => setErrs([]) };
 }
 
+/** 设备那句话。三种都要说，模型据此决定布局，不是摆设。 */
+const DEVICE_SAY = {
+  phone: '这页主要在手机上看，竖屏优先，点击目标别太小。',
+  pc: '这页主要在电脑上看，版心可以宽一些、信息密一些。',
+  both: '手机和电脑都要能看，用能自然塌成一列的布局。',
+};
+
 function Generating({
   me, gen, setGen, onMine, onToast,
 }: {
@@ -684,28 +705,33 @@ function Generating({
   const [vis, setVis] = useState<'private' | 'shared' | 'public'>('private');
   const [follow, setFollow] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [tab, setTab] = useState<'preview' | 'code' | 'design'>('preview');
+  const [pubOpen, setPubOpen] = useState(false);
+  const [showErrs, setShowErrs] = useState(false);
+  /* 文件树的版本号。一轮做完就 +1，让「代码」页重新拉一遍 */
+  const [fsRev, setFsRev] = useState(0);
   const log = useRef<HTMLDivElement | null>(null);
   /* 发布之后右栏换成正式地址，预览就不用再开着了 */
   const preview = usePreview(gen.publishedUrl === null);
-  const [showErrs, setShowErrs] = useState(false);
 
   /*
-    第一句话在挂载时发出去，只发一次。
+    开头那两道题。askStep 是"下一道问第几个"，到 2 就是问完了。
 
-    守卫用 ref 而不是 state：严格模式会把 effect 跑两遍，而 setGen 是异步的
-    ——第二遍读到的 started 还是 false，于是发了两次，对话里出现两条一模一样
-    的回答（实测如此）。ref 的写入是同步的，第二遍立刻就能看见。
+    它们是**平台的固定脚本**，不是模型问的（见 workbench.tsx 顶上的说明）：
+    走不走扇出、主要在哪儿看，决定的是这一屏接下来怎么走，而不是页面长什么
+    样——这种分叉该由平台直接问，省掉一轮模型调用，也不会出现"模型忘了问"。
   */
-  const sent = useRef(false);
-  useEffect(() => {
-    if (sent.current) return;
-    sent.current = true;
-    void run(gen.text, gen.images);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const [askStep, setAskStep] = useState(0);
+  const [startMode, setStartMode] = useState<'fan' | 'direct' | 'talk'>('direct');
+  const [device, setDevice] = useState<'phone' | 'pc' | 'both'>('both');
+  /** 模型自己用 ask_user 问的那种。回答之后清掉。 */
+  const [modelAsk, setModelAsk] = useState<Ask | null>(null);
+  const fan = useFanout();
+  const [pick, setPick] = useState<FanDir | null>(null);
 
   const run = async (text: string, images: AgentImage[]) => {
     setGen((g) => ({ ...g, busy: true }));
+    setModelAsk(null);
     try {
       await streamAsk({
         text,
@@ -720,15 +746,29 @@ function Generating({
           else says.push({ me: false, text: delta });
           return { ...g, says };
         }),
-        onTool: (name, args) => setGen((g) => ({
-          ...g,
-          /* 前一步到此为止——工具是顺序调的，新的一步开始就说明上一步做完了 */
-          steps: [...g.steps.map((s) => ({ ...s, done: true })), toStep(name, args)],
-          site: name === 'request_deploy' && typeof args.site === 'string' ? args.site : g.site,
-        })),
+        onTool: (name, args) => {
+          /*
+            ask_user 不进「处理中」那一摞：它不是一步工作，是一个在等人的
+            问题。摆进去会显得"它还在做"，而实际上它已经停下了。
+          */
+          if (name === 'ask_user') {
+            const a = parseAskArgs(args);
+            if (a) setModelAsk(a);
+            return;
+          }
+          setGen((g) => ({
+            ...g,
+            /* 前一步到此为止——工具是顺序调的，新的一步开始就说明上一步做完了 */
+            steps: [...g.steps.map((s) => ({ ...s, done: true })), toStep(name, args)],
+            site: name === 'request_deploy' && typeof args.site === 'string' ? args.site : g.site,
+          }));
+        },
         /* 文件落盘了，右栏跟着换一版 */
         onToolDone: (name) => {
-          if (name === 'write_file' || name === 'delete_file') preview.refresh();
+          if (name === 'write_file' || name === 'delete_file') {
+            preview.refresh();
+            setFsRev((n) => n + 1);
+          }
         },
         onError: (m) => {
           /*
@@ -751,13 +791,62 @@ function Generating({
         confirmToken: pend.items[0]?.confirmToken ?? g.confirmToken,
         site: pend.items[0]?.site ?? g.site,
       }));
+      setFsRev((n) => n + 1);
     }
+  };
+
+  /** 开头两道题的回答。最后一道答完才真正开始干活。 */
+  const answerPlatform = (o: AskOption) => {
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: o.label }] }));
+    if (askStep === 0) {
+      setStartMode((o.key ?? 'direct') as 'fan');
+      setAskStep(1);
+      return;
+    }
+    const d = (o.key ?? 'both') as 'phone' | 'pc' | 'both';
+    setDevice(d);
+    setAskStep(2);
+
+    if (startMode === 'fan') {
+      setTab('design');
+      void fan.start({
+        text: gen.text, device: d,
+        model: gen.choice.model, effort: gen.choice.effort,
+      });
+      return;
+    }
+    const extra = startMode === 'talk'
+      ? `（${DEVICE_SAY[d]}动手之前先用 ask_user 问我一两个你拿不准的关键问题。）`
+      : `（${DEVICE_SAY[d]}）`;
+    void run(`${gen.text}\n\n${extra}`, gen.images);
+  };
+
+  /** 模型问的那种，回答就是下一轮的输入。 */
+  const answerModel = (o: AskOption) => {
+    setModelAsk(null);
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: o.label }] }));
+    void run(o.label, []);
+  };
+
+  /** 挑中一个方向：让模型照它做真正的页面。 */
+  const usePick = (d: FanDir) => {
+    setPick(d);
+    setTab('preview');
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: `用「${d.name}」这一版` }] }));
+    void run(
+      `就按「${d.name}」这一版的视觉来做。那一版在 ${d.path}，`
+      + `先 read_file 看它的配色、字体和排版，再把真正的页面写成 index.html。`
+      + `${DEVICE_SAY[device]}原始需求是：${gen.text}`,
+      [],
+    );
   };
 
   const sendFollow = async () => {
     const t = follow.trim();
     if (!t || gen.busy) return;
     setFollow('');
+    /* 答问期间直接打字 = 跳过剩下的题。设计稿那句「都不合适？直接在下面输入」 */
+    if (askStep < 2) setAskStep(2);
     setGen((g) => ({ ...g, says: [...g.says, { me: true, text: t }] }));
     await run(t, []);
   };
@@ -776,13 +865,16 @@ function Generating({
       setGen((g) => ({ ...g, publishedUrl: r.url, confirmToken: null, site: r.app.slug }));
       /* 右栏这就换成正式地址，工作区预览没人看了，收掉它 */
       preview.release();
+      setPubOpen(false);
       onToast(`已发布到 ${r.url}`);
     } catch (e) {
       onToast(e instanceof Error ? e.message : '发布失败');
     } finally { setPublishing(false); }
   };
 
-  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [gen.says, gen.steps]);
+  useEffect(() => {
+    log.current?.scrollTo({ top: log.current.scrollHeight });
+  }, [gen.says, gen.steps, askStep, modelAsk, fan.dirs]);
 
   const url = gen.publishedUrl
     ?? (gen.site ? `${location.origin}/${me.username}/${gen.site}/` : '');
@@ -811,9 +903,17 @@ function Generating({
     void run(text, []);
   };
 
+  const platformAsk = askStep < 2 ? PLATFORM_ASKS[askStep] : undefined;
+  const waiting = platformAsk !== undefined || modelAsk !== null;
+  const status = gen.publishedUrl ? '已上线'
+    : waiting ? '在等你回答'
+      : fan.running ? '正在出设计方向'
+        : gen.busy ? '正在做，写一个文件右边刷一次'
+          : '预览 · 还没发布';
+
   return (
     <div style={{ height: '100%', minHeight: 560, display: 'flex' }}>
-      {/* ── 左：对话与进度 ───────────────────────────────────────── */}
+      {/* ── 左：对话、问答与进度 ─────────────────────────────────── */}
       <div
         style={{
           width: 'min(440px, 46%)', flex: 'none', display: 'flex', flexDirection: 'column',
@@ -839,37 +939,7 @@ function Generating({
           }}
         >
           <Bubble text={gen.text} />
-          {gen.steps.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {gen.steps.map((s, i) => (
-                <div key={`${s.key}-${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                  <span
-                    style={{
-                      width: 24, height: 24, flex: 'none', borderRadius: 'var(--radius-pill)',
-                      background: s.done ? 'var(--success-subtle)' : 'var(--brand-wash)',
-                      color: s.done ? 'var(--success)' : 'var(--tabby-orange)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
-                    <Icon name={s.done ? 'check' : 'rotate'} size={13} />
-                  </span>
-                  <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
-                    <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-                      {s.title}
-                    </span>
-                    {s.detail && (
-                      <span
-                        className="mono"
-                        style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)', wordBreak: 'break-all' }}
-                      >
-                        {s.detail}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+
           {gen.says.map((m, i) => (
             m.me
               ? <Bubble key={i} text={m.text} />
@@ -879,7 +949,58 @@ function Generating({
                 </div>
               )
           ))}
-          {gen.busy && (
+
+          <ProcessBlock
+            steps={gen.steps}
+            agents={fan.dirs}
+            busy={gen.busy || fan.running}
+            skill={fan.dirs.length ? 'design-fanout' : null}
+          />
+
+          {fan.err && (
+            <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--error)' }}>
+              设计方向没能跑起来：{fan.err}
+            </div>
+          )}
+
+          {fan.dirs.length > 0 && !pick && !fan.running && (
+            <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)' }}>
+              右边是 {fan.dirs.length} 个方向，挑一个「用这一版」，我就照它把页面做出来。
+            </div>
+          )}
+
+          {pick && !gen.busy && (
+            <RefineBar
+              pickName={pick.name}
+              busy={gen.busy}
+              onRefine={(t) => {
+                setGen((g) => ({ ...g, says: [...g.says, { me: true, text: t }] }));
+                void run(t, []);
+              }}
+              onFresh={() => {
+                setPick(null);
+                setTab('design');
+                void fan.start({
+                  text: gen.text, device,
+                  model: gen.choice.model, effort: gen.choice.effort,
+                });
+              }}
+            />
+          )}
+
+          {platformAsk && (
+            <AskCard
+              ask={platformAsk.ask}
+              step={platformAsk.step}
+              onPick={answerPlatform}
+              disabled={gen.busy}
+            />
+          )}
+          {!platformAsk && modelAsk && (
+            <AskCard ask={modelAsk} onPick={answerModel} disabled={gen.busy} />
+          )}
+
+          {gen.busy && !waiting && (
             <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>正在做…</span>
           )}
         </div>
@@ -900,7 +1021,9 @@ function Generating({
                 e.preventDefault();
                 void sendFollow();
               }}
-              placeholder={gen.busy ? '等这一轮做完再改' : '说说哪里要改，比如「换班加一个备注栏」'}
+              placeholder={gen.busy
+                ? '等这一轮做完再说'
+                : waiting ? '或者直接说你的想法' : '说说哪里要改，比如「换班加一个备注栏」'}
               disabled={gen.busy}
               style={{
                 flex: 1, minWidth: 0, border: 0, outline: 'none', background: 'transparent',
@@ -925,246 +1048,242 @@ function Generating({
         </div>
       </div>
 
-      {/* ── 右：预览与发布 ───────────────────────────────────────── */}
+      {/* ── 右：预览 / 代码 / 设计 ───────────────────────────────── */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-sidebar)' }}>
-        <div style={{ height: 60, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '0 20px' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>
+        <div style={{ height: 60, flex: 'none', display: 'flex', alignItems: 'center', gap: 12, padding: '0 20px' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-base)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
             <Icon
-              name={gen.publishedUrl ? 'check' : gen.busy ? 'rotate' : 'info'}
+              name={gen.publishedUrl ? 'check' : gen.busy || fan.running ? 'rotate' : 'info'}
               size={15}
               color={gen.publishedUrl ? 'var(--success)' : 'var(--tabby-orange)'}
             />
-            {gen.publishedUrl
-              ? '已上线'
-              : !renderable
-                ? '这个项目不走预览'
-                : !frameUrl
-                  ? '正在准备预览'
-                  : gen.busy ? '正在做，写一个文件这里刷一次' : '预览 · 还没发布'}
+            {status}
           </span>
-          <Segment
-            options={[
-              { k: 'phone', label: '手机', icon: 'phone' },
-              { k: 'pc', label: '电脑', icon: 'monitor' },
-            ]}
-            value={dev}
-            onPick={(k) => setDev(k as Device)}
-          />
-        </div>
+          <div style={{ flex: 1 }} />
+          <TabBar cur={tab} onPick={setTab} />
 
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '8px 24px 24px' }}>
-          {dev === 'phone' ? (
-            <div
+          <div style={{ position: 'relative' }}>
+            {pubOpen && (
+              <div onClick={() => setPubOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
+            )}
+            <button
+              onClick={() => setPubOpen((v) => !v)}
               style={{
-                /* 与详情、为你推荐一致：手机版纵向吃满 */
-                height: '100%', aspectRatio: '9 / 19.5', boxSizing: 'border-box',
-                padding: 9, borderRadius: 44, background: '#0d0d10',
-                boxShadow: '0 40px 80px -30px rgba(0,0,0,.35)',
+                display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 12px 0 14px',
+                border: 0, borderRadius: 'var(--radius-pill)',
+                background: gen.publishedUrl ? 'var(--success-subtle)' : 'var(--cta)',
+                color: gen.publishedUrl ? 'var(--success)' : 'var(--cta-fg)',
+                fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                whiteSpace: 'nowrap', cursor: 'pointer',
               }}
             >
-              <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 36, overflow: 'hidden', background: 'var(--surface-1)' }}>
-                <PreviewBody url={frameUrl} phone frameRef={preview.frame}
-                  notice={renderable ? null : preview.kind} />
-              </div>
-            </div>
-          ) : (
-            <div
-              style={{
-                /* 与详情、为你推荐一致：电脑版横向吃满 */
-                width: '100%', borderRadius: 16, overflow: 'hidden',
-                background: 'var(--surface-1)',
-                boxShadow: '0 40px 80px -30px rgba(0,0,0,.3), 0 0 0 1px rgba(0,0,0,.06)',
-              }}
-            >
-              <div
-                style={{
-                  height: 38, display: 'flex', alignItems: 'center', gap: 12, padding: '0 14px',
-                  background: 'var(--surface-2)', borderBottom: '1px solid var(--border-subtle)',
-                }}
-              >
-                <div style={{ display: 'flex', gap: 6, width: 46 }}>
-                  {[0, 1, 2].map((k) => (
-                    <span key={k} style={{ width: 10, height: 10, borderRadius: 'var(--radius-pill)', background: 'var(--surface-3)' }} />
-                  ))}
-                </div>
-                <div
-                  className="mono"
-                  style={{
-                    flex: 1, maxWidth: 440, height: 24, margin: '0 auto', borderRadius: 8,
-                    background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
-                    whiteSpace: 'nowrap', overflow: 'hidden',
-                  }}
-                >
-                  {shown || '还没有地址'}
-                </div>
-                <div style={{ width: 46 }} />
-              </div>
-              <div style={{ position: 'relative', aspectRatio: '16 / 10', background: 'var(--surface-1)' }}>
-                <PreviewBody url={frameUrl} phone={false} frameRef={preview.frame}
-                  notice={renderable ? null : preview.kind} />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/*
-          预览里页面报的错。
-
-          不自动塞进对话：一个 favicon 404 不值得触发一轮模型调用，而且
-          自动发出去会把用户正要说的话冲掉。这里只摆一条，点「让它修」
-          才真的发——人决定要不要修，模型拿到的是完整的错误文本。
-        */}
-        {!gen.publishedUrl && preview.errs.length > 0 && (
-          <div
-            style={{
-              flex: 'none', padding: '10px 20px', borderTop: '1px solid var(--border-tabby)',
-              background: 'var(--surface-1)', display: 'flex', flexDirection: 'column', gap: 8,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              {/* 用 --error 而不是 --danger：深色模式只重定义了前者 */}
-              <Icon name="info" size={14} color="var(--error)" />
-              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-heading)', fontWeight: 'var(--weight-semibold)' }}>
-                页面报了 {preview.errs.length} 个错
-              </span>
-              <button
-                onClick={() => setShowErrs((v) => !v)}
-                style={{
-                  border: 0, background: 'transparent', padding: 0, cursor: 'pointer',
-                  fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
-                }}
-              >
-                {showErrs ? '收起' : '看看'}
-              </button>
-              <div style={{ flex: 1 }} />
-              <button
-                onClick={preview.clear}
-                style={{
-                  height: 30, padding: '0 10px', border: '1px solid var(--border)',
-                  borderRadius: 9, background: 'var(--surface-1)', color: 'var(--text-secondary)',
-                  fontSize: 'var(--text-base)', cursor: 'pointer',
-                }}
-              >
-                先不管
-              </button>
-              <button
-                onClick={fixErrors}
-                disabled={gen.busy}
-                style={{
-                  height: 30, padding: '0 12px', border: 0, borderRadius: 9,
-                  background: gen.busy ? 'var(--surface-3)' : 'var(--accent)',
-                  color: gen.busy ? 'var(--text-tertiary)' : 'var(--accent-fg)',
-                  fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
-                  cursor: gen.busy ? 'default' : 'pointer',
-                }}
-              >
-                让它修
-              </button>
-            </div>
-            {showErrs && (
-              <div
-                className="mono"
-                style={{
-                  maxHeight: 108, overflow: 'auto', display: 'flex', flexDirection: 'column',
-                  gap: 4, fontSize: 'var(--text-base)', lineHeight: 1.6,
-                  color: 'var(--text-tertiary)', wordBreak: 'break-all',
-                }}
-              >
-                {preview.errs.map((e, i) => <span key={i}>{e.text}</span>)}
-              </div>
+              <Icon name={gen.publishedUrl ? 'check' : 'upRight'} size={14} />
+              {gen.publishedUrl ? '已发布' : '发布'}
+              <Icon name="chevDown" size={14} />
+            </button>
+            {pubOpen && (
+              <PublishMenu
+                published={gen.publishedUrl !== null}
+                url={url}
+                title={gen.title}
+                vis={vis}
+                setVis={setVis}
+                canPublish={gen.confirmToken !== null}
+                publishing={publishing}
+                onPublish={() => void publish()}
+                onMine={onMine}
+                onToast={onToast}
+                onClose={() => setPubOpen(false)}
+              />
             )}
           </div>
+        </div>
+
+        {tab === 'design' && (
+          <DesignGallery
+            dirs={fan.dirs}
+            previewUrl={preview.url}
+            picked={pick?.index ?? null}
+            onPick={usePick}
+            onMore={() => {
+              if (!pick) return;
+              void fan.start({
+                text: `${gen.text}（再出几个和「${pick.name}」相近的方向）`,
+                device, model: gen.choice.model, effort: gen.choice.effort,
+              });
+            }}
+            busy={fan.running || gen.busy}
+          />
         )}
 
-        <div
-          style={{
-            flex: 'none', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-            padding: '14px 20px', borderTop: '1px solid var(--border-tabby)',
-            background: 'var(--surface-canvas)',
-          }}
-        >
-          {gen.publishedUrl ? (
-            <>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-                <span
-                  style={{
-                    width: 22, height: 22, borderRadius: 'var(--radius-pill)',
-                    background: 'var(--success-subtle)', color: 'var(--success)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                >
-                  <Icon name="check" size={13} />
-                </span>
-                已发布
-              </span>
-              <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>{shown}</span>
-              <div style={{ flex: 1 }} />
-              <button
-                onClick={() => void copyText(gen.publishedUrl!).then((ok) => onToast(ok ? '地址已复制' : gen.publishedUrl!))}
-                style={{
-                  height: 40, padding: '0 14px', border: '1px solid var(--border-hover)',
-                  borderRadius: 12, background: 'var(--surface-1)', color: 'var(--text-heading)',
-                  fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
-                }}
-              >
-                复制地址
-              </button>
-              <button
-                onClick={onMine}
-                style={{
-                  height: 40, padding: '0 16px', border: 0, borderRadius: 12,
-                  background: 'var(--accent)', color: 'var(--accent-fg)',
-                  fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
-                }}
-              >
-                去我的作品
-              </button>
-            </>
-          ) : (
-            <>
-              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>谁能看</span>
+        {tab === 'code' && <CodePane rev={fsRev} />}
+
+        {tab === 'preview' && (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '0 20px 8px' }}>
               <Segment
                 options={[
-                  { k: 'private', label: '仅自己' },
-                  { k: 'shared', label: '指定同事' },
-                  { k: 'public', label: '全公司' },
+                  { k: 'phone', label: '手机', icon: 'phone' },
+                  { k: 'pc', label: '电脑', icon: 'monitor' },
                 ]}
-                value={vis}
-                onPick={(k) => setVis(k as 'private')}
+                value={dev}
+                onPick={(k) => setDev(k as Device)}
               />
-              <div style={{ flex: 1 }} />
-              {gen.confirmToken ? (
-                <button
-                  onClick={() => void publish()}
-                  disabled={publishing}
+            </div>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 24px 24px' }}>
+              {dev === 'phone' ? (
+                <div
                   style={{
-                    height: 42, padding: '0 20px', border: 0, borderRadius: 12,
-                    background: 'var(--cta)', color: 'var(--cta-fg)', fontSize: 'var(--text-md)',
-                    fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
+                    /* 与详情、为你推荐一致：手机版纵向吃满 */
+                    height: '100%', aspectRatio: '9 / 19.5', boxSizing: 'border-box',
+                    padding: 9, borderRadius: 44, background: '#0d0d10',
+                    boxShadow: '0 40px 80px -30px rgba(0,0,0,.35)',
                   }}
                 >
-                  {publishing ? '正在发布…' : '发布到我的空间'}
-                </button>
+                  <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 36, overflow: 'hidden', background: 'var(--surface-1)' }}>
+                    <PreviewBody url={frameUrl} phone frameRef={preview.frame}
+                      notice={renderable ? null : preview.kind} />
+                  </div>
+                </div>
               ) : (
-                <span
-                  title={gen.busy ? '' : '让它把页面写完，或者在左边说一句「可以发布了」'}
+                <div
                   style={{
-                    height: 42, padding: '0 20px', borderRadius: 12, background: 'var(--surface-3)',
-                    color: 'var(--text-tertiary)', fontSize: 'var(--text-md)',
-                    fontWeight: 'var(--weight-semibold)', display: 'flex', alignItems: 'center',
+                    /* 与详情、为你推荐一致：电脑版横向吃满 */
+                    width: '100%', borderRadius: 16, overflow: 'hidden',
+                    background: 'var(--surface-1)',
+                    boxShadow: '0 40px 80px -30px rgba(0,0,0,.3), 0 0 0 1px rgba(0,0,0,.06)',
                   }}
                 >
-                  {gen.busy ? '生成中…' : '还没准备好发布'}
-                </span>
+                  <div
+                    style={{
+                      height: 38, display: 'flex', alignItems: 'center', gap: 12, padding: '0 14px',
+                      background: 'var(--surface-2)', borderBottom: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', gap: 6, width: 46 }}>
+                      {[0, 1, 2].map((k) => (
+                        <span key={k} style={{ width: 10, height: 10, borderRadius: 'var(--radius-pill)', background: 'var(--surface-3)' }} />
+                      ))}
+                    </div>
+                    <div
+                      className="mono"
+                      style={{
+                        flex: 1, maxWidth: 440, height: 24, margin: '0 auto', borderRadius: 8,
+                        background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
+                        whiteSpace: 'nowrap', overflow: 'hidden',
+                      }}
+                    >
+                      {shown || '还没有地址'}
+                    </div>
+                    <div style={{ width: 46 }} />
+                  </div>
+                  <div style={{ position: 'relative', aspectRatio: '16 / 10', background: 'var(--surface-1)' }}>
+                    <PreviewBody url={frameUrl} phone={false} frameRef={preview.frame}
+                      notice={renderable ? null : preview.kind} />
+                  </div>
+                </div>
               )}
-            </>
-          )}
-        </div>
+            </div>
+
+            {/*
+              预览里页面报的错。
+
+              不自动塞进对话：一个 favicon 404 不值得触发一轮模型调用，而且
+              自动发出去会把用户正要说的话冲掉。这里只摆一条，点「让它修」
+              才真的发——人决定要不要修，模型拿到的是完整的错误文本。
+            */}
+            {!gen.publishedUrl && preview.errs.length > 0 && (
+              <div
+                style={{
+                  flex: 'none', padding: '10px 20px', borderTop: '1px solid var(--border-tabby)',
+                  background: 'var(--surface-1)', display: 'flex', flexDirection: 'column', gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {/* 用 --error 而不是 --danger：深色模式只重定义了前者 */}
+                  <Icon name="info" size={14} color="var(--error)" />
+                  <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-heading)', fontWeight: 'var(--weight-semibold)' }}>
+                    页面报了 {preview.errs.length} 个错
+                  </span>
+                  <button
+                    onClick={() => setShowErrs((v) => !v)}
+                    style={{
+                      border: 0, background: 'transparent', padding: 0, cursor: 'pointer',
+                      fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
+                    }}
+                  >
+                    {showErrs ? '收起' : '看看'}
+                  </button>
+                  <div style={{ flex: 1 }} />
+                  <button
+                    onClick={preview.clear}
+                    style={{
+                      height: 30, padding: '0 10px', border: '1px solid var(--border)',
+                      borderRadius: 9, background: 'var(--surface-1)', color: 'var(--text-secondary)',
+                      fontSize: 'var(--text-base)', cursor: 'pointer',
+                    }}
+                  >
+                    先不管
+                  </button>
+                  <button
+                    onClick={fixErrors}
+                    disabled={gen.busy}
+                    style={{
+                      height: 30, padding: '0 12px', border: 0, borderRadius: 9,
+                      background: gen.busy ? 'var(--surface-3)' : 'var(--accent)',
+                      color: gen.busy ? 'var(--text-tertiary)' : 'var(--accent-fg)',
+                      fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                      cursor: gen.busy ? 'default' : 'pointer',
+                    }}
+                  >
+                    让它修
+                  </button>
+                </div>
+                {showErrs && (
+                  <div
+                    className="mono"
+                    style={{
+                      maxHeight: 108, overflow: 'auto', display: 'flex', flexDirection: 'column',
+                      gap: 4, fontSize: 'var(--text-base)', lineHeight: 1.6,
+                      color: 'var(--text-tertiary)', wordBreak: 'break-all',
+                    }}
+                  >
+                    {preview.errs.map((e, i) => <span key={i}>{e.text}</span>)}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * ask_user 的参数 → 一张卡片。
+ *
+ * 和服务端 parseAsk 同一条判据（要有问题、至少两个选项）。两边各写一份是
+ * 有意的：服务端那份决定"这一轮停不停"，这一份决定"画不画"。模型给了半成品
+ * 参数时，两边都是"当没问过"。
+ */
+function parseAskArgs(args: Record<string, unknown>): Ask | null {
+  const question = typeof args.question === 'string' ? args.question.trim() : '';
+  const raw = Array.isArray(args.options) ? args.options : [];
+  const options = raw.slice(0, 4).flatMap((o) => {
+    const r = o as Record<string, unknown>;
+    const label = typeof r?.label === 'string' ? r.label.trim() : '';
+    if (!label) return [];
+    return [{
+      label,
+      ...(typeof r.hint === 'string' && r.hint.trim() ? { hint: r.hint.trim() } : {}),
+      ...(r.recommended === true ? { recommended: true } : {}),
+    }];
+  });
+  if (!question || options.length < 2) return null;
+  return { from: 'model', question, options };
 }
 
 /**
@@ -1386,6 +1505,7 @@ function toStep(name: string, args: Record<string, unknown>): Step {
     get_quota: ['查一下配额', ''],
     list_apps: ['看已有的页面', ''],
     request_deploy: ['准备发布', typeof args.site === 'string' ? `/${args.site}/` : ''],
+    ask_user: ['问你一句', typeof args.question === 'string' ? args.question : ''],
   };
   const [title, detail] = map[name] ?? [name, ''];
   return { key: name, title, detail, done: false };

@@ -344,6 +344,14 @@ export const api = {
     /** 平台认不认思考档位（AGENT_EFFORT）。不认就不画那个分段。 */
     effort: boolean;
   }>('/agent/status'),
+  /** 工作区文件树（工作台「代码」页）。扁平路径表，前端自己摞成树。 */
+  workspaceTree: () => get<{ entries: { path: string; dir: boolean; size: number }[] }>(
+    '/agent/workspace',
+  ),
+  /** 单个文件的内容。二进制与超大文件只给标记，不送内容。 */
+  workspaceFile: (path: string) => get<{
+    path: string; size: number; text: string; binary?: boolean; tooBig?: boolean;
+  }>(`/agent/workspace/file?path=${encodeURIComponent(path)}`),
   /** Agent 发起的待确认发布。token 是一次性的，用掉即失效。 */
   agentPending: () =>
     get<{ items: { confirmToken: string; site: string; summary: string; createdAt: number }[] }>(

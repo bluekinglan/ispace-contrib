@@ -125,7 +125,73 @@ export const PLATFORM_TOOLS: ToolDef[] = [
   },
 ];
 
-export const ALL_TOOLS: ToolDef[] = [...FILE_TOOLS, ...PLATFORM_TOOLS];
+/**
+ * 把一个带选项的问题摆到用户面前。
+ *
+ * ┌─ 为什么要有这个工具，而不是让模型在正文里问 ────────────────────────┐
+ * │ 模型本来就会在正文里问「你想要哪种风格？A/B/C」。问题是那段话对前端 │
+ * │ 来说只是一段文本：人要自己把选项打一遍，打错了模型还得再问一次。    │
+ * │                                                                      │
+ * │ 走工具就不一样——问题和选项是结构化的，前端能画成可点的卡片，点一下  │
+ * │ 就是下一轮的输入。少的那几次打字，正是"问清楚再动手"能不能真正成立  │
+ * │ 的前提：要人打五十个字才能回答的问题，他宁可不回答。                │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *
+ * 调用它会**结束这一轮**（见 session.ts 的 stopReason 'ask'）：问题问出去了
+ * 就该等人，继续往下写代码等于没问。
+ */
+export const ASK_TOOL: ToolDef = {
+  name: 'ask_user',
+  description:
+    '向用户提一个带选项的问题，然后停下等他回答。只在"选哪条路会让结果差很多、'
+    + '而你猜不出来"时用；能自己定的事不要问。一次只问一个问题。',
+  parameters: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: '一句话的问题' },
+      options: {
+        type: 'array',
+        description: '2 到 4 个选项',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: '选项本身，几个字' },
+            hint: { type: 'string', description: '选了会怎样，一句话' },
+            recommended: { type: 'boolean', description: '是否是你推荐的那个' },
+          },
+          required: ['label'],
+        },
+      },
+    },
+    required: ['question', 'options'],
+  },
+};
+
+export const ALL_TOOLS: ToolDef[] = [...FILE_TOOLS, ...PLATFORM_TOOLS, ASK_TOOL];
+
+/** 一个待回答的问题。前端照它画选项卡片。 */
+export interface PendingAsk {
+  question: string;
+  options: { label: string; hint?: string; recommended?: boolean }[];
+}
+
+/** 从 ask_user 的调用参数里解出问题。参数不成形时返回 null——那就当普通工具结果。 */
+export function parseAsk(args: Record<string, unknown>): PendingAsk | null {
+  const question = typeof args.question === 'string' ? args.question.trim() : '';
+  const raw = Array.isArray(args.options) ? args.options : [];
+  const options = raw.slice(0, 4).flatMap((o) => {
+    const rec = o as Record<string, unknown>;
+    const label = typeof rec?.label === 'string' ? rec.label.trim() : '';
+    if (!label) return [];
+    return [{
+      label,
+      ...(typeof rec.hint === 'string' && rec.hint.trim() ? { hint: rec.hint.trim() } : {}),
+      ...(rec.recommended === true ? { recommended: true } : {}),
+    }];
+  });
+  if (!question || options.length < 2) return null;
+  return { question, options };
+}
 
 export interface ToolContext {
   ws: WorkspaceContext;
@@ -192,6 +258,19 @@ export async function runTool(
 
     case 'list_apps':
       return ctx.platform.listApps();
+
+    case 'ask_user': {
+      const ask = parseAsk(args);
+      if (!ask) {
+        return '这个问题不成形（要有 question 和至少两个 options）。要么补全再问，要么自己定。';
+      }
+      /*
+        工具结果是给模型看的，而这一轮到此为止（session.ts 收到 ask_user
+        就停）。写明"已经问出去了"，下一轮它看到的是用户的回答，不会以为
+        自己的问题石沉大海又问一遍。
+      */
+      return `已把这个问题摆给用户，等他回答。他的回答会是下一条用户消息。`;
+    }
 
     case 'request_deploy': {
       const r = await ctx.platform.requestDeploy(String(args.site), String(args.summary));

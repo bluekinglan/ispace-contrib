@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
@@ -8,8 +8,11 @@ import {
 } from '../services/connectors-available.js';
 import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
-  AgentSession, configuredModels, createEngine, effortEnabled,
-  type AvailableConnector, type ReasoningEffort, type SessionEvent, type ToolContext,
+  AgentSession, DESIGN_DIRECTIONS, configuredModels, createEngine, effortEnabled,
+  fanoutCount, runFanout,
+  type AvailableConnector, type FanoutEvent, type ReasoningEffort, type SessionEvent,
+  safePath,
+  type ToolContext,
 } from '@ispace/agent';
 import { z } from 'zod';
 import type { DeployInput, DeployOutcome } from '../services/deploy.js';
@@ -63,6 +66,23 @@ const askSchema = z.object({
     .default([]),
 });
 
+/**
+ * 设计扇出的产物目录（相对工作区）。
+ *
+ * 下划线开头是约定：发布链路按这个前缀把它整个排除在产物之外
+ * （services/deploy.ts 的 copyFilter）。它是挑方向用的草案，不是页面的一
+ * 部分，发出去只会让线上多出六个没人认识的地址。
+ */
+export const FANOUT_DIR = '_fanout';
+
+const fanoutSchema = z.object({
+  text: z.string().min(1).max(4000),
+  /** 第一道问题问出来的：这页主要在哪儿看。 */
+  device: z.enum(['phone', 'pc', 'both']).default('both'),
+  model: z.string().max(64).optional(),
+  effort: z.enum(['low', 'medium', 'high']).optional(),
+});
+
 interface PendingDeploy {
   userId: string;
   site: string;
@@ -72,6 +92,42 @@ interface PendingDeploy {
 
 /** 确认 token 的有效期。过期即失效，避免旧 token 被翻出来用。 */
 const CONFIRM_TTL_MS = 10 * 60 * 1000;
+
+/** 「代码」页一次最多显示多大的文件。再大就只给大小，不往回送内容。 */
+const MAX_SHOWN_BYTES = 256 * 1024;
+/** 文件树一次最多给多少条。模型不该写出几千个文件，真写了也先看前面这些。 */
+const MAX_TREE_ENTRIES = 600;
+
+/**
+ * 走一遍工作区，给出扁平的路径表（前端自己摞成树）。
+ *
+ * 跳过 node_modules 与 .git：它们动辄上万个文件，而且不是人要看的东西。
+ * `_fanout` 这类平台草稿**保留**——工作台的「代码」页本来就该让人看见
+ * 那六版草案到底写了什么，它们也确实在工作区里。
+ */
+async function walkWorkspace(root: string): Promise<{ path: string; dir: boolean; size: number }[]> {
+  const out: { path: string; dir: boolean; size: number }[] = [];
+
+  async function walk(dir: string, prefix: string): Promise<void> {
+    if (out.length >= MAX_TREE_ENTRIES) return;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (out.length >= MAX_TREE_ENTRIES) return;
+      if (e.name === 'node_modules' || e.name === '.git') continue;
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        out.push({ path: rel, dir: true, size: 0 });
+        await walk(join(dir, e.name), rel);
+      } else if (e.isFile()) {
+        const st = await stat(join(dir, e.name)).catch(() => null);
+        out.push({ path: rel, dir: false, size: st?.size ?? 0 });
+      }
+    }
+  }
+
+  await walk(root, '');
+  return out;
+}
 
 export function registerAgentRoutes(
   app: FastifyInstance,
@@ -253,6 +309,142 @@ export function registerAgentRoutes(
       reply.raw.end();
     }
     return reply;
+  });
+
+  /**
+   * 设计扇出：并行跑几个方向，每个出一版自包含的 HTML。
+   *
+   * ┌─ 为什么单独一条路，不塞进 /agent/ask ──────────────────────────────┐
+   * │ /agent/ask 是一条**会话**：有历史、有工具、会改用户的项目。扇出不  │
+   * │ 是——它是 N 个互不相干的一次性任务，产物是草案而不是项目文件，而且 │
+   * │ 结束之后那几个会话就该消失（留着只会把六版风格都压进后面的上下文）。│
+   * │                                                                    │
+   * │ 塞进去还要在那条会话里凭空多出一个"我现在在扇出"的状态机。分开之后 │
+   * │ 两边都只做一件事：这条跑完就结束，用户挑中哪一版，由前端作为普通的 │
+   * │ 一句话发回 /agent/ask——模型自己去 read_file 看那一版长什么样。      │
+   * └────────────────────────────────────────────────────────────────────┘
+   *
+   * ⚠️ 这是全平台唯一一次请求跑多个模型会话的地方，N 倍开销。条数由
+   * AGENT_FANOUT_N 配，前端也只在用户明确选了「生成六版视觉设计」时才打。
+   */
+  app.post(`${API_BASE}/agent/fanout`, async (req, reply) => {
+    const user = await requireAuth(req);
+    const input = fanoutSchema.parse(req.body);
+
+    /* 先校验通道。没配就当场报，别等六个会话各报一次 */
+    try {
+      createEngine(process.env, { model: input.model });
+    } catch {
+      throw new IspaceError(
+        ERROR_CODES.ORCHESTRATOR_UNAVAILABLE,
+        'Agent 未配置模型通道，请联系平台管理员。',
+      );
+    }
+
+    const wsRoot = join(workspaceRoot, user.username);
+    await mkdir(wsRoot, { recursive: true });
+
+    const runId = randomBytes(6).toString('base64url');
+    const outRel = `${FANOUT_DIR}/${runId}`;
+    const dirs = DESIGN_DIRECTIONS.slice(0, fanoutCount());
+
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    const send = (e: FanoutEvent | { type: 'run'; runId: string; dirs: unknown[] }) => {
+      reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
+    };
+
+    /*
+      先把六张卡片的位置告诉前端（名字、配色、将来的路径），再开始跑。
+      这样画廊一上来就是六个占位，而不是跑完一个冒出来一个——后者看起来
+      像"还有几个"没人说得清。
+    */
+    send({
+      type: 'run',
+      runId,
+      dirs: dirs.map((d, i) => ({
+        index: i, key: d.key, name: d.name, bg: d.bg, dot: d.dot,
+        path: `${outRel}/${d.key}/index.html`,
+      })),
+    });
+
+    /* 客户端断开就别再烧模型了——六个会话一起跑，这一下省的是六份 */
+    const abort = new AbortController();
+    req.raw.on('close', () => abort.abort());
+
+    try {
+      await runFanout({
+        engine: () => createEngine(process.env, {
+          model: input.model,
+          effort: input.effort as ReasoningEffort | undefined,
+        }),
+        workspaceRoot: wsRoot,
+        outRel,
+        prompt: input.text,
+        device: input.device,
+        dirs,
+        onEvent: send,
+        signal: abort.signal,
+      });
+      await writeAudit(sql, {
+        actorId: user.id, action: 'agent.fanout', targetType: 'app', targetId: null,
+        source: 'agent', result: 'success',
+        metadata: { runId, count: dirs.length, device: input.device },
+        ip: req.ip,
+      });
+    } catch (e) {
+      send({
+        type: 'dir_error', index: -1, key: '', name: '',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      reply.raw.end();
+    }
+    return reply;
+  });
+
+  /**
+   * 工作区文件树与单个文件的内容（工作台的「代码」页）。
+   *
+   * ┌─ 为什么不让前端走预览那条路去读 ────────────────────────────────────┐
+   * │ 预览伺服的是**渲染用的**字节流：HTML 会被注入 shim，响应带沙箱 CSP， │
+   * │ 还会按 detectKind 换成说明页。拿它当"看源码"的接口，看到的不是模型  │
+   * │ 写的那份东西。                                                      │
+   * │                                                                      │
+   * │ 而且预览只在创建屏开着时存在，文件树在发布之后也该能看。            │
+   * └──────────────────────────────────────────────────────────────────────┘
+   *
+   * 边界和 Agent 的文件工具是同一条（safePath）：模型写得进哪里，这里才看得
+   * 到哪里，两边说同一套话。只读，没有写入口——改文件是模型的事。
+   */
+  app.get(`${API_BASE}/agent/workspace`, async (req) => {
+    const user = await requireAuth(req);
+    const root = join(workspaceRoot, user.username);
+    return { entries: await walkWorkspace(root) };
+  });
+
+  app.get(`${API_BASE}/agent/workspace/file`, async (req) => {
+    const user = await requireAuth(req);
+    const { path: rel } = z.object({ path: z.string().min(1).max(512) }).parse(req.query);
+    const root = join(workspaceRoot, user.username);
+    const abs = safePath({ root, username: user.username }, rel);
+
+    const st = await stat(abs).catch(() => null);
+    if (!st?.isFile()) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个文件。');
+    if (st.size > MAX_SHOWN_BYTES) {
+      return { path: rel, size: st.size, tooBig: true, text: '' };
+    }
+    const buf = await readFile(abs);
+    /*
+      二进制不往回送文本。前端拿到一堆乱码只会以为文件坏了——给它一个
+      明确的 binary 标记，那边摆一行「这是图片/字体，右边预览里看」。
+    */
+    if (buf.includes(0)) return { path: rel, size: st.size, binary: true, text: '' };
+    return { path: rel, size: st.size, text: buf.toString('utf8') };
   });
 
   // ── 二次确认：手机端点「部署上线」后调这里 ────────────────────────

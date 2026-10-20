@@ -344,6 +344,7 @@ function Sidebar({
                     display: 'flex', alignItems: 'center', gap: 12, width: '100%', height: 42,
                     padding: '0 14px', border: 0, borderRadius: 12,
                     background: on ? 'var(--nav-on-bg)' : 'transparent',
+                    boxShadow: on ? 'var(--nav-on-sh)' : 'none',
                     color: on ? 'var(--nav-on-fg)' : 'var(--text-secondary)',
                     fontSize: 'var(--text-md)',
                     fontWeight: on ? 'var(--weight-semibold)' : 'var(--weight-medium)',

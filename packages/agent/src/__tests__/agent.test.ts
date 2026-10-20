@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AgentSession, buildSystemPrompt, type AvailableConnector } from '../session.js';
-import { runTool, safePath, type ToolContext } from '../tools.js';
+import { parseAsk, runTool, safePath, type ToolContext } from '../tools.js';
+import { DESIGN_DIRECTIONS, fanoutCount, runFanout } from '../fanout.js';
 import {
   configuredModels, createEngine, effortEnabled,
   type Engine, type EngineEvent, type ToolCall,
@@ -300,5 +301,137 @@ describe('实时预览那段提示的开关', () => {
     }];
     expect(buildSystemPrompt(one, { livePreview: true })).toContain('open-meteo');
     expect(buildSystemPrompt(one, { livePreview: true })).toContain('正看着预览');
+  });
+});
+
+describe('问清楚再动手', () => {
+  const askArgs = {
+    question: '数据从哪来？',
+    options: [
+      { label: '我手填', hint: '先做个空表', recommended: true },
+      { label: '接飞书表格' },
+    ],
+  };
+
+  it('ask_user 把一轮停在"等人回答"，而不是接着往下写', async () => {
+    const s = new AgentSession({
+      engine: new ScriptedEngine([
+        [{ type: 'tool_call', call: call('ask_user', askArgs) }, { type: 'done' }],
+        /* 真跑到第二轮就说明没停住——那一轮会接着写文件 */
+        [{ type: 'tool_call', call: call('write_file', { path: 'index.html', content: 'x' }) }, { type: 'done' }],
+      ]),
+      toolCtx: { ws: ws(), platform },
+    });
+    const r = await s.send('做个周报收集页');
+    expect(r.stopReason).toBe('ask');
+    expect(r.turns).toBe(1);
+    /* 问题进了历史：下一轮模型看得到自己问过什么 */
+    expect(s.messages.some((m) => m.role === 'tool' && m.content.includes('等他回答'))).toBe(true);
+  });
+
+  it('同一轮里既问又改，改的那几下照样执行，只是不再要下一次模型输出', async () => {
+    const w = ws();
+    const s = new AgentSession({
+      engine: new ScriptedEngine([[
+        { type: 'tool_call', call: call('write_file', { path: 'a.txt', content: '1' }) },
+        { type: 'tool_call', call: call('ask_user', askArgs) },
+        { type: 'done' },
+      ]]),
+      toolCtx: { ws: w, platform },
+    });
+    const r = await s.send('做个页面');
+    expect(r.stopReason).toBe('ask');
+    expect(existsSync(join(w.root, 'a.txt'))).toBe(true);
+  });
+
+  it('问题不成形就不算问过——模型得自己定，或者补全再问', async () => {
+    const s = new AgentSession({
+      engine: new ScriptedEngine([
+        [{ type: 'tool_call', call: call('ask_user', { question: '随便问问' }) }, { type: 'done' }],
+        [{ type: 'text', delta: '那我自己定了' }, { type: 'done' }],
+      ]),
+      toolCtx: { ws: ws(), platform },
+    });
+    const r = await s.send('做个页面');
+    expect(r.stopReason).toBe('complete');
+    expect(r.turns).toBe(2);
+  });
+
+  it('parseAsk 只认有问题且至少两个选项的', () => {
+    expect(parseAsk(askArgs)?.options).toHaveLength(2);
+    expect(parseAsk({ question: '只有一个', options: [{ label: 'a' }] })).toBeNull();
+    expect(parseAsk({ options: askArgs.options })).toBeNull();
+    /* 多给的丢掉，没名字的也丢掉 */
+    const many = parseAsk({
+      question: 'q',
+      options: [{ label: 'a' }, { label: '' }, { label: 'c' }, { label: 'd' }, { label: 'e' }, { label: 'f' }],
+    });
+    expect(many?.options.map((o) => o.label)).toEqual(['a', 'c', 'd']);
+  });
+});
+
+describe('设计扇出', () => {
+  const dirs = DESIGN_DIRECTIONS.slice(0, 2);
+  const writes = (rel: string) => new ScriptedEngine([
+    [{ type: 'tool_call', call: call('write_file', { path: rel, content: '<h1>x</h1>' }) }, { type: 'done' }],
+    [{ type: 'text', delta: '好了' }, { type: 'done' }],
+  ]);
+
+  it('每个方向各写一个文件，事件按方向报进度', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ispace-fan-'));
+    const events: string[] = [];
+    /*
+      每个方向的引擎各写各的路径。脚本不知道自己是第几个方向，所以按调用
+      顺序发——两个方向并行，顺序不定，这里用计数器对上号。
+    */
+    let n = 0;
+    const r = await runFanout({
+      engine: () => writes(`out/${dirs[n++]!.key}/index.html`),
+      workspaceRoot: root,
+      outRel: 'out',
+      prompt: '做个排班表',
+      device: 'phone',
+      dirs,
+      onEvent: (e) => events.push(e.type),
+    });
+
+    expect(r).toEqual({ ok: 2, failed: 0 });
+    for (const d of dirs) {
+      expect(existsSync(join(root, 'out', d.key, 'index.html'))).toBe(true);
+    }
+    expect(events.filter((t) => t === 'dir_start')).toHaveLength(2);
+    expect(events.filter((t) => t === 'dir_done')).toHaveLength(2);
+    expect(events[events.length - 1]).toBe('all_done');
+  });
+
+  it('一个方向没写出页面，算失败，但别的照常出', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ispace-fan-'));
+    let first = true;
+    const r = await runFanout({
+      engine: () => {
+        /* 第一个只说话不写文件——那张卡片没东西可看，就是失败 */
+        const e = first
+          ? new ScriptedEngine([[{ type: 'text', delta: '我觉得不用做' }, { type: 'done' }]])
+          : writes(`out/${dirs[1]!.key}/index.html`);
+        first = false;
+        return e;
+      },
+      workspaceRoot: root,
+      outRel: 'out',
+      prompt: '做个排班表',
+      device: 'both',
+      dirs,
+    });
+    expect(r).toEqual({ ok: 1, failed: 1 });
+    /* 失败的那个也留一页说明，不是 404 */
+    expect(existsSync(join(root, 'out', dirs[0]!.key, 'index.html'))).toBe(true);
+  });
+
+  it('条数由平台配，且不超过方向表', () => {
+    expect(fanoutCount({})).toBe(6);
+    expect(fanoutCount({ AGENT_FANOUT_N: '3' })).toBe(3);
+    expect(fanoutCount({ AGENT_FANOUT_N: '99' })).toBe(DESIGN_DIRECTIONS.length);
+    expect(fanoutCount({ AGENT_FANOUT_N: '0' })).toBe(1);
+    expect(fanoutCount({ AGENT_FANOUT_N: '不是数' })).toBe(DESIGN_DIRECTIONS.length);
   });
 });

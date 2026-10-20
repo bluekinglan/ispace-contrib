@@ -1,5 +1,5 @@
 import type { Engine, EngineMessage, ToolDef } from './engine.js';
-import { ALL_TOOLS, runTool, type ToolContext } from './tools.js';
+import { ALL_TOOLS, parseAsk, runTool, type ToolContext } from './tools.js';
 
 /**
  * 会话循环（技术方案 §6.1 的「线程语义恰好对应会话」）。
@@ -143,6 +143,14 @@ export interface SessionOptions {
   maxTurns?: number;
   tools?: ToolDef[];
   /**
+   * 整段换掉系统提示。
+   *
+   * 只有设计扇出用（fanout.ts）：那几个会话不是"改这个人的项目"，而是
+   * "出一版视觉草案"，连接器清单、发布纪律、实时预览那几段对它们全是噪音，
+   * 还会让它去调根本没给它的工具。
+   */
+  systemPrompt?: string;
+  /**
    * 这个人能用的连接器。不传等同于空——那种情况下提示词会明确告诉模型
    * "没有可用数据源、别自己编域名"，而不是留白让它自由发挥。
    */
@@ -163,8 +171,17 @@ export type SessionEvent =
   | { type: 'tool_start'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'turn'; index: number }
-  | { type: 'done'; turns: number; stopReason: 'complete' | 'max_turns' | 'error' }
+  | { type: 'done'; turns: number; stopReason: StopReason }
   | { type: 'error'; message: string };
+
+/**
+ * 一轮为什么停了。
+ *
+ * 'ask' 是新加的：模型调了 ask_user，问题已经摆到用户面前，这一轮就该到此
+ * 为止。把它和 'complete' 分开，前端才知道"在等你回答"和"它说完了"是两件
+ * 事——前者该把输入框换成选项卡片，后者不该。
+ */
+export type StopReason = 'complete' | 'ask' | 'max_turns' | 'error';
 
 export class AgentSession {
   readonly messages: EngineMessage[];
@@ -173,7 +190,8 @@ export class AgentSession {
     this.messages = [
       {
         role: 'system',
-        content: buildSystemPrompt(opts.connectors ?? [], { livePreview: opts.livePreview ?? false }),
+        content: opts.systemPrompt
+          ?? buildSystemPrompt(opts.connectors ?? [], { livePreview: opts.livePreview ?? false }),
       },
     ];
   }
@@ -182,7 +200,7 @@ export class AgentSession {
   async send(
     text: string,
     images: { mimeType: string; dataBase64: string }[] = [],
-  ): Promise<{ stopReason: 'complete' | 'max_turns' | 'error'; turns: number }> {
+  ): Promise<{ stopReason: StopReason; turns: number }> {
     const emit = this.opts.onEvent ?? (() => {});
     const tools = this.opts.tools ?? ALL_TOOLS;
     const maxTurns = this.opts.maxTurns ?? 12;
@@ -231,6 +249,7 @@ export class AgentSession {
         return { stopReason: 'complete', turns: turn + 1 };
       }
 
+      let asked = false;
       for (const call of calls) {
         emit({ type: 'tool_start', name: call.name, args: call.arguments });
         let result: string;
@@ -243,6 +262,19 @@ export class AgentSession {
         }
         emit({ type: 'tool_result', name: call.name, result });
         this.messages.push({ role: 'tool', content: result, toolCallId: call.id });
+        if (call.name === 'ask_user' && parseAsk(call.arguments)) asked = true;
+      }
+
+      /*
+        问出去了就停，不再让模型接着往下写。
+
+        同一轮里它可能既问了又改了文件（模型偶尔会这样），那几个工具已经
+        执行完了——停的是"再要一次模型输出"，不是回滚。下一轮带着用户的
+        回答继续，历史是连续的。
+      */
+      if (asked) {
+        emit({ type: 'done', turns: turn + 1, stopReason: 'ask' });
+        return { stopReason: 'ask', turns: turn + 1 };
       }
     }
 
