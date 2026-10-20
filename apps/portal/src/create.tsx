@@ -732,6 +732,12 @@ function Generating({
   const run = async (text: string, images: AgentImage[]) => {
     setGen((g) => ({ ...g, busy: true }));
     setModelAsk(null);
+    /*
+      这一轮有没有真的发生什么。模型可能一个字都不说、一个工具都不调就结束
+      ——线上实测出现过两次，屏幕上什么都不变，人看到的是"没反应"。
+      所以这里盯着，空手而归时在对话里明说一句。
+    */
+    let did = false;
     try {
       await streamAsk({
         text,
@@ -740,6 +746,7 @@ function Generating({
         sessionId: gen.sessionId,
         onSession: (id) => setGen((g) => ({ ...g, sessionId: id })),
         onText: (delta) => setGen((g) => {
+          did = true;
           const says = [...g.says];
           const last = says[says.length - 1];
           if (last && !last.me) says[says.length - 1] = { me: false, text: last.text + delta };
@@ -751,6 +758,7 @@ function Generating({
             ask_user 不进「处理中」那一摞：它不是一步工作，是一个在等人的
             问题。摆进去会显得"它还在做"，而实际上它已经停下了。
           */
+          did = true;
           if (name === 'ask_user') {
             const a = parseAskArgs(args);
             if (a) setModelAsk(a);
@@ -770,7 +778,21 @@ function Generating({
             setFsRev((n) => n + 1);
           }
         },
+        onDone: (stopReason, turns) => {
+          if (did) return;
+          /*
+            一轮下来什么都没发生。把"为什么"说清楚，而不是让人盯着一个
+            不动的屏幕猜——而且给一句可操作的下一步。
+          */
+          const why = stopReason === 'max_turns'
+            ? `它绕了 ${turns} 轮也没收敛，这一轮先停下了。把需求说得更具体些再试。`
+            : stopReason === 'error'
+              ? '模型通道出错了，这一轮没做成。'
+              : '这一轮模型什么都没返回（既没说话也没动文件）。再说一次试试，或者换个模型。';
+          setGen((g) => ({ ...g, says: [...g.says, { me: false, text: why }] }));
+        },
         onError: (m) => {
+          did = true;
           /*
             错误要留在对话里，不能只弹一个会自己消失的 toast：这一屏的左栏
             此刻只有用户自己那句话，toast 一淡出，他看到的就是"我说了一句，
@@ -1434,6 +1456,14 @@ async function streamAsk(opts: {
    * 刷新看到的仍是上一版，人会以为"改了没生效"。
    */
   onToolDone: (name: string) => void;
+  /**
+   * 这一轮为什么结束。
+   *
+   * 必须接：模型可能一个字都不说、一个工具都不调就结束（实测线上出现过
+   * 两次）。不接的话屏幕上什么都不会变，用户看到的是"没反应"——而实际上
+   * 请求早就回来了。
+   */
+  onDone: (stopReason: string, turns: number) => void;
   onError: (message: string) => void;
 }): Promise<void> {
   const res = await fetch('/deploy/api/agent/ask', {
@@ -1488,6 +1518,7 @@ async function streamAsk(opts: {
         else if (e.type === 'text') opts.onText(e.delta as string);
         else if (e.type === 'tool_start') opts.onTool(e.name as string, (e.args ?? {}) as Record<string, unknown>);
         else if (e.type === 'tool_result') opts.onToolDone(e.name as string);
+        else if (e.type === 'done') opts.onDone(String(e.stopReason), Number(e.turns ?? 0));
         else if (e.type === 'error') opts.onError(String(e.message));
       }
     }

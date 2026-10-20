@@ -339,7 +339,23 @@ export function registerAgentRoutes(
       : input.text;
 
     try {
-      await session.send(text, input.images);
+      const r = await session.send(text, input.images);
+      /*
+        把每一轮的结果记下来。
+
+        线上出现过"模型一个字都不说、一个工具都不调就结束"，当时日志里只有
+        一行 200 和耗时，完全看不出它是停在哪一步、用的哪个模型——查起来只能
+        靠在容器里复现。这一行就是为了下次不用复现。
+      */
+      req.log.info({
+        agent: {
+          model: engine.model,
+          stopReason: r.stopReason,
+          turns: r.turns,
+          tools: session.messages.filter((m) => m.role === 'tool').length,
+          said: session.messages.some((m) => m.role === 'assistant' && m.content.trim().length > 0),
+        },
+      }, 'agent 一轮结束');
       entry.session.messages.length = 0;
       entry.session.messages.push(...session.messages);
     } catch (e) {
