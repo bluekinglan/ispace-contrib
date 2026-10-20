@@ -74,6 +74,7 @@ import { registerEventRoutes } from './routes/events.js';
 import { registerPreviewRoutes } from './routes/preview.js';
 import { PreviewSessions } from './services/preview-session.js';
 import { makePreviewAuth } from './services/preview-auth.js';
+import { detectKind } from './services/preview-kind.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -1066,6 +1067,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     文件端点按 id 找工作区，两者必须是同一张表，否则令牌会凭空多活一段。
   */
   const previewSessions = new PreviewSessions();
+  const WORKSPACE_ROOT = process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces';
   registerConnectorRoutes(app, {
     sql, requireAuth, requireAdmin,
     previewAuth: makePreviewAuth(previewSessions, sql),
@@ -1075,7 +1077,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
   // ── 工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）────
   registerPreviewRoutes(app, {
     requireAuth,
-    workspaceRoot: process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces',
+    workspaceRoot: WORKSPACE_ROOT,
     sessions: previewSessions,
   });
 
@@ -1124,9 +1126,19 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
   // ── Coding Agent ────────────────────────────────────────────────
   registerAgentRoutes(app, {
     sql, requireAuth, deployService,
-    workspaceRoot: process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces',
-    /* 创建屏开着预览时才告诉模型"用户正看着"。手机壳没有预览，这里就是 false */
-    hasLivePreview: (userId) => previewSessions.hasFor(userId),
+    workspaceRoot: WORKSPACE_ROOT,
+    /*
+      创建屏开着预览、**而且这个工作区确实在渲染**时，才告诉模型"用户正看着"。
+
+      光有会话不够：带服务端或要构建的项目右栏摆的是一页说明，不是页面
+      （services/preview-kind.ts）。那种情况下还说「你每写完一个文件它就
+      刷新一次」，模型会照着一个根本不存在的反馈回路去安排工作。
+    */
+    hasLivePreview: (userId) => {
+      const s = previewSessions.sessionFor(userId);
+      if (!s) return false;
+      return detectKind(join(WORKSPACE_ROOT, s.username)).kind === 'static';
+    },
   });
 
   // ── 治理定时任务 ────────────────────────────────────────────────

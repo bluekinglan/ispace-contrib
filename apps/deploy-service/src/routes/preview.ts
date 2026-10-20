@@ -6,6 +6,7 @@ import { API_BASE, ERROR_CODES, IspaceError, type User } from '@ispace/contracts
 import { z } from 'zod';
 import { injectPreviewShim } from '../services/preview-shim.js';
 import { PREVIEW_IDLE_MS, type PreviewSessions } from '../services/preview-session.js';
+import { detectKind } from '../services/preview-kind.js';
 
 /**
  * 工作区实时预览（见 docs/specs/2026-10-20-preview-runtime.md）。
@@ -106,6 +107,23 @@ export function registerPreviewRoutes(
     };
   });
 
+  /**
+   * 这个工作区能不能直接伺服出来看。
+   *
+   * 创建屏每次刷新预览前先问一下——工作区的内容一直在变，模型上一轮写的是
+   * 一个单页面、这一轮加了个 server.js，判定就该跟着变。
+   */
+  app.get(`${API_BASE}/preview-session/:previewId/kind`, async (req, reply) => {
+    const me = await requireAuth(req);
+    const { previewId } = req.params as { previewId: string };
+    const s = sessions.get(previewId);
+    if (!s || s.userId !== me.id) {
+      return reply.status(404).send({ code: ERROR_CODES.NOT_FOUND, message: '没有这个预览。' });
+    }
+    sessions.touch(s);
+    return detectKind(join(workspaceRoot, s.username));
+  });
+
   // ── 主动释放（创建屏卸载时 sendBeacon 打这里）────────────────────
   app.post(`${API_BASE}/preview-session/release`, async (req) => {
     const me = await requireAuth(req);
@@ -145,6 +163,28 @@ export function registerPreviewRoutes(
     const rel = (req.params as Record<string, string>)['*'] ?? '';
     /* 越界直接抛 IspaceError（403），由全局 errorHandler 转成响应 */
     let abs = await safeResolve(root, rel);
+
+    /*
+      根文档要先问一句"这东西能不能直接伺服出来看"。
+
+      带服务端的、要构建的，伺服出去是半截页面或白屏——而白屏最糟：人会以为
+      预览坏了，或者以为模型写的东西有问题，两个方向都是错的。所以这里直接
+      出一页说明，把是哪一类、下一步干什么说清楚。
+
+      只拦根文档，不拦子资源：子资源单独被打开的情形不存在，多一次判定只是
+      白花时间。状态码是 200——这是我们**有意**给出的响应，不是哪里失败了。
+    */
+    if (rel === '' || rel.endsWith('/')) {
+      const verdict = detectKind(root);
+      if (verdict.kind === 'server' || verdict.kind === 'build') {
+        return reply
+          .status(200)
+          .header('cache-control', 'no-store')
+          .header('content-security-policy', SANDBOX_CSP)
+          .type('text/html; charset=utf-8')
+          .send(noPreviewPage(verdict.why));
+      }
+    }
 
     let st = await stat(abs).catch(() => null);
     // 目录（含预览根）→ 找里面的 index.html
@@ -233,6 +273,10 @@ const shell = (body: string) => `<!doctype html><meta charset="utf-8">
   code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 </style>
 <div class="box">${body}</div>`;
+
+const noPreviewPage = (why: string) => shell(`
+  <h1>这个项目不走预览</h1>
+  <p>${escapeHtml(why)}</p>`);
 
 const gonePage = () => shell(`
   <h1>预览已经过期</h1>

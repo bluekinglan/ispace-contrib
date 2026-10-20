@@ -102,8 +102,13 @@ export class PreviewSessions {
    * 查真实状态而不是收前端的声明——那句话对没有预览的会话就是假话。
    */
   hasFor(userId: string): boolean {
+    return this.sessionFor(userId) !== null;
+  }
+
+  /** 同上，但把会话本身给出来——调用方要用 username 去看工作区里是什么。 */
+  sessionFor(userId: string): PreviewSession | null {
     const id = this.byUser.get(userId);
-    return id !== undefined && this.get(id) !== null;
+    return id === undefined ? null : this.get(id);
   }
 
   /**

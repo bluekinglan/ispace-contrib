@@ -242,6 +242,43 @@ describe('预览的鉴权与路径边界', () => {
     void one;
   });
 
+  /*
+    带服务端 / 要构建的项目不渲染（services/preview-kind.ts）。这两条钉住
+    「判定的结果真的影响了出什么」——判定本身的边界在 preview-kind.test.ts。
+  */
+  it('工作区里出现 server.js 之后，根文档出的是说明而不是页面', async () => {
+    /*
+      用一个专属目录，不借 wangkai 的。
+      前面那条「工作区还没有 index.html」正是靠 wangkai 没有目录来验的——
+      在这儿给他建目录，两条用例就按先后顺序互相影响，换个顺序就红。
+    */
+    mkdirSync(join(root, 'fullstack'), { recursive: true });
+    writeFileSync(join(root, 'fullstack', 'index.html'), '<!doctype html><h1>前端</h1>');
+    writeFileSync(join(root, 'fullstack', 'server.js'), 'require("express")');
+    const s2 = sessions.open(other.id, 'fullstack');
+
+    const res = await get(`/deploy/api/preview/${s2.id}/`, 'other');
+    expect(res.statusCode).toBe(200);          // 这是有意给出的响应，不是哪里失败了
+    expect(res.body).toContain('不走预览');
+    expect(res.body).not.toContain('前端');     // 没把那个半截页面渲染出来
+    /* 子资源不拦——单独打开子资源的情形不存在，多一次判定只是白花时间 */
+    expect((await get(`/deploy/api/preview/${s2.id}/server.js`, 'other')).statusCode).toBe(200);
+  });
+
+  it('kind 接口：别人的预览问不到，自己的答得出判据', async () => {
+    const s2 = sessions.open(other.id, 'fullstack');
+    expect((await get(`/deploy/api/preview-session/${s2.id}/kind`, 'me')).statusCode).toBe(404);
+    expect((await get(`/deploy/api/preview-session/${s2.id}/kind`)).statusCode).toBe(401);
+
+    const mineKind = await get(`/deploy/api/preview-session/${mine}/kind`, 'me');
+    expect(mineKind.statusCode).toBe(200);
+    expect(mineKind.json().kind).toBe('static');
+
+    const theirs = await get(`/deploy/api/preview-session/${s2.id}/kind`, 'other');
+    expect(theirs.json().kind).toBe('server');
+    expect(theirs.json().signals).toContain('server.js');
+  });
+
   it('释放只认本人', async () => {
     const s = new PreviewSessions();
     const one = s.open(me.id, me.username);
