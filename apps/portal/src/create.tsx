@@ -372,13 +372,11 @@ interface Gen {
   says: { me: boolean; text: string }[];
   busy: boolean;
   publishedUrl: string | null;
-  /** 第一句话是否已经发出去过——避免 React 严格模式下跑两遍。 */
-  started: boolean;
 }
 
 const freshGen = (text: string, images: AgentImage[]): Gen => ({
   text, images, title: titleOf(text), site: null, confirmToken: null, sessionId: null,
-  steps: [], says: [], busy: true, publishedUrl: null, started: false,
+  steps: [], says: [], busy: true, publishedUrl: null,
 });
 
 function Generating({
@@ -396,10 +394,17 @@ function Generating({
   const [publishing, setPublishing] = useState(false);
   const log = useRef<HTMLDivElement | null>(null);
 
-  /* 第一句话在挂载时发出去。started 标记挡住 StrictMode 的二次挂载。 */
+  /*
+    第一句话在挂载时发出去，只发一次。
+
+    守卫用 ref 而不是 state：严格模式会把 effect 跑两遍，而 setGen 是异步的
+    ——第二遍读到的 started 还是 false，于是发了两次，对话里出现两条一模一样
+    的回答（实测如此）。ref 的写入是同步的，第二遍立刻就能看见。
+  */
+  const sent = useRef(false);
   useEffect(() => {
-    if (gen.started) return;
-    setGen((g) => ({ ...g, started: true }));
+    if (sent.current) return;
+    sent.current = true;
     void run(gen.text, gen.images);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -425,7 +430,16 @@ function Generating({
           steps: [...g.steps.map((s) => ({ ...s, done: true })), toStep(name, args)],
           site: name === 'request_deploy' && typeof args.site === 'string' ? args.site : g.site,
         })),
-        onError: (m) => onToast(`出错了：${m}`),
+        onError: (m) => {
+          /*
+            错误要留在对话里，不能只弹一个会自己消失的 toast：这一屏的左栏
+            此刻只有用户自己那句话，toast 一淡出，他看到的就是"我说了一句，
+            然后什么都没发生"。最常见的那条错误（平台没配模型通道）尤其
+            需要留着——那不是重试能解决的，得去找管理员。
+          */
+          setGen((g) => ({ ...g, says: [...g.says, { me: false, text: `出错了：${m}` }] }));
+          onToast(`出错了：${m}`);
+        },
       });
     } finally {
       /* 发布请求的 token 在流结束后问服务端要——它是 Agent 调工具时生成的 */
@@ -846,8 +860,18 @@ async function streamAsk(opts: {
   });
 
   if (!res.ok || !res.body) {
-    const msg = await res.text().catch(() => '');
-    opts.onError(msg.slice(0, 200) || `接口返回 ${res.status}`);
+    /*
+      服务端的错误是 {code, message} 的 JSON。整段打出来，用户看到的是
+      一行带引号和花括号的东西——而 message 本身恰恰是写给他看的那句话
+      （「Agent 未配置模型通道，请联系平台管理员」）。
+    */
+    const raw = await res.text().catch(() => '');
+    let msg = raw.slice(0, 200);
+    try {
+      const body = JSON.parse(raw) as { message?: string };
+      if (body.message) msg = body.message;
+    } catch { /* 不是 JSON 就用原文 */ }
+    opts.onError(msg || `接口返回 ${res.status}`);
     return;
   }
 
