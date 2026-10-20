@@ -4,7 +4,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AgentSession, buildSystemPrompt, type AvailableConnector } from '../session.js';
 import { runTool, safePath, type ToolContext } from '../tools.js';
-import type { Engine, EngineEvent, ToolCall } from '../engine.js';
+import {
+  configuredModels, createEngine, effortEnabled,
+  type Engine, type EngineEvent, type ToolCall,
+} from '../engine.js';
 
 const ws = () => {
   const root = mkdtempSync(join(tmpdir(), 'ispace-ws-'));
@@ -212,5 +215,90 @@ describe('buildSystemPrompt 里的可用连接器', () => {
       expect(p).toContain('不得引入新的原生依赖');
       expect(p).toContain('不要把密钥硬编码进代码');
     }
+  });
+});
+
+describe('平台给了几个模型可选', () => {
+  const base = { AGENT_BASE_URL: 'https://gw.example/v1', AGENT_API_KEY: 'k' };
+
+  it('没配 AGENT_MODELS 就只有默认那一个', () => {
+    expect(configuredModels({ AGENT_MODEL: 'gpt-5.6' })).toEqual([
+      { id: 'gpt-5.6', label: 'gpt-5.6' },
+    ]);
+  });
+
+  it('按 id|名字|倍率 解析，倍率可省', () => {
+    expect(configuredModels({ AGENT_MODELS: 'a|甲|0.4x, b|乙, c' })).toEqual([
+      { id: 'a', label: '甲', mult: '0.4x' },
+      { id: 'b', label: '乙' },
+      { id: 'c', label: 'c' },
+    ]);
+  });
+
+  it('配歪了退回默认那个，而不是给一张空菜单', () => {
+    expect(configuredModels({ AGENT_MODEL: 'gpt-5.6', AGENT_MODELS: ' | | ' })).toEqual([
+      { id: 'gpt-5.6', label: 'gpt-5.6' },
+    ]);
+  });
+
+  it('选单子里的那个就用那个', () => {
+    const env = { ...base, AGENT_MODELS: 'a|甲, b|乙' };
+    expect(createEngine(env, { model: 'b' }).model).toBe('b');
+  });
+
+  /*
+    model 是直接发给网关的字段。不在白名单里就按默认来，而不是原样转发——
+    转发等于把「用哪个模型」的开关交给任何会发 HTTP 的人，而这几条通道是
+    管理员配的，不是用户能添的。
+  */
+  it('选单子外的东西就按默认来', () => {
+    const env = { ...base, AGENT_MODELS: 'a|甲, b|乙' };
+    expect(createEngine(env, { model: 'gpt-9-不在单子里' }).model).toBe('a');
+    expect(createEngine(env, {}).model).toBe('a');
+  });
+
+  it('思考档位要平台开了才算数', () => {
+    expect(effortEnabled({})).toBe(false);
+    expect(effortEnabled({ AGENT_EFFORT: '1' })).toBe(true);
+    /* 没开的时候前端照样可能传——不报错，只是不往网关发 */
+    expect(() => createEngine(base, { effort: 'high' })).not.toThrow();
+  });
+});
+
+/**
+ * 「用户正看着预览」那一段只在真有预览时才说。
+ *
+ * 这段提示和手机壳那条流共用同一份基础提示，而手机壳没有预览。写死就等于
+ * 对一半的会话说了句假话——模型会按"他正看着"去安排顺序，甚至回话里提
+ * 「你右边应该已经能看到了」，而那边根本没有那块东西。
+ */
+describe('实时预览那段提示的开关', () => {
+  const none: AvailableConnector[] = [];
+
+  it('没有预览时一个字都不提', () => {
+    const p = buildSystemPrompt(none);
+    expect(p).not.toContain('正看着预览');
+    expect(p).not.toContain('index.html');
+  });
+
+  it('不传参数等同于没有预览——手机壳走的就是这一支', () => {
+    expect(buildSystemPrompt(none)).toBe(buildSystemPrompt(none, {}));
+    expect(buildSystemPrompt(none, { livePreview: false })).toBe(buildSystemPrompt(none));
+  });
+
+  it('有预览时才告诉它：先写 index.html、错误会回来找它', () => {
+    const p = buildSystemPrompt(none, { livePreview: true });
+    expect(p).toContain('正看着预览');
+    expect(p).toContain('先把 index.html 写出来');
+    expect(p).toContain('回到这个对话里来找你改');
+  });
+
+  it('开关不影响连接器那一段——两件事互不干扰', () => {
+    const one: AvailableConnector[] = [{
+      slug: 'open-meteo', name: '天气', what: '查天气',
+      example: '/v1/forecast', returns: '{current:{...}}', scope: 'builtin',
+    }];
+    expect(buildSystemPrompt(one, { livePreview: true })).toContain('open-meteo');
+    expect(buildSystemPrompt(one, { livePreview: true })).toContain('正看着预览');
   });
 });

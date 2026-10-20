@@ -6,6 +6,7 @@ import {
 import { Badge, Button, GlobalKeyframes, Toast, ToneProvider } from '@ispace/ui';
 import { api } from '../api';
 import { EIcon, EventKeyframes, Mark } from './visual';
+import { EventOrange } from './styles';
 import { Screening } from './Screening';
 
 /**
@@ -87,6 +88,7 @@ export function Judge() {
       <ToneProvider tone="business">
         <GlobalKeyframes />
         <EventKeyframes />
+        <EventOrange />
         <Screening />
       </ToneProvider>
     );
@@ -121,6 +123,7 @@ export function Judge() {
     return (
       <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--surface-canvas)' }}>
         <EventKeyframes />
+        <EventOrange />
         <div style={{
           width: 28, height: 28, borderRadius: 100,
           border: '2px solid var(--border)', borderTopColor: 'var(--tabby-orange)',
@@ -242,6 +245,7 @@ export function Judge() {
     <ToneProvider tone="business">
       <GlobalKeyframes />
       <EventKeyframes />
+      <EventOrange />
       <div style={{ minHeight: '100vh', background: 'var(--surface-canvas)' }}>
         {header}
         <div style={{ paddingTop: locked ? 14 : 0 }}>{lockBanner}</div>

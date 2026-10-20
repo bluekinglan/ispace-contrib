@@ -123,6 +123,15 @@ export const appSchema = z.object({
    * 上架后对全公司可见——发布方要为里面的内容负责（工具描述里已警示）。
    */
   sourcePrompt: z.string().max(4000).nullable().default(null),
+  /**
+   * 当前生效版本号，对外显示为 v12（改版稿「我的作品」卡片右上角那一格）。
+   *
+   * 版本号住在 releases 表里，不在 apps 上；这是 current_release_id 指向
+   * 的那条 release 的 version，由列表查询 join 出来。没发布过（building、
+   * 或产物被扫描挡下）就是 null——卡片那一格留空，不要写成 v0：v0 看着
+   * 像一个真的版本，而事实是"还没有版本"。
+   */
+  currentVersion: z.number().int().positive().nullable().default(null),
 });
 export type App = z.infer<typeof appSchema>;
 

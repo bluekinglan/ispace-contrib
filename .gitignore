@@ -18,3 +18,6 @@ apps/mobile-shell/.expo/
 .repo_memory/
 # 本地 agent 工具的会话状态，与项目无关
 .trigger-tree/
+
+# pnpm 在非 home 卷上会把 store 落在项目里，装依赖时自己生成
+.pnpm-store/

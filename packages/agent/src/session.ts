@@ -12,7 +12,7 @@ import { ALL_TOOLS, runTool, type ToolContext } from './tools.js';
  * 告知用户，而不是假装完成了。
  */
 
-const SYSTEM_PROMPT = `你是 ispace 内部平台的编码助手，帮助员工修改他们自己的网页应用。
+const BASE_PROMPT = `你是 ispace 内部平台的编码助手，帮助员工修改他们自己的网页应用。
 
 工作方式：
 - 用户用自然语言描述想改什么，你读代码、改代码，然后请求发布。
@@ -47,7 +47,38 @@ const SYSTEM_PROMPT = `你是 ispace 内部平台的编码助手，帮助员工�
  * returns 那一栏尤其不能省：模型写 `data.current.temperature_2m` 时如果不知道
  * 响应形状就只能猜，猜错是一个运行时才暴露的白屏。
  */
-export function buildSystemPrompt(available: AvailableConnector[]): string {
+/**
+ * 「用户正看着预览」那一段。
+ *
+ * ┌─ 为什么是条件拼接，而不是写死在 SYSTEM_PROMPT 里 ───────────────────┐
+ * │ 这段提示和手机壳那条流共用同一份 SYSTEM_PROMPT，而手机壳没有预览。  │
+ * │ 写死就等于对一半的会话说了一句假话——模型会按"他正看着"去安排顺序， │
+ * │ 甚至在回话里提"你右边应该已经能看到了"，而那边根本没有那块东西。    │
+ * │                                                                      │
+ * │ 所以它由**服务端查真实状态**决定（routes/agent.ts 按这个人有没有一个 │
+ * │ 活着的预览会话判断），不是前端说了算。前端能撒谎，真实状态不会。     │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+const LIVE_PREVIEW = `
+
+## 用户正看着预览
+
+他右边有一块实时预览，**你每写完一个文件它就刷新一次**，页面当场在他眼前跑。
+因此：
+
+- **先把 index.html 写出来，再写别的。** 它是预览的入口；先写别的文件，那块
+  会一直空着，人看不出你在干活。
+- 页面跑起来报的错（脚本异常、资源加载失败）会回到这个对话里来找你改。
+  不用靠读自己的代码猜哪里会错——等它告诉你，然后照着改。
+- 预览和发布后的站点一样挂在子路径下，所以根绝对路径（\`/assets/x.js\`）在
+  预览里当场就会 404。这是好事：它把这个错提前暴露给你了。`;
+
+export function buildSystemPrompt(
+  available: AvailableConnector[],
+  opts: { livePreview?: boolean } = {},
+): string {
+  const SYSTEM_PROMPT = opts.livePreview ? BASE_PROMPT + LIVE_PREVIEW : BASE_PROMPT;
+
   if (available.length === 0) {
     return `${SYSTEM_PROMPT}
 
@@ -116,6 +147,13 @@ export interface SessionOptions {
    * "没有可用数据源、别自己编域名"，而不是留白让它自由发挥。
    */
   connectors?: AvailableConnector[];
+  /**
+   * 这个人此刻有没有一块活着的实时预览。
+   *
+   * 由服务端查真实状态得出（见 buildSystemPrompt 里 LIVE_PREVIEW 的说明），
+   * 不传等同于没有——手机壳那条流就是没有。
+   */
+  livePreview?: boolean;
   onEvent?: (e: SessionEvent) => void;
   signal?: AbortSignal;
 }
@@ -133,7 +171,10 @@ export class AgentSession {
 
   constructor(private readonly opts: SessionOptions) {
     this.messages = [
-      { role: 'system', content: buildSystemPrompt(opts.connectors ?? []) },
+      {
+        role: 'system',
+        content: buildSystemPrompt(opts.connectors ?? [], { livePreview: opts.livePreview ?? false }),
+      },
     ];
   }
 

@@ -57,6 +57,8 @@ const toApp = (r: any): App => ({
   type: r.type,
   status: r.status,
   currentReleaseId: r.current_release_id,
+  /* 只有 join 了 releases 的查询带得上它；其余一律 null（见 appSchema 的说明）。 */
+  currentVersion: r.current_version ?? null,
   groupId: r.group_id,
   sortOrder: r.sort_order,
   visibility: r.visibility,
@@ -183,9 +185,17 @@ export async function createUser(
 
 // ── apps ──────────────────────────────────────────────────────────────
 export async function listAppsByOwner(sql: Sql, ownerId: string): Promise<App[]> {
+  /*
+    join 一下当前 release 只为拿它的 version：「我的作品」每张卡右上角要
+    显示 v12，而版本号不在 apps 上。LEFT join——没发布过的页面也要出现在
+    列表里（它正是作者最该看到的那几张卡）。
+  */
   const rows = await sql`
-    SELECT * FROM ispace.apps WHERE owner_id = ${ownerId}
-    ORDER BY sort_order, created_at
+    SELECT a.*, r.version AS current_version
+      FROM ispace.apps a
+      LEFT JOIN ispace.releases r ON r.id = a.current_release_id
+     WHERE a.owner_id = ${ownerId}
+     ORDER BY a.sort_order, a.created_at
   `;
   return rows.map(toApp);
 }

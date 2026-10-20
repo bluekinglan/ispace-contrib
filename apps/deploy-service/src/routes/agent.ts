@@ -8,10 +8,11 @@ import {
 } from '../services/connectors-available.js';
 import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
-  AgentSession, createEngine,
-  type AvailableConnector, type SessionEvent, type ToolContext,
+  AgentSession, configuredModels, createEngine, effortEnabled,
+  type AvailableConnector, type ReasoningEffort, type SessionEvent, type ToolContext,
 } from '@ispace/agent';
 import { z } from 'zod';
+import type { DeployInput, DeployOutcome } from '../services/deploy.js';
 
 /**
  * Coding Agent 子系统（技术方案 §6）。
@@ -47,6 +48,15 @@ const askSchema = z.object({
    */
   targetSlug: z.string().max(64).optional(),
   text: z.string().min(1).max(4000),
+  /**
+   * 创建屏那两个菜单选的。
+   *
+   * 两个都只是「希望」：模型要在平台白名单里才作数（createEngine 校验），
+   * 思考档位要平台开了 AGENT_EFFORT 才发给网关。前端传了而平台不支持时
+   * 不报错——那不是用户的错，也不值得让一次生成失败。
+   */
+  model: z.string().max(64).optional(),
+  effort: z.enum(['low', 'medium', 'high']).optional(),
   images: z
     .array(z.object({ mimeType: z.string(), dataBase64: z.string() }))
     .max(4)
@@ -69,9 +79,23 @@ export function registerAgentRoutes(
     sql: Sql;
     workspaceRoot: string;
     requireAuth: (req: FastifyRequest) => Promise<User>;
+    /** 发布链路。与 CLI / MCP 用的是同一个实例，发布语义只有一份。 */
+    deployService: { deploy: (input: DeployInput) => Promise<DeployOutcome> };
+    /**
+     * 这个人此刻有没有一块活着的实时预览（创建屏开着就有，手机壳没有）。
+     *
+     * 查的是**服务端的真实状态**，不收前端的声明——前端能撒谎，而这句话会
+     * 变成系统提示里的一段话（「你每写完一个文件它就刷新一次」）。对一个
+     * 根本没有预览的会话说这句，模型会按"他正看着"去安排顺序，甚至回话里
+     * 提"你右边应该已经能看到了"，而那边根本没有那块东西。
+     *
+     * 不传等同于没有——单测与不接预览的部署都走这一支。
+     */
+    hasLivePreview?: (userId: string) => boolean;
   },
 ): void {
-  const { sql, workspaceRoot, requireAuth } = deps;
+  const { sql, workspaceRoot, requireAuth, deployService } = deps;
+  const hasLivePreview = deps.hasLivePreview ?? (() => false);
 
   // NOTE(多实例)：会话与待确认 token 都在内存。横向扩容时必须外置到
   // Redis 或数据库，否则用户的下一个请求打到另一个实例就找不到会话了。
@@ -151,7 +175,10 @@ export function registerAgentRoutes(
 
     let engine;
     try {
-      engine = createEngine();
+      engine = createEngine(process.env, {
+        model: input.model,
+        effort: input.effort as ReasoningEffort | undefined,
+      });
     } catch {
       throw new IspaceError(
         ERROR_CODES.ORCHESTRATOR_UNAVAILABLE,
@@ -174,6 +201,7 @@ export function registerAgentRoutes(
         session: new AgentSession({
           engine, toolCtx: makeToolCtx(user, req.ip),
           connectors: await availableConnectors(user.id),
+          livePreview: hasLivePreview(user.id),
         }),
         userId: user.id,
         touched: Date.now(),
@@ -199,6 +227,7 @@ export function registerAgentRoutes(
       engine,
       toolCtx: makeToolCtx(user, req.ip),
       connectors: await availableConnectors(user.id),
+      livePreview: hasLivePreview(user.id),
       onEvent: send,
     });
     // 继承历史（除 system，构造时已有）
@@ -259,6 +288,58 @@ export function registerAgentRoutes(
     };
   });
 
+  /**
+   * 确认并真的发布。
+   *
+   * ┌─ 为什么 /confirm 之外还要这一条 ──────────────────────────────────┐
+   * │ /confirm 只是「人点头了」：它核销 token、写一条审计，然后回一句  │
+   * │ 「请用 ai-deploy up 或 MCP 的 deploy 工具把工作区发到 /xxx」。在  │
+   * │ 手机壳里这句话说得通——那边的人本来就是回电脑上接着用 CLI 的。    │
+   * │                                                                   │
+   * │ 改版稿的「创建」屏不是这样：人在浏览器里说一句话、看着预览、点   │
+   * │ 「发布到我的空间」，这一下之后页面就该在线。中间再让他去装个 CLI  │
+   * │ 等于这一屏没做完。所以这里把最后一步接上：核销 token，然后把工作 │
+   * │ 区当产物走一遍正规发布链路（扫描、base path 校验、注入 chrome、  │
+   * │ 落 release、切软链），和 CLI 发布一字不差。                       │
+   * └───────────────────────────────────────────────────────────────────┘
+   *
+   * 二次确认没有被绕过：token 仍然由 Agent 的 request_deploy 发起、由人这
+   * 一次点击核销，一次性。少掉的只是「换个工具再发一遍」。
+   */
+  app.post(`${API_BASE}/agent/publish`, async (req) => {
+    const user = await requireAuth(req);
+    const { confirmToken, name } = z
+      .object({ confirmToken: z.string().min(1), name: z.string().max(32).optional() })
+      .parse(req.body);
+
+    const p = pending.get(confirmToken);
+    if (!p) {
+      throw new IspaceError(
+        ERROR_CODES.NOT_FOUND,
+        '确认令牌无效或已过期（有效期 10 分钟）。请让 Agent 重新发起发布请求。',
+      );
+    }
+    if (p.userId !== user.id) {
+      throw new IspaceError(ERROR_CODES.NOT_OWNER, '这个发布请求不属于你');
+    }
+    pending.delete(confirmToken);
+
+    /*
+      产物就是这个人的工作区。Agent 的文件工具只能写在这里面
+      （makeToolCtx 的 ws.root），所以"工作区"与"他刚做出来的东西"是同一
+      回事；deploy 会把它拷进暂存目录再发，不动原件。
+    */
+    const outcome = await deployService.deploy({
+      user,
+      slug: p.site,
+      srcDir: join(workspaceRoot, user.username),
+      name,
+      source: 'agent',
+      clientIp: req.ip,
+    });
+    return { ...outcome, summary: p.summary };
+  });
+
   // ── 待确认列表（手机端拉取）──────────────────────────────────────
   app.get(`${API_BASE}/agent/pending`, async (req) => {
     const user = await requireAuth(req);
@@ -272,6 +353,16 @@ export function registerAgentRoutes(
     let configured = true;
     let model = '';
     try { model = createEngine().model; } catch { configured = false; }
-    return { configured, model, activeSessions: sessions.size };
+    /*
+      模型清单与思考档位都来自环境变量，和「配没配通道」是两件事：没配通道
+      时清单仍然答得出来（前端据此知道菜单该列什么），只是点了会报没配。
+    */
+    return {
+      configured,
+      model,
+      models: configuredModels(),
+      effort: effortEnabled(),
+      activeSessions: sessions.size,
+    };
   });
 }

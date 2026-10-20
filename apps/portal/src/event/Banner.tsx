@@ -3,7 +3,7 @@ import {
   CURRENT_EVENT_SLUG, EVENT_PATH,
   type EventPhase, type EventResponse,
 } from '@ispace/contracts';
-import { Button } from '@ispace/ui';
+import { Button, Icon } from '@ispace/ui';
 import { api } from '../api';
 import { BitField } from './BitField';
 import { EVENT_JUDGES } from './judges';
@@ -45,9 +45,16 @@ export function EventBanner() {
       onClick={() => go()}
       style={{
         position: 'relative', overflow: 'hidden',
-        background: 'var(--tabby-orange)', borderRadius: 'var(--radius-16)',
-        padding: '24px 28px', marginTop: 'var(--space-12)',
-        display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
+        /*
+          这里的橙是写死的 #fb923c，不走 --tabby-orange。
+
+          改版稿把品牌橙加深成了 #ee5c2a，但 1024 这条腰带在稿上仍是原来的
+          浅橙——它是活动自己的颜色，和平台的品牌色是两回事。跟着 token 走
+          的话，活动腰带会在改版当天悄悄变色，而设计稿里它没有变。
+        */
+        background: '#fb923c', borderRadius: 24,
+        padding: '22px 28px', marginTop: 'var(--space-8)',
+        display: 'flex', alignItems: 'center', gap: 36, flexWrap: 'wrap',
         cursor: 'pointer',
       }}
     >
@@ -64,8 +71,9 @@ export function EventBanner() {
       {/* 出血的巨大 1024。纯装饰，不可选中也不吃点击。 */}
       <span aria-hidden="true" className="mono" style={{
         position: 'absolute', right: -28, top: '50%', transform: 'translateY(-50%)',
-        fontWeight: 800, fontSize: 210, lineHeight: 1, letterSpacing: '-.06em',
-        color: 'var(--tabby-orange-hover)',
+        fontWeight: 800, fontSize: 200, lineHeight: 1, letterSpacing: '-.06em',
+        /* 同上：水印是腰带自己那块橙的深一档，不跟品牌 token。 */
+        color: '#f97316',
         whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
       }}>1024</span>
 
@@ -116,6 +124,63 @@ export function EventBanner() {
           onClick={(e) => { e.stopPropagation(); go(copy.hash); }}
         >{copy.btn}</Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 侧栏底部那张 1024 卡（改版稿 §侧栏）。
+ *
+ * 和上面那条腰带是同一个入口的另一个形状：窄处放不下一条横幅，于是点阵
+ * 摞成两行、文案压到三行。阶段、日期、按钮文字仍然来自同一个 bannerCopy，
+ * 所以两处永远说同一件事——不会出现腰带写「去投票」而侧栏还写「看名单」。
+ *
+ * 侧栏收起（72px）时不渲染：这张卡没有"只剩一个图标"的形态，硬塞会把
+ * 收起后的侧栏撑开。
+ */
+export function EventSideCard() {
+  const [data, setData] = useState<EventResponse | null>(null);
+
+  useEffect(() => {
+    void api.event(CURRENT_EVENT_SLUG).then(setData).catch(() => setData(null));
+  }, []);
+
+  if (!data || data.event.phase === 'ended') return null;
+  const copy = bannerCopy(data);
+  const award = data.event.config.deadlines.award;
+
+  return (
+    <div
+      onClick={() => { location.href = EVENT_PATH + (copy.hash ?? ''); }}
+      style={{
+        margin: '0 12px 12px', padding: 16, borderRadius: 18,
+        background: '#fb923c', color: '#181715', cursor: 'pointer',
+        display: 'flex', flexDirection: 'column', gap: 12,
+      }}
+    >
+      <EventKeyframes />
+      <DotMatrix size={11} gap={3} radius={2} palette={DOTS_ON_ORANGE} stacked />
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{
+          fontSize: 22, fontWeight: 900, lineHeight: 1.1,
+          letterSpacing: '-.02em', whiteSpace: 'nowrap',
+        }}>
+          程序员节<Caret color="#181715" />
+        </span>
+        <span style={{ fontSize: 14, fontWeight: 800 }}>
+          AI 创新赛 · {PHASE_LABEL[data.event.phase]}
+        </span>
+      </span>
+      <span className="mono" style={{ fontSize: 13, fontWeight: 600, color: 'rgba(24,23,21,.78)' }}>
+        {md(award)} 上午 现场路演
+      </span>
+      <span style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+        height: 36, borderRadius: 10, background: '#181715', color: '#ffffff',
+        fontSize: 13, fontWeight: 600,
+      }}>
+        {copy.btn}<Icon name="chevRight" size={15} />
+      </span>
     </div>
   );
 }

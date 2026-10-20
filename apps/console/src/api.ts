@@ -68,6 +68,20 @@ export interface DeviceStats {
   devicesByRelease: Record<string, number>;
 }
 
+/** 别人上架到市场的后端。与自己的 Backend 分开：它少一半字段，多一个 installed。 */
+export interface BackendListing {
+  id: string; backend_id: string; published_at: string; install_count: number;
+  category: string | null; name: string; status: string; has_cover: boolean;
+  owner_username: string; owner_name: string;
+  installed: boolean; mine: boolean;
+  visit_count: number;
+}
+
+export interface InstalledBackend {
+  id: string; name: string; status: string; url_path: string; has_cover: boolean;
+  owner_username: string; owner_name: string;
+}
+
 export interface Backend {
   id: string; ownerId: string; appId: string | null; name: string;
   sourceRepo: string | null; cpuLimit: number; memLimitMb: number;
@@ -352,6 +366,14 @@ export const api = {
   endUsers: () => req<{ table: string | null; count: number | null }>('/data/end-users'),
   releases: (slug: string) => req<{ releases: Release[]; total: number }>(`/apps/${slug}/releases`),
   /** 删除页面及其全部历史版本。不可恢复——调用处必须先确认。 */
+  /**
+   * 下架 / 重新上线。不是删除：版本和数据都留着，改回 running 就又能打开。
+   * 下架会同时把它从探索里撤掉（服务端做），免得留下一张点进去 404 的卡。
+   */
+  setAppStatus: (slug: string, status: 'running' | 'stopped') =>
+    req<{ ok: boolean; status: string }>(`/apps/${slug}/status`, {
+      method: 'POST', body: JSON.stringify({ status }),
+    }),
   deleteApp: (slug: string) =>
     req<{ slug: string; name: string; releases: number; freedBytes: number; filesRemoved: boolean }>(
       `/apps/${slug}`, { method: 'DELETE' },
@@ -510,6 +532,18 @@ export const api = {
     req<{ listing: unknown }>('/marketplace', { method: 'POST', body: JSON.stringify({ appId }) }),
   unpublishFromMarket: (appId: string) =>
     req<{ ok: boolean }>(`/marketplace/${appId}`, { method: 'DELETE' }),
+
+  /*
+    后端的市场。改版前它和页面的市场一起挂在门户的「创意市场」屏上；新稿的
+    「探索」只收页面（一面能点开看的墙，后端没有可看的东西），所以这一组
+    挪到了控制台的「后端与数据」——人来这一屏本来就是为了后端的事。
+  */
+  backendMarketplace: () => req<{ listings: BackendListing[] }>('/marketplace/backends'),
+  installBackendFromMarket: (backendId: string) =>
+    req<{ ok: boolean }>(`/marketplace/backends/${backendId}/install`, { method: 'POST' }),
+  uninstallBackendFromMarket: (backendId: string) =>
+    req<{ ok: boolean }>(`/marketplace/backends/${backendId}/install`, { method: 'DELETE' }),
+  installedBackends: () => req<{ installed: InstalledBackend[] }>('/installed/backends'),
 
   tokens: () => req<{ tokens: AccessToken[] }>('/tokens'),
   createToken: (name: string) =>

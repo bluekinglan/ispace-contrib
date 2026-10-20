@@ -27,13 +27,26 @@ export const RESERVED_PATHS = [
   '_',
   'admin',
   'api',
+  /*
+    改版稿新增的四条平台顶层路径。
+
+    /app/{user}/{slug} 是「应用详情」那一屏——注意它恰好长成
+    `/{user}/{app}/` 的样子，不排除的话网关会去 /srv/sites/app/{user}/
+    找文件（和 1024 同一个坑）。其余三条是单段路径，网关的 @userapp
+    要求两段，本不会被误判；列进来是为了挡住同名用户——有人叫 mine，
+    /mine 到了 portal 就分不清他是「我的作品」还是一个人。
+  */
+  'app',
   'assets',
   'console',
+  'create',
   'deploy',
   'dist',
+  'foryou',
   'health',
   'login',
   'logout',
+  'mine',
   'platform',
   'reset',
   'static',

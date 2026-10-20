@@ -33,6 +33,7 @@ import {
   provisionUserSchema,
   refreshStorageUsage,
   runMigrations,
+  setAppStatus,
   writeAudit,
   type Sql,
 } from '@ispace/db';
@@ -60,6 +61,7 @@ import { startEventFinalistsJob } from './jobs/event-finalists.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerTokenRoutes, findUserByAccessToken } from './routes/tokens.js';
 import { registerMarketplaceRoutes } from './routes/marketplace.js';
+import { registerSocialRoutes } from './routes/social.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { registerDataSpaceRoutes } from './routes/dataspace.js';
 import { registerAccountRoutes } from './routes/account.js';
@@ -69,6 +71,10 @@ import { registerSvcProxy } from './routes/svc-proxy.js';
 import { registerConnectorRoutes } from './routes/connectors.js';
 import { registerVisitRoutes } from './routes/visits.js';
 import { registerEventRoutes } from './routes/events.js';
+import { registerPreviewRoutes } from './routes/preview.js';
+import { PreviewSessions } from './services/preview-session.js';
+import { makePreviewAuth } from './services/preview-auth.js';
+import { detectKind } from './services/preview-kind.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -826,6 +832,49 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     }
   });
 
+  /**
+   * 下架 / 重新上线一个页面。
+   *
+   * 改版稿「页面与版本」那一屏右下角的「下架这个页面」。它不是删除：
+   * status='stopped' 之后网关一律 404（见 routes/authz.ts），但 release
+   * 和数据都还在，改回 running 就又能打开了。
+   *
+   * 下架同时从探索里撤掉——留着一张点进去 404 的卡片，比没有这张卡更糟。
+   * 重新上线**不会**自动上架：当初要不要给全公司看是另一个决定，
+   * 下架期间作者可能已经改了主意。
+   */
+  app.post(`${API_BASE}/apps/:slug/status`, async (req) => {
+    const user = await requireAuth(req);
+    const { slug } = req.params as { slug: string };
+    const raw = (req.body ?? {}) as { status?: string };
+    if (raw.status !== 'running' && raw.status !== 'stopped') {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, 'status 只能是 running 或 stopped');
+    }
+    const status = raw.status;
+
+    const a = await findApp(sql, user.id, slug);
+    if (!a) throw new IspaceError(ERROR_CODES.NOT_FOUND, `没有找到应用 /${slug}`);
+    /*
+      没发布过的页面谈不上上下架：它的 status 是 building，强行改成 running
+      会让列表显示"运行中"，而那个地址其实什么都没有。
+    */
+    if (status === 'running' && !a.currentReleaseId) {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '这个页面还没有发布过任何版本，没法上线。');
+    }
+
+    await setAppStatus(sql, a.id, status);
+    if (status === 'stopped') {
+      await sql`DELETE FROM ispace.marketplace_listings WHERE app_id = ${a.id}`;
+      await sql`DELETE FROM ispace.app_installs WHERE app_id = ${a.id} AND source = 'marketplace'`;
+    }
+    await writeAudit(sql, {
+      actorId: user.id, action: status === 'stopped' ? 'app.stop' : 'app.resume',
+      targetType: 'app', targetId: a.id, source: 'console', result: 'success',
+      metadata: { slug, status }, ip: req.ip,
+    });
+    return { ok: true, status };
+  });
+
   app.post(`${API_BASE}/apps/:slug/rollback`, async (req) => {
     const user = await requireAuth(req);
     const { slug } = req.params as { slug: string };
@@ -949,11 +998,18 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     const user = await requireAuth(req);
     const q = req.query as { limit?: string; offset?: string };
     // 员工只看自己的，管理员看全部
-    return listAudit(sql, {
+    const r = await listAudit(sql, {
       ...(user.role === 'admin' ? {} : { actorId: user.id }),
       limit: Math.min(Number(q.limit ?? 50), 200),
       offset: Number(q.offset ?? 0),
     });
+    /*
+      repos 那边这个字段叫 blocked，契约（auditListResponseSchema）里叫
+      blockedCount。原样端出去的结果是控制台那颗「被阻断」徽标一直显示
+      undefined——没人看出来，因为它正好长得像个还没加载完的占位。
+      在这里改名，以契约为准。
+    */
+    return { logs: r.logs, total: r.total, blockedCount: r.blocked };
   });
 
   // ── 保留字（供前端注册表单即时校验，避免两处硬编码）──────────────
@@ -985,6 +1041,9 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
   // ── 创意市场 ────────────────────────────────────────────────────
   registerMarketplaceRoutes(app, { sql, requireAuth });
 
+  // ── 社交面：喜欢、评论、关注、动态、兴趣（改版稿 + 移动端 v2）────
+  registerSocialRoutes(app, { sql, requireAuth });
+
   // ── 访问量：shell.js 每次静态页加载时打一下（后端服务的计数在 svc-proxy 里）
   registerVisitRoutes(app, { sql });
 
@@ -1003,8 +1062,24 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── 连接器：外部 API 的凭据保管与出站代理 ──────────────────────
   // 与上面的数据空间是一对：那条给数据库，这条给外部 API。
-  registerConnectorRoutes(app, { sql, requireAuth, requireAdmin });
+  /*
+    预览会话由 connectors 与 preview 两处共用一份：取数端点按令牌找人，
+    文件端点按 id 找工作区，两者必须是同一张表，否则令牌会凭空多活一段。
+  */
+  const previewSessions = new PreviewSessions();
+  const WORKSPACE_ROOT = process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces';
+  registerConnectorRoutes(app, {
+    sql, requireAuth, requireAdmin,
+    previewAuth: makePreviewAuth(previewSessions, sql),
+  });
   registerOverviewRoutes(app, { sql, requireAuth });
+
+  // ── 工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）────
+  registerPreviewRoutes(app, {
+    requireAuth,
+    workspaceRoot: WORKSPACE_ROOT,
+    sessions: previewSessions,
+  });
 
   // ── 静态页访问鉴权（Caddy forward_auth 的落点）────────────────────
   // 补的是一个真实存在过的越权：Caddy 此前直出文件，不带任何鉴权。
@@ -1050,8 +1125,20 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── Coding Agent ────────────────────────────────────────────────
   registerAgentRoutes(app, {
-    sql, requireAuth,
-    workspaceRoot: process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces',
+    sql, requireAuth, deployService,
+    workspaceRoot: WORKSPACE_ROOT,
+    /*
+      创建屏开着预览、**而且这个工作区确实在渲染**时，才告诉模型"用户正看着"。
+
+      光有会话不够：带服务端或要构建的项目右栏摆的是一页说明，不是页面
+      （services/preview-kind.ts）。那种情况下还说「你每写完一个文件它就
+      刷新一次」，模型会照着一个根本不存在的反馈回路去安排工作。
+    */
+    hasLivePreview: (userId) => {
+      const s = previewSessions.sessionFor(userId);
+      if (!s) return false;
+      return detectKind(join(WORKSPACE_ROOT, s.username)).kind === 'static';
+    },
   });
 
   // ── 治理定时任务 ────────────────────────────────────────────────

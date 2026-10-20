@@ -80,10 +80,57 @@ export function dots1024(palette: { on: [string, string, string]; off: string })
   return out;
 }
 
-/** 深色点阵（橙底上用），移动端活动页的配色。 */
+/**
+ * 「1024」摞成两行两列，给窄处用（改版稿侧栏那张卡）。
+ *
+ * 13 列 = 1 + 5 + 1 + 5 + 1：两个字各 5 列，左右和中间各留一列空。上下也
+ * 各留一行空，否则贴着卡片圆角会显得点阵被切了一刀。
+ *
+ * 与横版共用字模和那套确定式深浅，所以两处的 1024 是同一个东西——侧栏那张
+ * 卡是探索页那条腰带的另一个形状，不是另一个记号。
+ */
+export const DOT_COLS_STACKED = 13;
+
+export function dots1024Stacked(palette: { on: [string, string, string]; off: string }): Dot[] {
+  const lines: (boolean[] | null)[] = [];
+  for (const pair of [['1', '0'], ['2', '4']]) {
+    const rows: boolean[][] = [];
+    for (let r = 0; r < 7; r += 1) {
+      const row: boolean[] = [false];
+      for (const ch of pair) {
+        for (let c = 0; c < 5; c += 1) row.push(GLYPHS[ch]![r]![c] === '#');
+        row.push(false);
+      }
+      rows.push(row);
+    }
+    if (lines.length) lines.push(null);
+    lines.push(...rows);
+  }
+
+  const grid: (boolean[] | null)[] = [null, ...lines, null];
+  const out: Dot[] = [];
+  grid.forEach((row, r) => {
+    for (let c = 0; c < DOT_COLS_STACKED; c += 1) {
+      const on = row?.[c] ?? false;
+      const s = (r * 31 + c * 17) % 7;
+      out.push({
+        bg: on ? (s < 3 ? palette.on[0] : s < 5 ? palette.on[1] : palette.on[2]) : palette.off,
+        delay: `${c * 40 + r * 12}ms`,
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * 深色点阵（橙底上用），移动端活动页的配色。
+ *
+ * 墨色跟着改版稿换成了带褐的 #181715 一族——1024 的橙底没变，但底上的
+ * 深色若还是原来带蓝的 #001217，两种"黑"同屏会显出一层脏。
+ */
 export const DOTS_ON_ORANGE = {
-  on: ['#000a0d', '#001217', 'rgba(0,18,23,.84)'] as [string, string, string],
-  off: 'rgba(0,18,23,.18)',
+  on: ['#0d0c0b', '#181715', 'rgba(24,23,21,.84)'] as [string, string, string],
+  off: 'rgba(24,23,21,.18)',
 };
 
 /** 大屏背景墙的配色：同样是橙底，但格子大、对比略低。 */
@@ -92,13 +139,15 @@ export const DOTS_ON_SCREEN = {
   off: 'rgba(28,31,35,.18)',
 };
 
-export function DotMatrix({ size, gap, palette, radius, solid = false }: {
+export function DotMatrix({ size, gap, palette, radius, solid = false, stacked = false }: {
   size: number;
   gap: number;
   palette: { on: [string, string, string]; off: string };
   radius: number;
   /** 让每个方块都成为 confetti-pile 的地面，雪会一格一格堆在上面。 */
   solid?: boolean;
+  /** 两行两列的摞法，给侧栏这种窄处用。 */
+  stacked?: boolean;
 }) {
   return (
     <div
@@ -106,11 +155,11 @@ export function DotMatrix({ size, gap, palette, radius, solid = false }: {
       aria-label="1024"
       style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(${DOT_COLS}, ${size}px)`,
+        gridTemplateColumns: `repeat(${stacked ? DOT_COLS_STACKED : DOT_COLS}, ${size}px)`,
         gap,
       }}
     >
-      {dots1024(palette).map((d, i) => (
+      {(stacked ? dots1024Stacked(palette) : dots1024(palette)).map((d, i) => (
         <span
           key={i}
           data-solid={solid ? '0' : undefined}

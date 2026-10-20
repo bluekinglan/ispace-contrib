@@ -12,6 +12,32 @@
  *
  * 类名与数值照搬设计稿的 `ev-*`，改动只在于把写死的颜色换成平台 token。
  */
+/**
+ * 1024 自己的那支橙。
+ *
+ * 改版稿把品牌橙加深成了 #ee5c2a，而大屏（Screen）、颁奖（Award）、探索页
+ * 那条腰带（Banner）里的橙本来就写死着原来的 #fb923c——它是这场活动的颜色，
+ * 不是品牌的一部分。活动页若跟着品牌 token 走，同一场 1024 在四个屏上会是
+ * 两种橙，而且活动页自己的点阵背景（BitField 用的就是 249,115,22）当场就对
+ * 不上。
+ *
+ * 所以在活动这几屏把三个变量重新定义一遍：页面里原有的 var(--tabby-orange)
+ * 一处都不用改。写 :root 而不是某个类，是因为这几条路由整屏都是活动，弹层、
+ * 浮层是最外层的兄弟节点，够不着页面里的某个 class。夜间那一条要单列出来，
+ * 否则 :root[data-theme="dark"] 的特指度更高，夜里的 hover 还是品牌色。
+ */
+export function EventOrange() {
+  return (
+    <style>{`
+:root, :root[data-theme="dark"] {
+  --tabby-orange: #fb923c;
+  --tabby-orange-hover: #f97316;
+  --tabby-orange-subtle: rgba(251, 146, 60, .1);
+}
+`}</style>
+  );
+}
+
 export function EventLayoutStyles() {
   return (
     <style>{`
