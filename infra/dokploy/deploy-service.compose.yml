@@ -64,6 +64,11 @@ services:
       # 不配就当平台不会生图——generate_image 工具不挂，提示里也不提。
       AGENT_IMAGE_MODELS: ${AGENT_IMAGE_MODELS:-}
       AGENT_IMAGE_TIMEOUT_MS: ${AGENT_IMAGE_TIMEOUT_MS:-}
+      # 单次回复的 token 上限。默认 32000——推理型模型先想后说，给小了它把
+      # 预算全烧在 reasoning 上，content 和 tool_calls 都是空的，一轮下来
+      # 什么都没发生还不报错。
+      AGENT_MAX_TOKENS: ${AGENT_MAX_TOKENS:-}
+      AGENT_TIMEOUT_MS: ${AGENT_TIMEOUT_MS:-}
       # 语音转写兜底。缺失时 /voice/transcribe 返回 NOT_IMPLEMENTED，
       # 手机端据此保持置灰，不静默失败。
       STEP_API_KEY: ${STEP_API_KEY:-}

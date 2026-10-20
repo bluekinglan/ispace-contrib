@@ -110,12 +110,21 @@ export class OpenAiCompatibleEngine implements Engine {
           }
         : {}),
       stream: true,
-      max_tokens: this.cfg.maxTokens ?? 2048,
+      max_tokens: this.cfg.maxTokens ?? 32_000,
       ...(this.cfg.effort ? { reasoning_effort: this.cfg.effort } : {}),
     };
 
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), this.cfg.timeoutMs ?? 120_000);
+    /*
+      超时放宽到 5 分钟。
+
+      推理型模型写一整页 HTML 本来就要几分钟（实测 glm-5.3-flash 在 120 秒
+      时被掐断，而它只是还没写完）。掐断的代价不只是这一轮白跑：那一刻模型
+      已经在生成了，token 照样计费。
+    */
+    const timeoutMs = this.cfg.timeoutMs ?? 300_000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
     input.signal?.addEventListener('abort', () => ctl.abort());
 
     let res: Response;
@@ -185,6 +194,20 @@ export class OpenAiCompatibleEngine implements Engine {
           }
         }
       }
+    } catch (e) {
+      /*
+        读流读到一半断了。最常见的就是上面那个超时——直接把 AbortError 抛
+        出去，上层看到的是一句英文的 "This operation was aborted"，没人知道
+        那是"它还在写、被我们掐了"。这里翻译成一句能照着做的话。
+      */
+      yield {
+        type: 'error',
+        message: timedOut
+          ? `模型 ${Math.round(timeoutMs / 1000)} 秒还没说完，这一轮停了。`
+            + `可以把需求拆小一点再说，或者换一个快些的模型。`
+          : `模型连接中断：${e instanceof Error ? e.message : String(e)}`,
+      };
+      return;
     } finally {
       clearTimeout(timer);
       reader.releaseLock();
@@ -351,7 +374,19 @@ export function createEngine(
     baseUrl,
     apiKey,
     model: picked.id,
-    maxTokens: numEnv(env.AGENT_MAX_TOKENS, 2048),
+    /*
+      上限给得大，是因为**推理型模型先想后说**。
+
+      原来是 2048——那是按"改两行代码"估的。实测这个网关上
+      deepseek-flash / glm-5.3 / gpt-6-astra 都把这 2048 全用在 reasoning 上，
+      于是 content 和 tool_calls 都是空的，一轮下来什么都没发生、也不报错：
+      界面上就是"没反应"。把上限提到 32000 之后，同一个模型同一句话立刻
+      正常写文件。
+
+      而且本来也该大：这个 Agent 的典型动作是一次 write_file 写出一整页
+      HTML（实测 13~17 KB），2048 个 token 连写完都不够。
+    */
+    maxTokens: numEnv(env.AGENT_MAX_TOKENS, 32_000),
     timeoutMs: numEnv(env.AGENT_TIMEOUT_MS, 120_000),
     ...(effortEnabled(env) && choice.effort ? { effort: choice.effort } : {}),
   });
