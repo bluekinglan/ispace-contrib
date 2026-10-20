@@ -471,6 +471,25 @@ describe('生图', () => {
     expect(seen.every((b) => !('size' in b))).toBe(true);
   });
 
+  it('agnes 系按它官方文档的字段发，别家不加', async () => {
+    const seen: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', async (_u: string, init: { body: string }) => {
+      seen.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({ data: [{ b64_json: png.toString('base64') }] }) };
+    });
+    const gen = createImageGenerator({
+      ...env, AGENT_IMAGE_MODELS: 'agnes-image-2.5-flash|甲, gpt-image-2.5-flare|乙',
+    })!;
+
+    await gen({ prompt: 'x', model: 'agnes-image-2.5-flash' });
+    /* size 必填且是档位名，不是 1024x1024 */
+    expect(seen[0]).toMatchObject({ size: '2K', ratio: '1:1', return_base64: true });
+
+    await gen({ prompt: 'x', model: 'gpt-image-2.5-flare' });
+    /* gpt-image 系发了 size 也白发，多一个字段只是多一个被拒的面 */
+    expect(seen[1]).not.toHaveProperty('size');
+  });
+
   it('url 形态也收：换个网关不至于整条断', async () => {
     vi.stubGlobal('fetch', async (u: string) => (
       u.includes('/images/generations')

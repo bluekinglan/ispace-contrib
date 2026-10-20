@@ -90,7 +90,7 @@ export function createImageGenerator(
           authorization: `Bearer ${apiKey}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ model: picked.id, prompt, n: 1 }),
+        body: JSON.stringify({ model: picked.id, prompt, n: 1, ...dialectFor(picked.id) }),
         signal: ctl.signal,
       });
 
@@ -141,6 +141,29 @@ export function createImageGenerator(
       clearTimeout(timer);
     }
   };
+}
+
+/**
+ * 不同家的生图接口要的字段不一样。
+ *
+ * ┌─ 为什么要分家，而不是统一发一套 ────────────────────────────────────┐
+ * │ gpt-image 系：`size` 发了也白发（实测四种取值回来的尺寸都不一样且都  │
+ * │ 不等于请求值），多发一个字段只是多一个被拒的面，所以什么都不加。    │
+ * │                                                                      │
+ * │ agnes-image 系：官方文档里 `size` 是**必填**，而且取 1K/2K/3K/4K 这   │
+ * │ 种档位名，不是 1024x1024；宽高比是另一个字段 `ratio`；要 base64 得发  │
+ * │ 顶层 `return_base64`。不发 size 它会报参数错。                       │
+ * │ 见 https://wiki.agnes-ai.com/en/docs/agnes-image-25-flash.md         │
+ * │                                                                      │
+ * │ ⚠️ agnes 这一支**没能在公司网关上实测**：vibe.soyoung.com 的          │
+ * │ /images/generations 在路由那一层就拒了它（「images endpoint requires  │
+ * │ an image model」），换什么参数都一样，/chat/completions 与 /responses │
+ * │ 则是 502。等网关把这个模型登记成图片模型之后，这一支要再验一遍。     │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+function dialectFor(id: string): Record<string, unknown> {
+  if (!id.startsWith('agnes-image')) return {};
+  return { size: '2K', ratio: '1:1', return_base64: true };
 }
 
 /** 按 MIME 给个扩展名。认不出来就按 png——网关出的就是 png。 */
