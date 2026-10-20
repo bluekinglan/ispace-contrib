@@ -64,9 +64,14 @@ export function registerConnectorRoutes(
     sql: Sql;
     requireAuth: (req: FastifyRequest) => Promise<User>;
     requireAdmin: (req: FastifyRequest) => Promise<User>;
+    /**
+     * 预览取数的身份解析。给了才注册 /preview-data/connect（见下方那一段）。
+     * 由 services/preview-auth.ts 提供——它只认 Bearer 令牌，完全不看 cookie。
+     */
+    previewAuth?: (req: FastifyRequest) => Promise<User>;
   },
 ): void {
-  const { sql, requireAuth, requireAdmin } = deps;
+  const { sql, requireAuth, requireAdmin, previewAuth } = deps;
 
   /**
    * 内网目标是否放行。默认关闭。
@@ -189,12 +194,72 @@ export function registerConnectorRoutes(
    *   3. 地址合法性在 socket 的 lookup 钩子里判——判过的地址就是连过去的
    *      那一个，没有"先检查后使用"的缝。见 outbound-guard.ts。
    */
-  app.all(`${API_BASE}/connect/:slug/*`, connectHandler);
+  app.all(`${API_BASE}/connect/:slug/*`, (req, reply) => connectHandler(req, reply, requireAuth));
   // 没有子路径的形态：/connect/{slug} 直接打 base_url 本身
-  app.all(`${API_BASE}/connect/:slug`, connectHandler);
+  app.all(`${API_BASE}/connect/:slug`, (req, reply) => connectHandler(req, reply, requireAuth));
 
-  async function connectHandler(req: FastifyRequest, reply: FastifyReply) {
-    const me = await requireAuth(req);
+  /**
+   * 预览里的取数（方案 §5.2）。与上面那两条**同一个 handler**，只换了
+   * 「这次请求是谁」的解析方式。
+   *
+   * ┌─ 为什么非要另开一条路径 ────────────────────────────────────────┐
+   * │ 预览页面跑在 sandbox 的 opaque origin 里（没有 allow-same-origin），│
+   * │ 浏览器不会给它带会话 cookie —— 直接调 /connect/* 必然 401。      │
+   * │ 所以要一条认 Bearer 的路。                                       │
+   * │                                                                  │
+   * │ 但**不能**把 Bearer 加到 /connect/* 上了事：那条路同时认 cookie， │
+   * │ 而下面要为 opaque origin 开 CORS。两件事凑在一起就是个大洞——见   │
+   * │ 紧接着的那段说明。拆成两条路径，各自只认一种凭据，才互不污染。    │
+   * └──────────────────────────────────────────────────────────────────┘
+   *
+   * **只收 GET**：令牌是只读的。预览是「看看页面长什么样、数据取不取得到」，
+   * 不是在预览里改用户的真实数据——那种事只该发生在发布后的正式页面上。
+   */
+  if (previewAuth) {
+    const PREVIEW = `${API_BASE}/preview-data/connect`;
+
+    /*
+      ⚠️ 这组头是整个预览取数的安全支点，改之前先把这段读完。
+
+      `Origin: null` **不是"我们的预览"的标识**——任何网站开一个
+      `<iframe sandbox="allow-scripts">`，里面发出的请求 Origin 都是 null。
+      所以一旦这条路径既接受 null origin、又接受 cookie 凭据，那么随便哪个
+      外站放一个沙箱 iframe，就能带着用户的平台会话打我们的接口。
+
+      两件事因此必须互斥，且两边都要硬：
+        - 开了 null origin → **绝不能**有 Access-Control-Allow-Credentials
+        - 凭据只认 Bearer  → previewAuth 完全不读 cookie
+
+      Bearer 只有父窗口经 postMessage 递得进来（preview-shim.ts），外站拿不到。
+      preview-token.test.ts 里有一条用例专门钉这件事：带 cookie 不带 Bearer
+      的请求在这条路径上必须 401。
+    */
+    const cors = (reply: FastifyReply) => reply
+      .header('access-control-allow-origin', 'null')
+      .header('access-control-allow-headers', 'authorization, content-type')
+      .header('access-control-allow-methods', 'GET, OPTIONS')
+      .header('vary', 'origin');
+
+    // 带 Authorization 头的跨源请求一定先发预检，没有这条就全被浏览器挡下
+    const preflight = async (_req: FastifyRequest, reply: FastifyReply) =>
+      cors(reply).status(204).send();
+    app.options(`${PREVIEW}/:slug`, preflight);
+    app.options(`${PREVIEW}/:slug/*`, preflight);
+
+    const previewConnect = (req: FastifyRequest, reply: FastifyReply) => {
+      cors(reply);
+      return connectHandler(req, reply, previewAuth);
+    };
+    app.get(`${PREVIEW}/:slug`, previewConnect);
+    app.get(`${PREVIEW}/:slug/*`, previewConnect);
+  }
+
+  async function connectHandler(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    who: (req: FastifyRequest) => Promise<User>,
+  ) {
+    const me = await who(req);
     const { slug } = req.params as { slug: string };
     const rest = (req.params as Record<string, string>)['*'] ?? '';
 

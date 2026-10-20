@@ -71,6 +71,9 @@ import { registerSvcProxy } from './routes/svc-proxy.js';
 import { registerConnectorRoutes } from './routes/connectors.js';
 import { registerVisitRoutes } from './routes/visits.js';
 import { registerEventRoutes } from './routes/events.js';
+import { registerPreviewRoutes } from './routes/preview.js';
+import { PreviewSessions } from './services/preview-session.js';
+import { makePreviewAuth } from './services/preview-auth.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -1058,8 +1061,23 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   // ── 连接器：外部 API 的凭据保管与出站代理 ──────────────────────
   // 与上面的数据空间是一对：那条给数据库，这条给外部 API。
-  registerConnectorRoutes(app, { sql, requireAuth, requireAdmin });
+  /*
+    预览会话由 connectors 与 preview 两处共用一份：取数端点按令牌找人，
+    文件端点按 id 找工作区，两者必须是同一张表，否则令牌会凭空多活一段。
+  */
+  const previewSessions = new PreviewSessions();
+  registerConnectorRoutes(app, {
+    sql, requireAuth, requireAdmin,
+    previewAuth: makePreviewAuth(previewSessions, sql),
+  });
   registerOverviewRoutes(app, { sql, requireAuth });
+
+  // ── 工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）────
+  registerPreviewRoutes(app, {
+    requireAuth,
+    workspaceRoot: process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces',
+    sessions: previewSessions,
+  });
 
   // ── 静态页访问鉴权（Caddy forward_auth 的落点）────────────────────
   // 补的是一个真实存在过的越权：Caddy 此前直出文件，不带任何鉴权。
@@ -1107,6 +1125,8 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
   registerAgentRoutes(app, {
     sql, requireAuth, deployService,
     workspaceRoot: process.env.ISPACE_WORKSPACE_ROOT ?? '/srv/workspaces',
+    /* 创建屏开着预览时才告诉模型"用户正看着"。手机壳没有预览，这里就是 false */
+    hasLivePreview: (userId) => previewSessions.hasFor(userId),
   });
 
   // ── 治理定时任务 ────────────────────────────────────────────────
