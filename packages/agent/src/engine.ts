@@ -285,6 +285,27 @@ export interface ModelOption {
   mult?: string | undefined;
 }
 
+/**
+ * 读一个数字型环境变量。
+ *
+ * ┌─ 为什么不能直接 Number(env.X ?? 默认值) ────────────────────────────┐
+ * │ 没配的变量在容器里往往不是"不存在"，而是**空字符串**：compose 写     │
+ * │ `AGENT_FANOUT_N: ${AGENT_FANOUT_N:-}` 时，变量照样存在，值是 ""。    │
+ * │ 于是 `??` 不触发，而 `Number("")` 是 **0**——不是 NaN。              │
+ * │                                                                      │
+ * │ 后果实打实踩过：线上 AGENT_IMAGE_TIMEOUT_MS 是空串，超时变成 0 毫秒，│
+ * │ 每一次生图当场 AbortError；AGENT_FANOUT_N 空串则让扇出从 6 个方向    │
+ * │ 缩成 1 个，而且不报错——看起来"只是出得少"。两处都是端到端跑一遍才   │
+ * │ 发现的，单测和 typecheck 都发现不了。                                │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+export function numEnv(raw: string | undefined, fallback: number): number {
+  const t = (raw ?? '').trim();
+  if (!t) return fallback;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export function configuredModels(env: NodeJS.ProcessEnv = process.env): ModelOption[] {
   const fallback = env.AGENT_MODEL ?? 'gpt-5.6';
   const raw = (env.AGENT_MODELS ?? '').trim();
@@ -330,8 +351,8 @@ export function createEngine(
     baseUrl,
     apiKey,
     model: picked.id,
-    maxTokens: Number(env.AGENT_MAX_TOKENS ?? 2048),
-    timeoutMs: Number(env.AGENT_TIMEOUT_MS ?? 120_000),
+    maxTokens: numEnv(env.AGENT_MAX_TOKENS, 2048),
+    timeoutMs: numEnv(env.AGENT_TIMEOUT_MS, 120_000),
     ...(effortEnabled(env) && choice.effort ? { effort: choice.effort } : {}),
   });
 }

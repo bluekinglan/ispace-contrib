@@ -1,5 +1,5 @@
 import { ERROR_CODES, IspaceError } from '@ispace/contracts';
-import type { ModelOption } from './engine.js';
+import { numEnv, type ModelOption } from './engine.js';
 
 /**
  * 生图通道。
@@ -75,7 +75,8 @@ export function createImageGenerator(
   /* 三样缺一样就当平台没有生图。不抛异常：没配不是错误，是没开这个功能 */
   if (!baseUrl || !apiKey || !models.length) return null;
 
-  const timeoutMs = Number(env.AGENT_IMAGE_TIMEOUT_MS ?? 120_000);
+  /* 空串会变成 0 毫秒、每次生图当场 abort——见 numEnv 的说明 */
+  const timeoutMs = numEnv(env.AGENT_IMAGE_TIMEOUT_MS, 120_000);
 
   return async ({ prompt, model }) => {
     /* 只认白名单。model 是直接发给网关的字段，原样转发等于把计费开关交出去 */
@@ -90,7 +91,7 @@ export function createImageGenerator(
           authorization: `Bearer ${apiKey}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ model: picked.id, prompt, n: 1, ...dialectFor(picked.id) }),
+        body: JSON.stringify({ model: picked.id, prompt, n: 1 }),
         signal: ctl.signal,
       });
 
@@ -141,29 +142,6 @@ export function createImageGenerator(
       clearTimeout(timer);
     }
   };
-}
-
-/**
- * 不同家的生图接口要的字段不一样。
- *
- * ┌─ 为什么要分家，而不是统一发一套 ────────────────────────────────────┐
- * │ gpt-image 系：`size` 发了也白发（实测四种取值回来的尺寸都不一样且都  │
- * │ 不等于请求值），多发一个字段只是多一个被拒的面，所以什么都不加。    │
- * │                                                                      │
- * │ agnes-image 系：官方文档里 `size` 是**必填**，而且取 1K/2K/3K/4K 这   │
- * │ 种档位名，不是 1024x1024；宽高比是另一个字段 `ratio`；要 base64 得发  │
- * │ 顶层 `return_base64`。不发 size 它会报参数错。                       │
- * │ 见 https://wiki.agnes-ai.com/en/docs/agnes-image-25-flash.md         │
- * │                                                                      │
- * │ ⚠️ agnes 这一支**没能在公司网关上实测**：vibe.soyoung.com 的          │
- * │ /images/generations 在路由那一层就拒了它（「images endpoint requires  │
- * │ an image model」），换什么参数都一样，/chat/completions 与 /responses │
- * │ 则是 502。等网关把这个模型登记成图片模型之后，这一支要再验一遍。     │
- * └──────────────────────────────────────────────────────────────────────┘
- */
-function dialectFor(id: string): Record<string, unknown> {
-  if (!id.startsWith('agnes-image')) return {};
-  return { size: '2K', ratio: '1:1', return_base64: true };
 }
 
 /** 按 MIME 给个扩展名。认不出来就按 png——网关出的就是 png。 */

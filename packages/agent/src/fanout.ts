@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Engine } from './engine.js';
+import { numEnv, type Engine } from './engine.js';
 import { AgentSession } from './session.js';
 
 /**
@@ -65,8 +65,8 @@ const DIR_MAX_TURNS = 4;
 
 /** 平台配的条数。超出方向表就按方向表的长度来。 */
 export function fanoutCount(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number(env.AGENT_FANOUT_N ?? 6);
-  if (!Number.isFinite(raw)) return DESIGN_DIRECTIONS.length;
+  /* 空串不能当 0：那会把六个方向悄悄缩成一个——见 numEnv 的说明 */
+  const raw = numEnv(env.AGENT_FANOUT_N, DESIGN_DIRECTIONS.length);
   return Math.max(1, Math.min(DESIGN_DIRECTIONS.length, Math.round(raw)));
 }
 

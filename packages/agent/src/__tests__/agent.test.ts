@@ -7,7 +7,7 @@ import { parseAsk, runTool, safePath, type ToolContext } from '../tools.js';
 import { DESIGN_DIRECTIONS, fanoutCount, runFanout } from '../fanout.js';
 import { configuredImageModels, createImageGenerator } from '../image.js';
 import {
-  configuredModels, createEngine, effortEnabled,
+  configuredModels, createEngine, effortEnabled, numEnv,
   type Engine, type EngineEvent, type ToolCall,
 } from '../engine.js';
 
@@ -435,6 +435,20 @@ describe('设计扇出', () => {
     expect(fanoutCount({ AGENT_FANOUT_N: '0' })).toBe(1);
     expect(fanoutCount({ AGENT_FANOUT_N: '不是数' })).toBe(DESIGN_DIRECTIONS.length);
   });
+
+  /*
+    线上实打出来的：compose 写 `${AGENT_FANOUT_N:-}` 时变量是**空串**而不是
+    不存在，`??` 不触发，Number('') 又是 0 —— 六个方向当场缩成一个，还不报错。
+  */
+  it('空串当没配，不当 0', () => {
+    expect(fanoutCount({ AGENT_FANOUT_N: '' })).toBe(DESIGN_DIRECTIONS.length);
+    expect(fanoutCount({ AGENT_FANOUT_N: '   ' })).toBe(DESIGN_DIRECTIONS.length);
+    expect(numEnv('', 120_000)).toBe(120_000);
+    expect(numEnv(undefined, 7)).toBe(7);
+    expect(numEnv('不是数', 7)).toBe(7);
+    expect(numEnv('0', 7)).toBe(0);
+    expect(numEnv(' 42 ', 7)).toBe(42);
+  });
 });
 
 describe('生图', () => {
@@ -469,25 +483,6 @@ describe('生图', () => {
     expect(r2.model).toBe('a');
     /* size 一律不发：这个网关不认，发了只是多一个失败面 */
     expect(seen.every((b) => !('size' in b))).toBe(true);
-  });
-
-  it('agnes 系按它官方文档的字段发，别家不加', async () => {
-    const seen: Record<string, unknown>[] = [];
-    vi.stubGlobal('fetch', async (_u: string, init: { body: string }) => {
-      seen.push(JSON.parse(init.body) as Record<string, unknown>);
-      return { ok: true, json: async () => ({ data: [{ b64_json: png.toString('base64') }] }) };
-    });
-    const gen = createImageGenerator({
-      ...env, AGENT_IMAGE_MODELS: 'agnes-image-2.5-flash|甲, gpt-image-2.5-flare|乙',
-    })!;
-
-    await gen({ prompt: 'x', model: 'agnes-image-2.5-flash' });
-    /* size 必填且是档位名，不是 1024x1024 */
-    expect(seen[0]).toMatchObject({ size: '2K', ratio: '1:1', return_base64: true });
-
-    await gen({ prompt: 'x', model: 'gpt-image-2.5-flare' });
-    /* gpt-image 系发了 size 也白发，多一个字段只是多一个被拒的面 */
-    expect(seen[1]).not.toHaveProperty('size');
   });
 
   it('url 形态也收：换个网关不至于整条断', async () => {
