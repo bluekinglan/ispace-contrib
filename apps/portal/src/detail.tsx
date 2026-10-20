@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Comment, CommentSort, User } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api, type Listing } from './api';
-import { AuthorChip, Cover, appHref, deviceOf, fmt, initial, washOf, type Device } from './wall';
+import { AuthorChip, Cover, appHref, deviceOf, fmt, initial, usePlayUrl, washOf, type Device } from './wall';
 
 /**
  * 应用详情（改版稿 §应用详情）。
@@ -265,6 +265,8 @@ function useWideEnoughForPanel(): boolean {
 }
 
 function LivePreview({ item, tint, radius }: { item: Listing; tint: string; radius: number }) {
+  /* 试玩走令牌地址，不是 /{owner}/{slug}/——见 wall.tsx 的 usePlayUrl */
+  const play = usePlayUrl(item);
   /*
     停用的页面不嵌：iframe 会去取一个 404，用户看到的是浏览器的报错页，
     而真相是"这个页面被作者停了"。
@@ -272,9 +274,13 @@ function LivePreview({ item, tint, radius }: { item: Listing; tint: string; radi
   if (item.status === 'stopped') {
     return <Cover src={item.cover_path} label={`${item.name} · 已停用`} tint={tint} radius={radius} />;
   }
+  /* 令牌还没换到：先摆封面，别让 iframe 去撞一个会过期的地址 */
+  if (!play) {
+    return <Cover src={item.cover_path} label={item.name} tint={tint} radius={radius} />;
+  }
   return (
     <iframe
-      src={appHref(item)}
+      src={play}
       title={item.name}
       sandbox="allow-scripts allow-forms allow-popups"
       loading="lazy"

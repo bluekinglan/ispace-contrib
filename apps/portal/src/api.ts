@@ -373,6 +373,21 @@ export const api = {
    * 每次刷新前都问一遍——工作区一直在变，上一轮是个单页面、这一轮加了个
    * server.js，判定就该跟着变。
    */
+  /**
+   * 换一张试玩令牌，换到的地址直接塞进 iframe 的 src。
+   *
+   * 为什么不能直接用 /{owner}/{slug}/：预览 iframe 没有 allow-same-origin，
+   * 里面是 opaque origin，它发出的子资源请求被浏览器当作跨站，SameSite=Lax
+   * 的会话 cookie 不带——而那条路径下连 CSS 都要鉴权，于是只剩一页裸 HTML。
+   * 令牌在路径里，相对路径的子资源天然继承它。
+   */
+  playOpen: (owner: string, slug: string) => post<{
+    token: string;
+    url: string;
+    expiresAt: number;
+    idleMs: number;
+  }>('/play-session', { owner, slug }),
+
   previewKind: (previewId: string) => get<{
     kind: 'static' | 'server' | 'build' | 'empty';
     why: string;
