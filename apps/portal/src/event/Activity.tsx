@@ -9,7 +9,7 @@ import { api } from '../api';
 import { UserMenu } from '../UserMenu';
 import { BitField } from './BitField';
 import { EVENT_JUDGES, judgeAvatar } from './judges';
-import { EventLayoutStyles } from './styles';
+import { EventLayoutStyles, EventOrange } from './styles';
 import {
   BinaryTen, Caret, DOTS_ON_ORANGE, DotMatrix, EIcon, EventKeyframes,
   Mark, SectionHead, type EventIconName,
@@ -171,6 +171,7 @@ export function Activity() {
     <ToneProvider tone="business">
       <GlobalKeyframes />
       <EventKeyframes />
+      <EventOrange />
       <EventLayoutStyles />
       <div style={{ minHeight: '100vh', background: 'var(--surface-canvas)' }}>
         <div style={{
