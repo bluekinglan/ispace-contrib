@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { User } from '@ispace/contracts';
 import { Icon, Mark, Wordmark, type IconName } from '@ispace/ui';
 import { api, type PendingShare } from './api';
@@ -11,7 +11,7 @@ import { initial, washOf } from './wall';
  *
  * ┌─ 为什么整站共用一个外壳 ──────────────────────────────────────────┐
  * │ 改版前的门户是「我的页面 / 创意市场」两个 tab 顶在页面上方；新稿把   │
- * │ 导航挪到左侧，探索、为你推荐、创建、我的作品是四个平级的地方，侧栏  │
+ * │ 导航挪到左侧，探索、为你推荐、iDo、我的作品是四个平级的地方，侧栏  │
  * │ 在它们之间不重绘。所以外壳必须在路由之上，而不是每屏各画一条。      │
  * └──────────────────────────────────────────────────────────────────┘
  *
@@ -21,10 +21,24 @@ import { initial, washOf } from './wall';
 
 export type NavKey = 'explore' | 'foryou' | 'create' | 'mine';
 
+/**
+ * 「iDo」跟 Wordmark 用同一副字样：同一个 --font-sans、同样 700、同样
+ * -.02em 的字距。它和「探索」「我的作品」不是一类东西——那两个是地方的
+ * 名字，iDo 是这个产品让你做事的那个入口，稿上也是按字标画的。
+ *
+ * 不直接复用 Wordmark 组件：它写死了文案 iSPACE 和 color: var(--text-heading)，
+ * 而导航项选中与否要换色。这里只取它的字样。
+ */
+const BRAND_LABEL: CSSProperties = {
+  fontFamily: 'var(--font-sans)',
+  fontWeight: 700,
+  letterSpacing: '-.02em',
+};
+
 const NAV: { key: NavKey; label: string; icon: IconName; href: string }[] = [
   { key: 'explore', label: '探索', icon: 'compass', href: '/' },
   { key: 'foryou', label: '为你推荐', icon: 'sparkles', href: '/foryou' },
-  { key: 'create', label: '创建', icon: 'pen', href: '/create' },
+  { key: 'create', label: 'iDo', icon: 'pen', href: '/create' },
   { key: 'mine', label: '我的作品', icon: 'grid', href: '/mine' },
 ];
 
@@ -186,70 +200,54 @@ function Sidebar({
               key={n.key}
               href={n.href} label={n.label} icon={n.icon} iconSize={19}
               on={nav === n.key} wide={wide.on} height={42}
+              /* iDo 是个名字，不是一句说明——跟字标同一副字样 */
+              labelStyle={n.key === 'create' ? BRAND_LABEL : undefined}
             />
           ))}
         </div>
       </div>
 
-      {wide.on && (
-        <>
-          <div style={{ padding: '18px 12px 0' }}>
+      {/* 去掉「一句话做页面」那颗 CTA 之后，这里只剩常用列表，不必再包一层 fragment */}
+      {wide.on && pinned.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '24px 12px 0' }}>
+          <span
+            style={{
+              padding: '0 14px 6px', fontSize: 'var(--text-base)',
+              fontWeight: 'var(--weight-semibold)', letterSpacing: 'var(--tracking-label)',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            常用
+          </span>
+          {pinned.map((p) => (
             <a
-              href="/create"
+              key={p.href}
+              href={p.href}
               style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                width: '100%', height: 44, borderRadius: 12, background: 'var(--cta)',
-                color: 'var(--cta-fg)', fontSize: 'var(--text-md)',
-                fontWeight: 'var(--weight-semibold)', cursor: 'pointer', textDecoration: 'none',
-                boxShadow: '0 10px 24px -12px rgba(238,92,42,.7)',
+                display: 'flex', alignItems: 'center', gap: 10, width: '100%', height: 36,
+                padding: '0 14px', borderRadius: 10, background: 'transparent',
+                color: 'var(--text-secondary)', fontSize: 'var(--text-md)',
+                cursor: 'pointer', textDecoration: 'none',
               }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-sidebar-hover)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             >
-              <Icon name="sparkles" size={16} />一句话做页面
-            </a>
-          </div>
-
-          {pinned.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '24px 12px 0' }}>
               <span
                 style={{
-                  padding: '0 14px 6px', fontSize: 'var(--text-base)',
-                  fontWeight: 'var(--weight-semibold)', letterSpacing: 'var(--tracking-label)',
-                  color: 'var(--text-tertiary)',
+                  width: 20, height: 20, flex: 'none', borderRadius: 6, background: washOf(p.href),
+                  color: 'var(--text-heading)', fontSize: 'var(--text-base)',
+                  fontWeight: 'var(--weight-bold)', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                常用
+                {p.letter}
               </span>
-              {pinned.map((p) => (
-                <a
-                  key={p.href}
-                  href={p.href}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10, width: '100%', height: 36,
-                    padding: '0 14px', borderRadius: 10, background: 'transparent',
-                    color: 'var(--text-secondary)', fontSize: 'var(--text-md)',
-                    cursor: 'pointer', textDecoration: 'none',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-sidebar-hover)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  <span
-                    style={{
-                      width: 20, height: 20, flex: 'none', borderRadius: 6, background: washOf(p.href),
-                      color: 'var(--text-heading)', fontSize: 'var(--text-base)',
-                      fontWeight: 'var(--weight-bold)', display: 'flex', alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    {p.letter}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {p.name}
-                  </span>
-                </a>
-              ))}
-            </div>
-          )}
-        </>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p.name}
+              </span>
+            </a>
+          ))}
+        </div>
       )}
 
       <div style={{ flex: 1, minHeight: 12 }} />
@@ -322,7 +320,7 @@ function Sidebar({
 }
 
 function NavRow({
-  href, label, icon, iconSize, on, wide, height,
+  href, label, icon, iconSize, on, wide, height, labelStyle,
 }: {
   href: string;
   label: string;
@@ -331,6 +329,8 @@ function NavRow({
   on: boolean;
   wide: boolean;
   height: number;
+  /** 个别项要自己的字样（iDo 跟字标走）。不给就用这一行默认的。 */
+  labelStyle?: CSSProperties;
 }) {
   return (
     <a
@@ -339,8 +339,15 @@ function NavRow({
       style={{
         display: 'flex', alignItems: 'center', gap: 12, width: '100%', height,
         padding: '0 14px', borderRadius: height > 38 ? 12 : 10,
-        background: on ? 'var(--nav-on-bg)' : 'transparent',
-        color: on ? 'var(--nav-on-fg)' : 'var(--text-secondary)',
+        /*
+          选中态走全站通用的那一对（--sel / --sel-fg），不再自带一套。
+          侧栏原先用的是另一对更浅的 --nav-on-*，于是同一个"当前选中"
+          在侧栏是浅橙底深橙字、在探索页的分类标签上是实心橙底白字——
+          同一件事两种长相，而 tokens.css 开头写的是"橙色承担号召性按钮
+          （--cta）和当前选中（--sel），仅此两类"。统一到 --sel。
+        */
+        background: on ? 'var(--sel)' : 'transparent',
+        color: on ? 'var(--sel-fg)' : 'var(--text-secondary)',
         fontSize: 'var(--text-md)',
         fontWeight: on ? 'var(--weight-semibold)' : 'var(--weight-medium)',
         cursor: 'pointer', textAlign: 'left', whiteSpace: 'nowrap', textDecoration: 'none',
@@ -349,7 +356,7 @@ function NavRow({
       onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
     >
       <Icon name={icon} size={iconSize} />
-      {wide && <span>{label}</span>}
+      {wide && <span style={labelStyle}>{label}</span>}
     </a>
   );
 }

@@ -77,8 +77,6 @@
 
   /* 侧栏当前项。不用 --accent 的浅色版，而是品牌橙的 wash：
      设计稿里侧栏选中是暖橙底 + 深橙字，近黑底会把整条侧栏压得很重。 */
-  --nav-on-bg: #ffede0;
-  --nav-on-fg: #b93b07;
 
   /* 首页那条输入框的描边与光晕。它是整个探索页唯一一个被"点亮"的控件，
      值写死在 token 里，免得三处（探索、创建、移动端）各调一遍。 */
@@ -234,8 +232,6 @@
   --tabby-orange-hover: #ff8965;
   --brand-wash: #36241e;
   --brand-ink: #ff8965;
-  --nav-on-bg: #36241e;
-  --nav-on-fg: #ff8965;
 
   --dark-bg: #100f0e;
   --dark-surface: #322e2b;
