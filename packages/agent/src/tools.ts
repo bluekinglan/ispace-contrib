@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { ERROR_CODES, IspaceError } from '@ispace/contracts';
 import type { ToolDef } from './engine.js';
+import { extFor, type ImageGenerator } from './image.js';
 
 /**
  * Agent 可用的工具（技术方案 §6.4）。
@@ -167,7 +168,44 @@ export const ASK_TOOL: ToolDef = {
   },
 };
 
+/**
+ * 生图。只在平台配了生图通道时才挂上去（AGENT_IMAGE_MODELS）。
+ *
+ * 不挂的时候模型压根不知道有这回事——这正是要的：它不会承诺"我给你画一张"
+ * 然后画不出来。
+ *
+ * 说明里写死了三件实测出来的事（尺寸不可控、一张约 2 MB、按张计费），因为
+ * 模型读工具说明比读系统提示认真，而这三件事直接决定它该不该多调几次。
+ */
+export const IMAGE_TOOL: ToolDef = {
+  name: 'generate_image',
+  description:
+    '生成一张图片并存进工作区，页面用相对路径引用它。'
+    + '用于插图、封面、空状态配图这类"没有现成素材"的地方。'
+    + '注意：①尺寸由网关决定、传不了参数，页面要用 CSS 适配（object-fit 之类）；'
+    + '②一张约 2 MB，别为了装饰多生；③按张计费，一次会话最多几张。'
+    + '能用 CSS、SVG、emoji 解决的，不要生图。',
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: {
+        type: 'string',
+        description: '画什么。具体些：主体、风格、配色、有没有文字（文字常画歪，尽量别要）',
+      },
+      path: {
+        type: 'string',
+        description: '存到工作区的哪里，相对路径，如 assets/hero.png。扩展名按实际格式自动改正',
+      },
+      model: { type: 'string', description: '可选。平台配了多条生图通道时指定用哪条' },
+    },
+    required: ['prompt', 'path'],
+  },
+};
+
 export const ALL_TOOLS: ToolDef[] = [...FILE_TOOLS, ...PLATFORM_TOOLS, ASK_TOOL];
+
+/** 平台开了生图时用这一套。由服务端按配置决定传哪个（见 routes/agent.ts）。 */
+export const TOOLS_WITH_IMAGE: ToolDef[] = [...ALL_TOOLS, IMAGE_TOOL];
 
 /** 一个待回答的问题。前端照它画选项卡片。 */
 export interface PendingAsk {
@@ -201,6 +239,11 @@ export interface ToolContext {
     listApps(): Promise<string>;
     /** 返回一次性确认 token，交给手机端。 */
     requestDeploy(site: string, summary: string): Promise<{ confirmToken: string }>;
+    /**
+     * 生图。没配生图通道时不注入——那时 IMAGE_TOOL 也不会挂上去，
+     * 两边是同一个开关的两面。
+     */
+    generateImage?: ImageGenerator;
   };
 }
 
@@ -258,6 +301,37 @@ export async function runTool(
 
     case 'list_apps':
       return ctx.platform.listApps();
+
+    case 'generate_image': {
+      const gen = ctx.platform.generateImage;
+      if (!gen) {
+        return '这个平台没有配生图通道。改用 CSS、SVG 或 emoji，别空着一个图位。';
+      }
+      const prompt = String(args.prompt ?? '').trim();
+      if (!prompt) return '要画什么没说清楚。给一句具体的描述再调。';
+
+      /*
+        先定路径再调接口：路径越界的话，那一次生图就是白花钱。
+        safePath 抛的是 FORBIDDEN，会被上层当工具失败回灌给模型。
+      */
+      const want = String(args.path ?? '').trim() || 'assets/image.png';
+      const img = await gen({
+        prompt,
+        model: typeof args.model === 'string' ? args.model : undefined,
+      });
+      /*
+        扩展名按**实际格式**改正，不听模型的。它经常写 .jpg 而网关出的是
+        png——浏览器多半能靠嗅探认出来，但发布后的站点带 nosniff，那时就是
+        一个裂图，而且离生成已经很远，没人会想到是扩展名的事。
+      */
+      const ext = extFor(img.mime);
+      const rel = want.replace(/\.[a-z0-9]+$/i, '') + ext;
+      const file = safePath(ctx.ws, rel);
+      await mkdir(join(file, '..'), { recursive: true });
+      await writeFile(file, img.bytes);
+      return `已生成并写入 ${rel}（${Math.round(img.bytes.byteLength / 1024)} KB，${img.model}）。`
+        + `页面里用相对路径引用它，尺寸交给 CSS。`;
+    }
 
     case 'ask_user': {
       const ask = parseAsk(args);

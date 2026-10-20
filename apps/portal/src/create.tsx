@@ -1506,6 +1506,7 @@ function toStep(name: string, args: Record<string, unknown>): Step {
     list_apps: ['看已有的页面', ''],
     request_deploy: ['准备发布', typeof args.site === 'string' ? `/${args.site}/` : ''],
     ask_user: ['问你一句', typeof args.question === 'string' ? args.question : ''],
+    generate_image: ['画一张图', typeof args.path === 'string' ? args.path : ''],
   };
   const [title, detail] = map[name] ?? [name, ''];
   return { key: name, title, detail, done: false };

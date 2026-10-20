@@ -343,6 +343,8 @@ export const api = {
     models: { id: string; label: string; mult?: string }[];
     /** 平台认不认思考档位（AGENT_EFFORT）。不认就不画那个分段。 */
     effort: boolean;
+    /** 生图通道（AGENT_IMAGE_MODELS）。空数组 = 平台不会生图。 */
+    imageModels: { id: string; label: string; mult?: string }[];
   }>('/agent/status'),
   /** 工作区文件树（工作台「代码」页）。扁平路径表，前端自己摞成树。 */
   workspaceTree: () => get<{ entries: { path: string; dir: boolean; size: number }[] }>(

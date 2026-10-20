@@ -8,9 +8,11 @@ import {
 } from '../services/connectors-available.js';
 import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
-  AgentSession, DESIGN_DIRECTIONS, configuredModels, createEngine, effortEnabled,
+  AgentSession, ALL_TOOLS, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION, TOOLS_WITH_IMAGE,
+  configuredImageModels, configuredModels, createEngine, createImageGenerator, effortEnabled,
   fanoutCount, runFanout,
-  type AvailableConnector, type FanoutEvent, type ReasoningEffort, type SessionEvent,
+  type AvailableConnector, type FanoutEvent, type ImageGenerator, type ReasoningEffort,
+  type SessionEvent,
   safePath,
   type ToolContext,
 } from '@ispace/agent';
@@ -182,7 +184,32 @@ export function registerAgentRoutes(
     for (const [k, v] of pending) if (now - v.createdAt > CONFIRM_TTL_MS) pending.delete(k);
   }, 5 * 60 * 1000).unref();
 
-  const makeToolCtx = (user: User, clientIp: string): ToolContext => ({
+  /**
+   * 这一次请求能生几张图。
+   *
+   * 计数放在**每次请求**上，不是每个会话：会话活一小时，而一次请求就是用户
+   * 说的一句话。按会话算的话，一个人说十句就能生八十张——每张都是钱。
+   *
+   * 没配生图通道时返回 null，连同工具一起不挂（两边是同一个开关的两面）。
+   */
+  function makeImageGen(): ImageGenerator | null {
+    const base = createImageGenerator();
+    if (!base) return null;
+    let used = 0;
+    return async (opts) => {
+      if (used >= MAX_IMAGES_PER_SESSION) {
+        /* 契约里没有"通用配额"这个码，而这确实是一次被拒绝的调用 */
+        throw new IspaceError(
+          ERROR_CODES.INVALID_INPUT,
+          `这一轮已经生了 ${used} 张图，到上限了。把现有的用好，或者下一句话再说。`,
+        );
+      }
+      used += 1;
+      return base(opts);
+    };
+  }
+
+  const makeToolCtx = (user: User, clientIp: string, drawer: ImageGenerator | null): ToolContext => ({
     ws: { root: join(workspaceRoot, user.username), username: user.username },
     platform: {
       async getQuota() {
@@ -211,6 +238,7 @@ export function registerAgentRoutes(
         });
         return { confirmToken };
       },
+      ...(drawer ? { generateImage: drawer } : {}),
     },
   });
 
@@ -252,12 +280,21 @@ export function registerAgentRoutes(
       // 能读到别人的对话历史
       throw new IspaceError(ERROR_CODES.NOT_OWNER, '这个会话不属于你');
     }
+    /*
+      生图通道配了才挂 generate_image，也才在系统提示里说"你能画"。
+      两件事必须同进同出：说了却没挂，模型会写一个 <img src="assets/hero.png">
+      然后发现没有那个工具，页面上留一个裂图。
+    */
+    const drawer = makeImageGen();
+
     if (!entry) {
       entry = {
         session: new AgentSession({
-          engine, toolCtx: makeToolCtx(user, req.ip),
+          engine, toolCtx: makeToolCtx(user, req.ip, drawer),
           connectors: await availableConnectors(user.id),
           livePreview: hasLivePreview(user.id),
+          canDraw: drawer !== null,
+          tools: drawer ? TOOLS_WITH_IMAGE : ALL_TOOLS,
         }),
         userId: user.id,
         touched: Date.now(),
@@ -281,9 +318,11 @@ export function registerAgentRoutes(
     // 重建 session 以带上本次的事件回调
     const session = new AgentSession({
       engine,
-      toolCtx: makeToolCtx(user, req.ip),
+      toolCtx: makeToolCtx(user, req.ip, drawer),
       connectors: await availableConnectors(user.id),
       livePreview: hasLivePreview(user.id),
+      canDraw: drawer !== null,
+      tools: drawer ? TOOLS_WITH_IMAGE : ALL_TOOLS,
       onEvent: send,
     });
     // 继承历史（除 system，构造时已有）
@@ -554,6 +593,8 @@ export function registerAgentRoutes(
       model,
       models: configuredModels(),
       effort: effortEnabled(),
+      /* 生图是另一条通道，和对话模型分开配。空数组 = 平台没有这个能力 */
+      imageModels: configuredImageModels(),
       activeSessions: sessions.size,
     };
   });

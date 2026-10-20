@@ -60,6 +60,10 @@ services:
       AGENT_EFFORT: ${AGENT_EFFORT:-}
       # 设计扇出一次出几个方向。N 就是 N 倍模型开销，默认 6。
       AGENT_FANOUT_N: ${AGENT_FANOUT_N:-}
+      # 生图通道（id|名字，逗号分隔）。和对话模型分开配：两张单子里的 id 不能混。
+      # 不配就当平台不会生图——generate_image 工具不挂，提示里也不提。
+      AGENT_IMAGE_MODELS: ${AGENT_IMAGE_MODELS:-}
+      AGENT_IMAGE_TIMEOUT_MS: ${AGENT_IMAGE_TIMEOUT_MS:-}
       # 语音转写兜底。缺失时 /voice/transcribe 返回 NOT_IMPLEMENTED，
       # 手机端据此保持置灰，不静默失败。
       STEP_API_KEY: ${STEP_API_KEY:-}

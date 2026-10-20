@@ -73,11 +73,36 @@ const LIVE_PREVIEW = `
 - 预览和发布后的站点一样挂在子路径下，所以根绝对路径（\`/assets/x.js\`）在
   预览里当场就会 404。这是好事：它把这个错提前暴露给你了。`;
 
+/**
+ * 「你能生图」那一段。
+ *
+ * 和 LIVE_PREVIEW 同一个道理：平台没配生图通道时这段不能出现，否则模型会
+ * 按"我能画"去安排内容——先写一个 <img src="assets/hero.png">，再去调一个
+ * 根本没挂上来的工具，最后页面上是一个裂图。
+ */
+const CAN_DRAW = `
+
+## 你能生成图片
+
+有 generate_image 工具：给一句描述和一个工作区路径，它把图存进去，页面用相
+对路径引用。用在插图、封面、空状态配图这类没有现成素材的地方。
+
+三条硬约束，都是这个网关的实际情况：
+
+- **尺寸不可控**：传不了尺寸参数，出来多大由网关定，同样的参数两次还未必
+  一样。所以页面那边一定要用 CSS 兜住（给容器定高 + object-fit: cover），
+  不要假设它是方的。
+- **一张约 2 MB**：别为了装饰生图。能用 CSS 渐变、SVG、emoji 表达的就别画。
+- **按张计费**，一次对话里最多几张。把配额花在真正撑场面的那一两张上。
+
+图里尽量不要文字——模型画的字经常是歪的。文字用 HTML 写在图上面。`;
+
 export function buildSystemPrompt(
   available: AvailableConnector[],
-  opts: { livePreview?: boolean } = {},
+  opts: { livePreview?: boolean; canDraw?: boolean } = {},
 ): string {
-  const SYSTEM_PROMPT = opts.livePreview ? BASE_PROMPT + LIVE_PREVIEW : BASE_PROMPT;
+  const SYSTEM_PROMPT = (opts.livePreview ? BASE_PROMPT + LIVE_PREVIEW : BASE_PROMPT)
+    + (opts.canDraw ? CAN_DRAW : '');
 
   if (available.length === 0) {
     return `${SYSTEM_PROMPT}
@@ -162,6 +187,11 @@ export interface SessionOptions {
    * 不传等同于没有——手机壳那条流就是没有。
    */
   livePreview?: boolean;
+  /**
+   * 平台有没有配生图通道。和 toolCtx.platform.generateImage 是同一个开关的
+   * 两面：挂了工具就得在提示里说，说了就得真能调。
+   */
+  canDraw?: boolean;
   onEvent?: (e: SessionEvent) => void;
   signal?: AbortSignal;
 }
@@ -191,7 +221,10 @@ export class AgentSession {
       {
         role: 'system',
         content: opts.systemPrompt
-          ?? buildSystemPrompt(opts.connectors ?? [], { livePreview: opts.livePreview ?? false }),
+          ?? buildSystemPrompt(opts.connectors ?? [], {
+            livePreview: opts.livePreview ?? false,
+            canDraw: opts.canDraw ?? false,
+          }),
       },
     ];
   }

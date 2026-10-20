@@ -1,10 +1,11 @@
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentSession, buildSystemPrompt, type AvailableConnector } from '../session.js';
 import { parseAsk, runTool, safePath, type ToolContext } from '../tools.js';
 import { DESIGN_DIRECTIONS, fanoutCount, runFanout } from '../fanout.js';
+import { configuredImageModels, createImageGenerator } from '../image.js';
 import {
   configuredModels, createEngine, effortEnabled,
   type Engine, type EngineEvent, type ToolCall,
@@ -433,5 +434,101 @@ describe('设计扇出', () => {
     expect(fanoutCount({ AGENT_FANOUT_N: '99' })).toBe(DESIGN_DIRECTIONS.length);
     expect(fanoutCount({ AGENT_FANOUT_N: '0' })).toBe(1);
     expect(fanoutCount({ AGENT_FANOUT_N: '不是数' })).toBe(DESIGN_DIRECTIONS.length);
+  });
+});
+
+describe('生图', () => {
+  const env = { AGENT_BASE_URL: 'https://gw.example/v1', AGENT_API_KEY: 'k' };
+  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('没配生图通道就当平台不会画', () => {
+    expect(configuredImageModels({})).toEqual([]);
+    expect(createImageGenerator(env)).toBeNull();
+    /* 配了通道但没有 key 也一样：画不出来就别说能画 */
+    expect(createImageGenerator({ AGENT_IMAGE_MODELS: 'a|甲' })).toBeNull();
+  });
+
+  it('b64_json 直接收下，白名单外的 model 按默认来', async () => {
+    const seen: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', async (_u: string, init: { body: string }) => {
+      seen.push(JSON.parse(init.body) as Record<string, unknown>);
+      return {
+        ok: true,
+        json: async () => ({ data: [{ b64_json: png.toString('base64') }] }),
+      };
+    });
+    const gen = createImageGenerator({ ...env, AGENT_IMAGE_MODELS: 'a|甲, b|乙' })!;
+
+    const r1 = await gen({ prompt: '一只猫', model: 'b' });
+    expect(r1.model).toBe('b');
+    expect(r1.bytes.equals(png)).toBe(true);
+
+    const r2 = await gen({ prompt: '一只猫', model: '不在单子里' });
+    expect(r2.model).toBe('a');
+    /* size 一律不发：这个网关不认，发了只是多一个失败面 */
+    expect(seen.every((b) => !('size' in b))).toBe(true);
+  });
+
+  it('url 形态也收：换个网关不至于整条断', async () => {
+    vi.stubGlobal('fetch', async (u: string) => (
+      u.includes('/images/generations')
+        ? { ok: true, json: async () => ({ data: [{ url: 'https://cdn.example/x.webp' }] }) }
+        : {
+          ok: true,
+          headers: { get: () => 'image/webp; charset=binary' },
+          arrayBuffer: async () => png.buffer.slice(0),
+        }
+    ));
+    const gen = createImageGenerator({ ...env, AGENT_IMAGE_MODELS: 'a|甲' })!;
+    const r = await gen({ prompt: '一只猫' });
+    expect(r.mime).toBe('image/webp');
+  });
+
+  it('接口报错要说清楚是哪一步，不吞', async () => {
+    vi.stubGlobal('fetch', async () => ({
+      ok: false, status: 400, text: async () => '{"error":{"message":"要图片模型"}}',
+    }));
+    const gen = createImageGenerator({ ...env, AGENT_IMAGE_MODELS: 'a|甲' })!;
+    await expect(gen({ prompt: 'x' })).rejects.toThrow(/400.*要图片模型/);
+  });
+
+  it('扩展名按实际格式改正，不听模型的', async () => {
+    vi.stubGlobal('fetch', async () => ({
+      ok: true, json: async () => ({ data: [{ b64_json: png.toString('base64') }] }),
+    }));
+    const w = ws();
+    const out = await runTool(
+      {
+        ws: w,
+        platform: { ...platform, generateImage: createImageGenerator({ ...env, AGENT_IMAGE_MODELS: 'a|甲' })! },
+      },
+      'generate_image',
+      { prompt: '封面', path: 'assets/hero.jpg' },
+    );
+    /* 网关出的是 png，模型写的是 .jpg —— 发布后带 nosniff，那就是一个裂图 */
+    expect(existsSync(join(w.root, 'assets', 'hero.png'))).toBe(true);
+    expect(existsSync(join(w.root, 'assets', 'hero.jpg'))).toBe(false);
+    expect(out).toContain('assets/hero.png');
+  });
+
+  it('越界路径不画——那一次生图就是白花钱', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', async () => {
+      calls.push('x');
+      return { ok: true, json: async () => ({ data: [{ b64_json: png.toString('base64') }] }) };
+    });
+    const ctx = {
+      ws: ws(),
+      platform: { ...platform, generateImage: createImageGenerator({ ...env, AGENT_IMAGE_MODELS: 'a|甲' })! },
+    };
+    await expect(runTool(ctx, 'generate_image', { prompt: 'x', path: '../../evil.png' }))
+      .rejects.toThrow(/越界/);
+  });
+
+  it('平台没配时，工具自己说清楚，并给出替代做法', async () => {
+    const out = await runTool({ ws: ws(), platform }, 'generate_image', { prompt: 'x', path: 'a.png' });
+    expect(out).toContain('没有配生图通道');
   });
 });
