@@ -573,9 +573,16 @@ const MAX_ERRS = 50;
  * │ 只有我们自己挂上去的那个 iframe 才是那个对象。令牌只递给它。         │
  * └──────────────────────────────────────────────────────────────────────┘
  */
+interface PreviewKind {
+  kind: 'static' | 'server' | 'build' | 'empty';
+  why: string;
+  signals: string[];
+}
+
 function usePreview(active: boolean) {
   const [url, setUrl] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
+  const [kind, setKind] = useState<PreviewKind | null>(null);
   const [errs, setErrs] = useState<PreviewErr[]>([]);
   const frame = useRef<HTMLIFrameElement | null>(null);
   const token = useRef('');
@@ -585,11 +592,12 @@ function usePreview(active: boolean) {
   useEffect(() => {
     if (!active || id.current) return;
     let alive = true;
-    void api.previewOpen().then((r) => {
+    void api.previewOpen().then(async (r) => {
       if (!alive) return;
       id.current = r.previewId;
       token.current = r.token;
       setUrl(r.url);
+      setKind(await api.previewKind(r.previewId).catch(() => null));
     }).catch(() => {
       /* 预览开不了不该拦住生成——右栏退回骨架屏，左边照常在做事 */
     });
@@ -650,11 +658,17 @@ function usePreview(active: boolean) {
     pending.current = setTimeout(() => {
       pending.current = null;
       setErrs([]);
+      /*
+        重新判一次再刷。工作区一直在变——上一轮还是个能直接打开的单页面，
+        这一轮模型加了个 server.js，右栏就该从页面换成那页说明。
+      */
+      const pid = id.current;
+      if (pid) void api.previewKind(pid).then(setKind).catch(() => undefined);
       setRev((n) => n + 1);
     }, 300);
   };
 
-  return { url, rev, errs, frame, refresh, release, clear: () => setErrs([]) };
+  return { url, rev, kind, errs, frame, refresh, release, clear: () => setErrs([]) };
 }
 
 function Generating({
@@ -780,8 +794,11 @@ function Generating({
     `?_r=` 是刷新用的——改 src 才会让 iframe 重新加载，而路径本身不能变。
     预览响应带 no-store，所以这个参数只是为了让 React 认出 src 变了。
   */
+  /* 带服务端 / 要构建的项目不渲染——伺服出去是半截页面或白屏，见 preview-kind.ts */
+  const renderable = preview.kind === null || preview.kind.kind === 'static'
+    || preview.kind.kind === 'empty';
   const frameUrl = gen.publishedUrl
-    ?? (preview.url ? `${preview.url}?_r=${preview.rev}` : null);
+    ?? (preview.url && renderable ? `${preview.url}?_r=${preview.rev}` : null);
 
   /** 把预览里的报错作为一次追问发出去，让模型自己改。 */
   const fixErrors = () => {
@@ -919,9 +936,11 @@ function Generating({
             />
             {gen.publishedUrl
               ? '已上线'
-              : !frameUrl
-                ? '正在准备预览'
-                : gen.busy ? '正在做，写一个文件这里刷一次' : '预览 · 还没发布'}
+              : !renderable
+                ? '这个项目不走预览'
+                : !frameUrl
+                  ? '正在准备预览'
+                  : gen.busy ? '正在做，写一个文件这里刷一次' : '预览 · 还没发布'}
           </span>
           <Segment
             options={[
@@ -944,7 +963,8 @@ function Generating({
               }}
             >
               <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 36, overflow: 'hidden', background: 'var(--surface-1)' }}>
-                <PreviewBody url={frameUrl} phone frameRef={preview.frame} />
+                <PreviewBody url={frameUrl} phone frameRef={preview.frame}
+                  notice={renderable ? null : preview.kind} />
               </div>
             </div>
           ) : (
@@ -982,7 +1002,8 @@ function Generating({
                 <div style={{ width: 46 }} />
               </div>
               <div style={{ position: 'relative', aspectRatio: '16 / 10', background: 'var(--surface-1)' }}>
-                <PreviewBody url={frameUrl} phone={false} frameRef={preview.frame} />
+                <PreviewBody url={frameUrl} phone={false} frameRef={preview.frame}
+                  notice={renderable ? null : preview.kind} />
               </div>
             </div>
           )}
@@ -1153,11 +1174,54 @@ function Generating({
  * 渲染它——设计稿那块骨架屏画的就是这个状态，这里照着摆。发布之后换成真
  * 页面的 iframe。
  */
-function PreviewBody({ url, phone, frameRef }: {
+function PreviewBody({ url, phone, frameRef, notice }: {
   url: string | null;
   phone: boolean;
   frameRef: React.RefObject<HTMLIFrameElement | null>;
+  /** 不为空就说明这个项目不走预览，摆一块说明而不是骨架屏。 */
+  notice: PreviewKind | null;
 }) {
+  /*
+    不渲染的时候**说清楚为什么**，不要摆一屏骨架。
+
+    骨架屏的意思是"正在加载"，而这里不是加载中——是平台决定不渲染它。
+    摆骨架等于让人一直等一个永远不会来的东西；而白屏更糟，人会以为预览
+    坏了或者模型写的东西有问题，两个方向都是错的。
+
+    signals 也列出来，让人能自己核对判定对不对，而不是只能信结论。
+  */
+  if (notice) {
+    return (
+      <div
+        style={{
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 12,
+          padding: phone ? '32px 22px' : '32px 15%', textAlign: 'center',
+        }}
+      >
+        <span
+          style={{
+            width: 36, height: 36, borderRadius: 'var(--radius-pill)',
+            background: 'var(--surface-3)', color: 'var(--text-tertiary)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <Icon name="info" size={18} />
+        </span>
+        <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
+          {notice.kind === 'server' ? '这是个带服务端的项目' : '这个项目要先构建'}
+        </span>
+        <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.75, color: 'var(--text-secondary)' }}>
+          {notice.why}
+        </span>
+        {notice.signals.length > 0 && (
+          <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>
+            看到了：{notice.signals.join('、')}
+          </span>
+        )}
+      </div>
+    );
+  }
   if (url) {
     return (
       <iframe

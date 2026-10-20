@@ -367,6 +367,17 @@ export const api = {
     expiresAt: number;
     idleMs: number;
   }>('/preview-session'),
+  /**
+   * 这个工作区能不能直接伺服出来看。
+   *
+   * 每次刷新前都问一遍——工作区一直在变，上一轮是个单页面、这一轮加了个
+   * server.js，判定就该跟着变。
+   */
+  previewKind: (previewId: string) => get<{
+    kind: 'static' | 'server' | 'build' | 'empty';
+    why: string;
+    signals: string[];
+  }>(`/preview-session/${encodeURIComponent(previewId)}/kind`),
 
   /** 「选方向」。为你推荐那一屏按它加权排序。 */
   interests: () => get<{ interests: Interest[] }>('/me/interests'),
