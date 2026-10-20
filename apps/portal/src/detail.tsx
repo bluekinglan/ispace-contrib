@@ -165,7 +165,8 @@ export function Detail({
           {dev === 'phone' ? (
             <div
               style={{
-                position: 'relative', height: '100%', maxHeight: 900, aspectRatio: '9 / 17',
+                /* 不封高：手机版纵向占满这一区，宽度由 9/17 自己算 */
+                position: 'relative', height: '100%', aspectRatio: '9 / 17',
                 borderRadius: 34, overflow: 'hidden',
                 boxShadow: '0 30px 60px -36px rgba(24,23,21,.45)',
               }}
@@ -175,7 +176,8 @@ export function Detail({
           ) : (
             <div
               style={{
-                flex: 1, minWidth: 0, maxWidth: 980, borderRadius: 18, overflow: 'hidden',
+                /* 不封宽：电脑版横向吃满预览区（右边还有动作栏和评论栏各自占位） */
+                flex: 1, minWidth: 0, borderRadius: 18, overflow: 'hidden',
                 background: 'var(--surface-1)',
                 boxShadow: '0 30px 60px -36px rgba(24,23,21,.45), 0 0 0 1px var(--border-subtle)',
               }}

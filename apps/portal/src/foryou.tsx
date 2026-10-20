@@ -133,15 +133,14 @@ export function ForYou({
             那确实治好了挤，但代价是两侧不再等宽：宽屏上中间那块整个被推到
             右边去（2000px 下尤其明显）。
 
-            现在按比例分：中间 2fr、两侧各 0.8fr，谁宽谁窄随屏幕一起变，而两侧
-            的取值完全一样——一样的取值必然算出一样的宽度，于是中间那列恒在
-            正中。两侧另给 200px 的下限，窄屏上作品名不至于又被挤成两个字。
+            现在只分成「左栏 / 剩下的全部 / 动作栏」：左栏按内容封顶 340（稿上
+            的值），右边那条动作栏本来就只要 46，中间 1fr 把余下的宽度全部吃掉。
+            这样电脑版的框横向占满可用区，而不是在两侧各留一截空白。
 
-            框不再自己按 vw 算宽，改成填满中间那一列（maxWidth 1040 封顶）：
-            宽度由这块真正可用的空间决定，而 vw 里含着侧栏，那正是上一版
-            算歪的根子。
+            框也不再自己按 vw 算宽——vw 里含着那条 248px 的侧栏，那正是它早先
+            算歪、整块被推到右边去的根子。
           */
-          gridTemplateColumns: 'minmax(200px,0.8fr) minmax(0,2fr) minmax(200px,0.8fr)',
+          gridTemplateColumns: 'minmax(200px,340px) minmax(0,1fr) auto',
           gridTemplateRows: 'minmax(0,1fr)', alignItems: 'center', gap: 40, padding: '0 40px 32px',
         }}
       >
@@ -202,7 +201,8 @@ export function ForYou({
           {d === 'phone' ? (
             <div
               style={{
-                height: '100%', maxHeight: 840, aspectRatio: '9 / 19.5', boxSizing: 'border-box',
+                /* 不封高：手机版要纵向占满内容区，宽度由 9/19.5 自己算出来 */
+                height: '100%', aspectRatio: '9 / 19.5', boxSizing: 'border-box',
                 padding: 9, borderRadius: 50, background: '#000',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.12), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}
@@ -214,7 +214,7 @@ export function ForYou({
           ) : (
             <div
               style={{
-                width: '100%', maxWidth: 1040, borderRadius: 14, overflow: 'hidden',
+                width: '100%', borderRadius: 14, overflow: 'hidden',
                 background: 'var(--dark-surface)',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.1), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}

@@ -625,7 +625,8 @@ function Generating({
           {dev === 'phone' ? (
             <div
               style={{
-                height: '100%', maxHeight: 640, aspectRatio: '9 / 19.5', boxSizing: 'border-box',
+                /* 与详情、为你推荐一致：手机版纵向吃满 */
+                height: '100%', aspectRatio: '9 / 19.5', boxSizing: 'border-box',
                 padding: 9, borderRadius: 44, background: '#0d0d10',
                 boxShadow: '0 40px 80px -30px rgba(0,0,0,.35)',
               }}
@@ -637,7 +638,8 @@ function Generating({
           ) : (
             <div
               style={{
-                width: '100%', maxWidth: 900, borderRadius: 16, overflow: 'hidden',
+                /* 与详情、为你推荐一致：电脑版横向吃满 */
+                width: '100%', borderRadius: 16, overflow: 'hidden',
                 background: 'var(--surface-1)',
                 boxShadow: '0 40px 80px -30px rgba(0,0,0,.3), 0 0 0 1px rgba(0,0,0,.06)',
               }}
