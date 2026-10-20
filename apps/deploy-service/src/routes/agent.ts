@@ -8,8 +8,8 @@ import {
 } from '../services/connectors-available.js';
 import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
-  AgentSession, createEngine,
-  type AvailableConnector, type SessionEvent, type ToolContext,
+  AgentSession, configuredModels, createEngine, effortEnabled,
+  type AvailableConnector, type ReasoningEffort, type SessionEvent, type ToolContext,
 } from '@ispace/agent';
 import { z } from 'zod';
 import type { DeployInput, DeployOutcome } from '../services/deploy.js';
@@ -48,6 +48,15 @@ const askSchema = z.object({
    */
   targetSlug: z.string().max(64).optional(),
   text: z.string().min(1).max(4000),
+  /**
+   * 创建屏那两个菜单选的。
+   *
+   * 两个都只是「希望」：模型要在平台白名单里才作数（createEngine 校验），
+   * 思考档位要平台开了 AGENT_EFFORT 才发给网关。前端传了而平台不支持时
+   * 不报错——那不是用户的错，也不值得让一次生成失败。
+   */
+  model: z.string().max(64).optional(),
+  effort: z.enum(['low', 'medium', 'high']).optional(),
   images: z
     .array(z.object({ mimeType: z.string(), dataBase64: z.string() }))
     .max(4)
@@ -154,7 +163,10 @@ export function registerAgentRoutes(
 
     let engine;
     try {
-      engine = createEngine();
+      engine = createEngine(process.env, {
+        model: input.model,
+        effort: input.effort as ReasoningEffort | undefined,
+      });
     } catch {
       throw new IspaceError(
         ERROR_CODES.ORCHESTRATOR_UNAVAILABLE,
@@ -327,6 +339,16 @@ export function registerAgentRoutes(
     let configured = true;
     let model = '';
     try { model = createEngine().model; } catch { configured = false; }
-    return { configured, model, activeSessions: sessions.size };
+    /*
+      模型清单与思考档位都来自环境变量，和「配没配通道」是两件事：没配通道
+      时清单仍然答得出来（前端据此知道菜单该列什么），只是点了会报没配。
+    */
+    return {
+      configured,
+      model,
+      models: configuredModels(),
+      effort: effortEnabled(),
+      activeSessions: sessions.size,
+    };
   });
 }

@@ -658,7 +658,8 @@ export function Segment({
             key={o.k}
             onClick={() => onPick(o.k)}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, height: compact ? 28 : 30,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              height: compact ? 28 : 30,
               padding: compact ? '0 10px' : '0 12px', border: 0, borderRadius: compact ? 8 : 9,
               background: on ? (dark ? 'rgba(255,255,255,.16)' : 'var(--surface-1)') : 'transparent',
               boxShadow: on && !dark ? '0 1px 2px rgba(24,23,21,.08)' : 'none',

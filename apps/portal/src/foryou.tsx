@@ -123,28 +123,24 @@ export function ForYou({
         style={{
           flex: 1, minHeight: 0, display: 'grid',
           /*
-            三列必须左右对称，中间那块才真的在屏幕中间。
+            列定义按设备换（新版设计稿的 fy.cols）：
 
-            稿上写的是 1fr / auto / 1fr：两侧等宽，中间由内容撑开，天然居中。
-            照搬的问题是电脑版的框按 `54vw` 算宽，而 vw 里含着左边那条 248px
-            的侧栏——1440 宽时两侧各只剩一百来像素，作品名被挤成一行两个字。
+              手机  1fr / auto / 1fr    两侧等宽，窄窄的手机框落在正中，
+                                        动作栏在第三列靠左，于是紧挨着框
+              电脑  300 / 1fr / auto    框把中间那列吃满，作品信息固定 300，
+                                        动作栏按需
+              窄屏  0 / 1fr / auto      作品信息整列收掉（它本来也不显示），
+                                        把宽度全让给框
 
-            曾经为此把右栏改成 auto（动作栏只要 46px），左栏吃掉剩下的全部。
-            那确实治好了挤，但代价是两侧不再等宽：宽屏上中间那块整个被推到
-            右边去（2000px 下尤其明显）。
-
-            只分成两列：左栏（作品信息，按稿上的 340 封顶）和剩下的全部。
-
-            动作栏**不再单独占一列**。它原先是第三列、靠左对齐，于是位置由
-            列边界决定而不是由框决定——电脑版框宽时挨着框，手机版框窄（高度
-            撑出来的 9:19.5）时，两者之间就空出一大截。现在它和框放进同一个
-            flex 行里，中间固定 22 的间距，谁宽谁窄都贴着。
-
-            框也不再自己按 vw 算宽——vw 里含着那条 248px 的侧栏，那正是它早先
-            算歪、整块被推到右边去的根子。
+            这一条是此前反复改不对的那处：框和动作栏的相对位置、以及框在
+            屏幕里的位置，是两件事。都靠一套列定义去凑，必然顾此失彼——
+            手机框窄时居中了动作栏就离得远，贴住动作栏了框又偏到一边。
+            分设备给两套列，两件事就各自成立。
           */
-          gridTemplateColumns: 'minmax(200px,340px) minmax(0,1fr)',
-          gridTemplateRows: 'minmax(0,1fr)', alignItems: 'center', gap: 40, padding: '0 40px 32px',
+          gridTemplateColumns: d === 'phone'
+            ? 'minmax(0,1fr) auto minmax(0,1fr)'
+            : (wide ? 'minmax(0,300px) minmax(0,1fr) auto' : '0px minmax(0,1fr) auto'),
+          gridTemplateRows: 'minmax(0,1fr)', alignItems: 'center', gap: 40, padding: '0 40px 20px',
         }}
       >
         <div
@@ -200,30 +196,25 @@ export function ForYou({
           )}
         </div>
 
-        <div
-          style={{
-            height: '100%', minHeight: 0, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', gap: 22,
-          }}
-        >
+        <div style={{ height: '100%', minWidth: 0, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {d === 'phone' ? (
             <div
               style={{
-                /* 不封高：手机版要纵向占满内容区，宽度由 9/19.5 自己算出来 */
-                height: '100%', aspectRatio: '9 / 19.5', boxSizing: 'border-box',
-                padding: 9, borderRadius: 50, background: '#000',
+                /* 纵向占满；9/17 与 34 的圆角都取自新版设计稿 */
+                height: '100%', aspectRatio: '9 / 17', boxSizing: 'border-box',
+                borderRadius: 34, overflow: 'hidden', background: '#000',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.12), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}
             >
-              <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 41, overflow: 'hidden' }}>
+              <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 34, overflow: 'hidden' }}>
                 <Frame item={cur} tint={tint} />
               </div>
             </div>
           ) : (
             <div
               style={{
-                flex: 1, minWidth: 0, borderRadius: 14, overflow: 'hidden',
-                background: 'var(--dark-surface)',
+                width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+                borderRadius: 14, overflow: 'hidden', background: 'var(--dark-surface)',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.1), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}
             >
@@ -249,47 +240,48 @@ export function ForYou({
                 </span>
                 <div style={{ width: 46 }} />
               </div>
-              <div style={{ position: 'relative', aspectRatio: '16 / 10' }}>
+              <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 <Frame item={cur} tint={tint} />
               </div>
             </div>
           )}
 
-          <div
+        </div>
+
+        <div
+          style={{
+            alignSelf: 'end', justifySelf: 'start', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', gap: 18, paddingBottom: 8,
+          }}
+        >
+          <Round title="上一个" icon="chevUp" onClick={() => move(-1)} />
+          <Round title="下一个" icon="chevDown" onClick={() => move(1)} />
+          <div style={{ height: 10 }} />
+          <button
+            onClick={() => onAuthor(cur.owner_username)}
+            title={cur.owner_name}
             style={{
-              alignSelf: 'flex-end', flex: 'none', display: 'flex', flexDirection: 'column',
-              alignItems: 'center', gap: 18, paddingBottom: 8,
+              width: 46, height: 46, border: '2px solid rgba(255,255,255,.9)',
+              borderRadius: 'var(--radius-pill)', background: washOf(cur.owner_username),
+              color: 'var(--text-heading)', fontSize: 'var(--text-lg)',
+              fontWeight: 'var(--weight-bold)', cursor: 'pointer',
             }}
           >
-            <Round title="上一个" icon="chevUp" onClick={() => move(-1)} />
-            <Round title="下一个" icon="chevDown" onClick={() => move(1)} />
-            <div style={{ height: 10 }} />
-            <button
-              onClick={() => onAuthor(cur.owner_username)}
-              title={cur.owner_name}
-              style={{
-                width: 46, height: 46, border: '2px solid rgba(255,255,255,.9)',
-                borderRadius: 'var(--radius-pill)', background: washOf(cur.owner_username),
-                color: 'var(--text-heading)', fontSize: 'var(--text-lg)',
-                fontWeight: 'var(--weight-bold)', cursor: 'pointer',
-              }}
-            >
-              {initial(cur.owner_name)}
-            </button>
-            <Rail
-              icon="heart" filled={cur.liked} label={fmt(cur.like_count)} title="喜欢"
-              color={cur.liked ? '#ee5c2a' : '#fff'} onClick={() => void toggleLike()}
-            />
-            <Rail
-              icon={cur.mine ? 'grid' : cur.installed ? 'check' : 'plus'}
-              label={cur.mine ? '我的' : cur.installed ? '已添加' : '添加'}
-              title="添加到我的作品" color="#fff" onClick={() => void toggleAdd()}
-            />
-            <Rail icon="link" label="分享" title="复制链接" color="#fff" onClick={() => void share()} />
-            {cur.source_prompt && (
-              <Rail icon="remix" label="做同款" title="做同款" color="#fff" onClick={() => onRemix(cur)} />
-            )}
-          </div>
+            {initial(cur.owner_name)}
+          </button>
+          <Rail
+            icon="heart" filled={cur.liked} label={fmt(cur.like_count)} title="喜欢"
+            color={cur.liked ? '#ee5c2a' : '#fff'} onClick={() => void toggleLike()}
+          />
+          <Rail
+            icon={cur.mine ? 'grid' : cur.installed ? 'check' : 'plus'}
+            label={cur.mine ? '我的' : cur.installed ? '已添加' : '添加'}
+            title="添加到我的作品" color="#fff" onClick={() => void toggleAdd()}
+          />
+          <Rail icon="link" label="分享" title="复制链接" color="#fff" onClick={() => void share()} />
+          {cur.source_prompt && (
+            <Rail icon="remix" label="做同款" title="做同款" color="#fff" onClick={() => onRemix(cur)} />
+          )}
         </div>
       </div>
     </div>

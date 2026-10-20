@@ -72,7 +72,18 @@ export interface OpenAiCompatibleConfig {
   /** 单轮最大输出 token。防止一次跑飞把配额烧光。 */
   maxTokens?: number;
   timeoutMs?: number;
+  /**
+   * 思考档位（创建屏那个「快速 / 深度思考 / 最大」）。
+   *
+   * 不设就**不发这个字段**——这是刻意的：reasoning_effort 只有推理模型认，
+   * 网关遇到不认识的字段可能直接 400，那会让所有人的生成一起失败。平台没
+   * 显式开启（AGENT_EFFORT）时，整条链路保持改版前的样子。
+   */
+  effort?: ReasoningEffort | undefined;
 }
+
+/** 思考档位。三档对应 OpenAI 兼容接口的 reasoning_effort。 */
+export type ReasoningEffort = 'low' | 'medium' | 'high';
 
 export class OpenAiCompatibleEngine implements Engine {
   readonly name = 'openai-compatible';
@@ -100,6 +111,7 @@ export class OpenAiCompatibleEngine implements Engine {
         : {}),
       stream: true,
       max_tokens: this.cfg.maxTokens ?? 2048,
+      ...(this.cfg.effort ? { reasoning_effort: this.cfg.effort } : {}),
     };
 
     const ctl = new AbortController();
@@ -249,7 +261,57 @@ function toWireMessage(m: EngineMessage): Record<string, unknown> {
  * 默认模型不用 codex-spark：实测该模型在本网关上工具调用的 arguments
  * 恒为空，无法驱动 Agent。详见文件头部说明。
  */
-export function createEngine(env: NodeJS.ProcessEnv = process.env): Engine {
+export interface EngineChoice {
+  /** 用哪个模型。必须是 configuredModels 里的一个，否则按默认那个来。 */
+  model?: string | undefined;
+  /** 思考档位。平台没开启时忽略。 */
+  effort?: ReasoningEffort | undefined;
+}
+
+/**
+ * 平台允许选的模型。
+ *
+ * 取自 AGENT_MODELS，格式是逗号分隔的若干条，每条用竖线分三段：
+ *
+ *   AGENT_MODELS=gpt-5.6|iSpace Auto|0.4x, claude-sonnet-5|Claude Sonnet 5|1x
+ *                 └ 发给网关的 id  └ 给人看的名字  └ 倍率（可省）
+ *
+ * 没配就只有 AGENT_MODEL 那一个——创建屏的菜单于是只列一行。列一行而不是
+ * 把菜单藏掉：用户至少该知道这次是谁在给他写页面。
+ */
+export interface ModelOption {
+  id: string;
+  label: string;
+  mult?: string | undefined;
+}
+
+export function configuredModels(env: NodeJS.ProcessEnv = process.env): ModelOption[] {
+  const fallback = env.AGENT_MODEL ?? 'gpt-5.6';
+  const raw = (env.AGENT_MODELS ?? '').trim();
+  if (!raw) return [{ id: fallback, label: fallback }];
+
+  const list = raw.split(',').map((entry) => {
+    const [id, label, mult] = entry.split('|').map((x) => x.trim());
+    if (!id) return null;
+    return { id, label: label || id, ...(mult ? { mult } : {}) };
+  }).filter((m): m is ModelOption => m !== null);
+
+  /*
+    配歪了（一条都解析不出来）就退回默认那个，而不是给出一张空菜单——
+    空菜单会让创建屏看起来像是坏了，而真正坏的是一行环境变量。
+  */
+  return list.length ? list : [{ id: fallback, label: fallback }];
+}
+
+/** 平台有没有开启「思考档位」。没开就不在创建屏显示那一排。 */
+export function effortEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AGENT_EFFORT === '1';
+}
+
+export function createEngine(
+  env: NodeJS.ProcessEnv = process.env,
+  choice: EngineChoice = {},
+): Engine {
   const baseUrl = env.AGENT_BASE_URL;
   const apiKey = env.AGENT_API_KEY;
   if (!baseUrl || !apiKey) {
@@ -258,11 +320,18 @@ export function createEngine(env: NodeJS.ProcessEnv = process.env): Engine {
       'Agent 未配置：需要 AGENT_BASE_URL 与 AGENT_API_KEY',
     );
   }
+  const models = configuredModels(env);
+  /*
+    只认白名单里的 id。前端传什么都可能——而 model 是直接发给网关的字段，
+    不校验等于把"随便点哪个模型"的开关交给了任何会发 HTTP 的人。
+  */
+  const picked = models.find((m) => m.id === choice.model) ?? models[0]!;
   return new OpenAiCompatibleEngine({
     baseUrl,
     apiKey,
-    model: env.AGENT_MODEL ?? 'gpt-5.6',
+    model: picked.id,
     maxTokens: Number(env.AGENT_MAX_TOKENS ?? 2048),
     timeoutMs: Number(env.AGENT_TIMEOUT_MS ?? 120_000),
+    ...(effortEnabled(env) && choice.effort ? { effort: choice.effort } : {}),
   });
 }

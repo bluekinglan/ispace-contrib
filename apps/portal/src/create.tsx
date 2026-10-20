@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { User } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api } from './api';
@@ -16,11 +16,14 @@ import { type Device } from './wall';
  * │    发布前检查），而是 Agent 真正做的事：它每调一次工具，这里就多  │
  * │    一行「写 index.html」。编四步假进度条，等于把"正在发生什么"换  │
  * │    成了一段动画——而真实的那几行恰恰是用户看得懂、也该看到的。    │
- * │ 2. 模型是一个灰色的名字，不是可选的下拉。平台只配了一条模型通道   │
- * │    （/agent/status 返回它），给个假下拉只会让人以为能换。        │
- * │ 3. 「添加内容」菜单稿上有五项，这里只留「上传图片」——Agent 接口  │
- * │    真正支持的就是图片（/agent/ask 的 images）。其余四项在设计稿里 │
- * │    也只是弹一句提示，不是做好的功能。                            │
+ * │ 2. 模型下拉和「思考」分段只在平台真的给了得选的东西时才画：模型  │
+ * │    清单来自 AGENT_MODELS，思考档位要 AGENT_EFFORT 开着           │
+ * │    （/agent/status 两样都返回）。只配了一条通道又没开思考时，    │
+ * │    仍旧是一个灰色的名字——下拉里只有一行、点了还是它，不如不画。 │
+ * │ 3. 「添加内容」五项按稿子都在，但只有第一项是通的，而且叫「上传  │
+ * │    图片」不叫「上传文件」：Agent 接口收的就是图片（/agent/ask 的 │
+ * │    images）。其余四项点了弹一句话说明它是干什么的——设计稿里它们 │
+ * │    也只是弹提示。                                                │
  * └──────────────────────────────────────────────────────────────────┘
  */
 export function Create({
@@ -53,11 +56,56 @@ export function Create({
     : (
       <Idle
         draft={draft} setDraft={setDraft} remix={remix} onClearRemix={onClearRemix}
-        onStart={(text, images) => setGen(freshGen(text, images))}
+        onStart={(text, images, choice) => setGen(freshGen(text, images, choice))}
         onToast={onToast}
       />
     );
 }
+
+/** 创建屏那两个菜单选出来的东西，一路带到 /agent/ask。 */
+interface AgentChoice {
+  /** 空字符串表示没得选（平台只有一条通道），让服务端用它的默认。 */
+  model: string;
+  /** null 表示平台没开思考档位，这次就别提它。 */
+  effort: Effort | null;
+}
+
+type Effort = 'low' | 'medium' | 'high';
+
+interface ModelOption { id: string; label: string; mult?: string }
+
+const EFFORTS: { k: Effort; label: string }[] = [
+  { k: 'low', label: '快速' },
+  { k: 'medium', label: '深度思考' },
+  { k: 'high', label: '最大' },
+];
+
+/**
+ * 「添加内容」里的五项。
+ *
+ * 只有第一项真的做事——其余四项点了说一句它是干什么的。设计稿里它们也
+ * 是这样：弹一句话，不是做好的功能。与其画五个按钮里四个点了没反应，
+ * 不如把"它将来会是什么"说清楚。
+ */
+const ADDS: { label: string; icon: 'fileUp' | 'link' | 'shapes' | 'heart' | 'archive'; tip: string | null }[] = [
+  { label: '上传图片', icon: 'fileUp', tip: null },
+  { label: '粘贴链接', icon: 'link', tip: '贴一个网址、AI 先读一遍再动手——这一项还没接上' },
+  { label: '选择 Skill', icon: 'shapes', tip: '挑一个团队沉淀的 Skill，比如「飞书表格」「审批流」——这一项还没接上' },
+  { label: '收藏风格', icon: 'heart', tip: '从你收藏的页面里挑一个风格照着做——这一项还没接上' },
+  { label: '导入项目', icon: 'archive', tip: '把已有的代码包导进来接着改——这一项还没接上' },
+];
+
+/** 两个菜单共用的那块白板。 */
+const panel: React.CSSProperties = {
+  position: 'absolute', left: 0, top: 'calc(100% + 8px)', zIndex: 31, boxSizing: 'border-box',
+  display: 'flex', flexDirection: 'column', borderRadius: 20, background: 'var(--surface-1)',
+  border: '1px solid var(--border-subtle)',
+  boxShadow: '0 24px 48px -16px rgba(24,23,21,.22), 0 2px 6px rgba(24,23,21,.05)',
+};
+
+const menuLabel: React.CSSProperties = {
+  padding: '4px 12px 6px', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
+};
 
 // ── 没开始之前 ──────────────────────────────────────────────────────────
 function Idle({
@@ -67,24 +115,39 @@ function Idle({
   setDraft: (v: string) => void;
   remix: { name: string; author: string } | null;
   onClearRemix: () => void;
-  onStart: (text: string, images: AgentImage[]) => void;
+  onStart: (text: string, images: AgentImage[], choice: AgentChoice) => void;
   onToast: (t: string) => void;
 }) {
   const [sugTab, setSugTab] = useState(0);
   const [images, setImages] = useState<AgentImage[]>([]);
-  const [model, setModel] = useState<string>('');
+  const [menu, setMenu] = useState<null | 'add' | 'model'>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelId, setModelId] = useState('');
+  const [effortOn, setEffortOn] = useState(false);
+  const [effort, setEffort] = useState<Effort>('medium');
   const file = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void api.agentStatus()
-      .then((s) => setModel(s.configured ? s.model : ''))
-      .catch(() => setModel(''));
+      .then((s) => {
+        /* 没配通道就连模型名都不显示——这一屏现在什么都生成不了 */
+        if (!s.configured) return;
+        const list = s.models ?? [];
+        setModels(list);
+        setModelId(list[0]?.id ?? '');
+        setEffortOn(Boolean(s.effort));
+      })
+      .catch(() => { /* 问不到就当没有，输入框照常能用 */ });
   }, []);
+
+  const picked = models.find((m) => m.id === modelId) ?? models[0] ?? null;
+  /* 有得选才画下拉：一条通道又没开思考时，菜单里只有一行、点了还是它 */
+  const pickable = picked !== null && (models.length > 1 || effortOn);
 
   const go = () => {
     const t = draft.trim();
     if (!t) { onToast('先说一句想做什么'); return; }
-    onStart(t, images);
+    onStart(t, images, { model: picked?.id ?? '', effort: effortOn ? effort : null });
   };
 
   const mcp = `claude mcp add ai-deploy --transport http ${location.origin}/deploy/mcp`;
@@ -199,20 +262,56 @@ function Idle({
               setImages((prev) => [...prev, ...next].slice(0, 4));
             }}
           />
-          <button
-            onClick={() => file.current?.click()}
-            title="上传图片"
-            style={{
-              width: 36, height: 36, border: 0, borderRadius: 'var(--radius-pill)',
-              background: 'var(--surface-2)', color: 'var(--text-primary)', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-            }}
-          >
-            <Icon name="plus" size={18} />
-          </button>
-          {model && (
+          {/* 背板：点菜单以外的任何地方都关掉它。铺在菜单下面一层 */}
+          {menu && (
+            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
+          )}
+
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setMenu((m) => (m === 'add' ? null : 'add'))}
+              title="添加内容"
+              style={{
+                width: 36, height: 36, border: 0, borderRadius: 'var(--radius-pill)',
+                background: 'var(--surface-2)', color: 'var(--text-primary)', display: 'flex',
+                alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+              }}
+            >
+              <Icon name="plus" size={18} />
+            </button>
+            {menu === 'add' && (
+              <div style={{ ...panel, width: 240, padding: '10px 8px', gap: 2 }}>
+                <span style={menuLabel}>添加内容</span>
+                {ADDS.map((it, i) => (
+                  <Fragment key={it.label}>
+                    {i === 2 && (
+                      <div style={{ height: 1, margin: '4px 6px', background: 'var(--border-tabby)' }} />
+                    )}
+                    <button
+                      onClick={() => {
+                        setMenu(null);
+                        if (it.tip) onToast(it.tip);
+                        else file.current?.click();
+                      }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 12, height: 40, padding: '0 12px',
+                        border: 0, borderRadius: 12, background: 'transparent',
+                        color: 'var(--text-primary)', fontSize: 'var(--text-md)',
+                        cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
+                      <Icon name={it.icon} size={18} color="var(--text-tertiary)" />
+                      {it.label}
+                    </button>
+                  </Fragment>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {picked && !pickable && (
             <span
-              title="平台配置的模型通道，暂不支持切换"
+              title="平台只配了这一条模型通道"
               style={{
                 display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 14px',
                 borderRadius: 'var(--radius-pill)', background: 'var(--surface-2)',
@@ -220,8 +319,77 @@ function Idle({
                 fontWeight: 'var(--weight-medium)', whiteSpace: 'nowrap',
               }}
             >
-              {model}
+              {picked.label}
             </span>
+          )}
+
+          {picked && pickable && (
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setMenu((m) => (m === 'model' ? null : 'model'))}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 12px 0 14px',
+                  border: 0, borderRadius: 'var(--radius-pill)', background: 'var(--surface-2)',
+                  color: 'var(--text-primary)', fontSize: 'var(--text-md)',
+                  fontWeight: 'var(--weight-medium)', whiteSpace: 'nowrap', cursor: 'pointer',
+                }}
+              >
+                {picked.label}
+                <Icon name="chevDown" size={15} color="var(--text-tertiary)" />
+              </button>
+              {menu === 'model' && (
+                <div style={{ ...panel, width: 320, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '10px 8px' }}>
+                    <span style={menuLabel}>模型</span>
+                    {models.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => { setModelId(m.id); setMenu(null); }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, height: 42, padding: '0 12px',
+                          border: 0, borderRadius: 12, background: 'transparent',
+                          color: 'var(--text-heading)', fontSize: 'var(--text-md)',
+                          fontWeight: 'var(--weight-semibold)', cursor: 'pointer', textAlign: 'left',
+                        }}
+                      >
+                        <span style={{ width: 18, display: 'inline-flex' }}>
+                          {m.id === picked.id && (
+                            <Icon name="check" size={17} color="var(--tabby-orange)" />
+                          )}
+                        </span>
+                        <span style={{ flex: 1 }}>{m.label}</span>
+                        {m.mult && (
+                          <span
+                            style={{
+                              fontFamily: 'var(--font-mono)', fontSize: 'var(--text-base)',
+                              fontWeight: 'var(--weight-regular)', color: 'var(--text-tertiary)',
+                            }}
+                          >
+                            {m.mult}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  {effortOn && (
+                    <div
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 16px 16px',
+                        borderTop: '1px solid var(--border-tabby)',
+                      }}
+                    >
+                      <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>思考</span>
+                      <Segment
+                        options={EFFORTS}
+                        value={effort}
+                        onPick={(k) => setEffort(k as Effort)}
+                        style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)' }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           <div style={{ flex: 1 }} />
           <button
@@ -367,6 +535,8 @@ interface Gen {
   site: string | null;
   confirmToken: string | null;
   sessionId: string | null;
+  /** 模型和思考档位，整段生成都用同一个——后面追问也还是它。 */
+  choice: AgentChoice;
   steps: Step[];
   /** 模型说的话，按轮次分段。 */
   says: { me: boolean; text: string }[];
@@ -374,9 +544,9 @@ interface Gen {
   publishedUrl: string | null;
 }
 
-const freshGen = (text: string, images: AgentImage[]): Gen => ({
+const freshGen = (text: string, images: AgentImage[], choice: AgentChoice): Gen => ({
   text, images, title: titleOf(text), site: null, confirmToken: null, sessionId: null,
-  steps: [], says: [], busy: true, publishedUrl: null,
+  choice, steps: [], says: [], busy: true, publishedUrl: null,
 });
 
 function Generating({
@@ -415,6 +585,7 @@ function Generating({
       await streamAsk({
         text,
         images,
+        choice: gen.choice,
         sessionId: gen.sessionId,
         onSession: (id) => setGen((g) => ({ ...g, sessionId: id })),
         onText: (delta) => setGen((g) => {
@@ -844,6 +1015,7 @@ function Bubble({ text }: { text: string }) {
 async function streamAsk(opts: {
   text: string;
   images: AgentImage[];
+  choice: AgentChoice;
   sessionId: string | null;
   onSession: (id: string) => void;
   onText: (delta: string) => void;
@@ -857,6 +1029,9 @@ async function streamAsk(opts: {
     body: JSON.stringify({
       text: opts.text,
       images: opts.images.map(({ mimeType, dataBase64 }) => ({ mimeType, dataBase64 })),
+      /* 空的就别传：服务端按它自己的默认来，比传一个空串让它去校验干净 */
+      ...(opts.choice.model ? { model: opts.choice.model } : {}),
+      ...(opts.choice.effort ? { effort: opts.choice.effort } : {}),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     }),
   });

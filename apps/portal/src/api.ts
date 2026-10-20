@@ -336,7 +336,14 @@ export const api = {
     /agent/ask 是 SSE，不走这里的 JSON 辅助函数——它要逐字读 body，见
     create.tsx 的 streamAsk。这里只放它周边那几条普通请求。
   */
-  agentStatus: () => get<{ configured: boolean; model: string }>('/agent/status'),
+  agentStatus: () => get<{
+    configured: boolean;
+    model: string;
+    /** 平台配了哪几条模型通道（AGENT_MODELS）。只有一条时创建屏不画下拉。 */
+    models: { id: string; label: string; mult?: string }[];
+    /** 平台认不认思考档位（AGENT_EFFORT）。不认就不画那个分段。 */
+    effort: boolean;
+  }>('/agent/status'),
   /** Agent 发起的待确认发布。token 是一次性的，用掉即失效。 */
   agentPending: () =>
     get<{ items: { confirmToken: string; site: string; summary: string; createdAt: number }[] }>(
