@@ -63,7 +63,12 @@ export class PreviewSessions {
     if (prev) this.drop(prev);
 
     const s: PreviewSession = {
-      id: randomBytes(16).toString('base64url'),
+      /*
+        24 字节 = 192 位熵。比原先的 16 字节长，是因为 **id 现在就是凭据**
+        ——文件请求不再要 cookie（见 routes/preview.ts 文件头）。它要像会话
+        令牌一样猜不出来，而不只是"不容易撞上"。
+      */
+      id: randomBytes(24).toString('base64url'),
       token: randomBytes(32).toString('base64url'),
       userId,
       username,

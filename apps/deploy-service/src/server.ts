@@ -75,6 +75,8 @@ import { registerPreviewRoutes } from './routes/preview.js';
 import { PreviewSessions } from './services/preview-session.js';
 import { makePreviewAuth } from './services/preview-auth.js';
 import { detectKind } from './services/preview-kind.js';
+import { registerPlayRoutes } from './routes/play.js';
+import { PlaySessions } from './services/play-session.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -1079,6 +1081,16 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     requireAuth,
     workspaceRoot: WORKSPACE_ROOT,
     sessions: previewSessions,
+  });
+
+  /*
+    已发布页面的试玩。和上面是同一套思路（凭据放路径里），因为沙箱 iframe
+    的子资源带不上 cookie —— 直接嵌 /{owner}/{slug}/ 出来的是一页裸 HTML。
+  */
+  registerPlayRoutes(app, {
+    sql, requireAuth,
+    sitesRoot: process.env.ISPACE_SITES_ROOT ?? '/srv/sites',
+    sessions: new PlaySessions(),
   });
 
   // ── 静态页访问鉴权（Caddy forward_auth 的落点）────────────────────
