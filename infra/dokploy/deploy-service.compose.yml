@@ -53,6 +53,13 @@ services:
       AGENT_BASE_URL: ${AGENT_BASE_URL:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-gpt-5.6}
+      # 创建屏模型下拉里列哪几条通道（id|名字|倍率，逗号分隔）。管理员配。
+      # 不配就只有 AGENT_MODEL 那一个，那一处显示成一个灰名字而不是下拉。
+      AGENT_MODELS: ${AGENT_MODELS:-}
+      # 开了才把「思考」档位发给网关，创建屏也才画那一排。网关不认就别开。
+      AGENT_EFFORT: ${AGENT_EFFORT:-}
+      # 设计扇出一次出几个方向。N 就是 N 倍模型开销，默认 6。
+      AGENT_FANOUT_N: ${AGENT_FANOUT_N:-}
       # 语音转写兜底。缺失时 /voice/transcribe 返回 NOT_IMPLEMENTED，
       # 手机端据此保持置灰，不静默失败。
       STEP_API_KEY: ${STEP_API_KEY:-}
