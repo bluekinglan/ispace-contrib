@@ -123,12 +123,25 @@ export function ForYou({
         style={{
           flex: 1, minHeight: 0, display: 'grid',
           /*
-            稿上三列是 1fr / auto / 1fr。照搬的问题是：电脑版的框按 54vw 算
-            宽，而 vw 里含着左边那条 248px 的侧栏，于是两侧各只剩一百来像素
-            ——作品名被挤成一行两个字。这里给左栏一个 240px 的下限，让框自己
-            缩（它带 maxWidth:100%），右边那条动作栏本来就只要 46px。
+            三列必须左右对称，中间那块才真的在屏幕中间。
+
+            稿上写的是 1fr / auto / 1fr：两侧等宽，中间由内容撑开，天然居中。
+            照搬的问题是电脑版的框按 `54vw` 算宽，而 vw 里含着左边那条 248px
+            的侧栏——1440 宽时两侧各只剩一百来像素，作品名被挤成一行两个字。
+
+            曾经为此把右栏改成 auto（动作栏只要 46px），左栏吃掉剩下的全部。
+            那确实治好了挤，但代价是两侧不再等宽：宽屏上中间那块整个被推到
+            右边去（2000px 下尤其明显）。
+
+            现在按比例分：中间 2fr、两侧各 0.8fr，谁宽谁窄随屏幕一起变，而两侧
+            的取值完全一样——一样的取值必然算出一样的宽度，于是中间那列恒在
+            正中。两侧另给 200px 的下限，窄屏上作品名不至于又被挤成两个字。
+
+            框不再自己按 vw 算宽，改成填满中间那一列（maxWidth 1040 封顶）：
+            宽度由这块真正可用的空间决定，而 vw 里含着侧栏，那正是上一版
+            算歪的根子。
           */
-          gridTemplateColumns: 'minmax(240px,1fr) minmax(0,auto) auto',
+          gridTemplateColumns: 'minmax(200px,0.8fr) minmax(0,2fr) minmax(200px,0.8fr)',
           gridTemplateRows: 'minmax(0,1fr)', alignItems: 'center', gap: 40, padding: '0 40px 32px',
         }}
       >
@@ -153,7 +166,10 @@ export function ForYou({
               </div>
               <h2
                 style={{
-                  margin: 0, fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 42,
+                  margin: 0, fontFamily: 'var(--font-serif)', fontWeight: 500,
+                  /* 稿上是定死的 42。那是一张定宽画布，真实窗口窄下来时
+                     左栏会跟着窄，42 的作品名就断成两行 */
+                  fontSize: 'clamp(28px, 2.4vw, 42px)',
                   lineHeight: 1.1, color: '#fff',
                 }}
               >
@@ -198,7 +214,7 @@ export function ForYou({
           ) : (
             <div
               style={{
-                width: 'min(54vw, 1040px)', maxWidth: '100%', borderRadius: 14, overflow: 'hidden',
+                width: '100%', maxWidth: 1040, borderRadius: 14, overflow: 'hidden',
                 background: 'var(--dark-surface)',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.1), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}

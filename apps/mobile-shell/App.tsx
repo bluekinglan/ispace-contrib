@@ -1259,7 +1259,7 @@ const s = StyleSheet.create({
   // ── 登录（移动端 v2 稿 01）──────────────────────────────────────
   loginRoot: { flex: 1, paddingHorizontal: 24, gap: 14 },
   loginBrand: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-end' },
-  loginWordmark: { fontSize: 22, fontWeight: '600', color: '#fff', letterSpacing: -0.2 },
+  loginWordmark: { fontSize: 22, fontWeight: '700', color: '#fff', letterSpacing: -0.4 },
   collage: {
     position: 'absolute', left: -40, right: -40, top: 0, height: 320,
     flexDirection: 'row', flexWrap: 'wrap', gap: 14, opacity: 0.9,

@@ -66,7 +66,12 @@ export function Mark({ size = 26, style }: { size?: number; style?: CSSPropertie
 }
 
 /**
- * 字标。600 字重、字距收紧 —— 设计稿 iSpace 字标.dc.html 的实测值。
+ * 字标。700 字重、字距收紧。
+ *
+ * 稿上标的是 600，但那是 Outfit 的 600——它本身就比 Manrope 同一档粗一些。
+ * 换成仓库里打包的 Manrope 之后，600 在品牌标记旁边显得发虚（标记是实心
+ * 色块，字标跟它并排时要撑得住）。700 是打包进来的最重那一档，再重就只能
+ * 让浏览器合成伪粗体，边缘会糊。
  *
  * 设计稿用的是 Outfit，这里**没有**跟着引：Outfit 只有 Google Fonts 一个
  * 来源，而这套平台是内网部署、还走着明文 http——外链字体要么被拦，要么
@@ -81,8 +86,8 @@ export function Wordmark({ size = 24, style }: { size?: number; style?: CSSPrope
   return (
     <span
       style={{
-        fontFamily: 'var(--font-sans)', fontSize: size, fontWeight: 600,
-        lineHeight: 1, letterSpacing: '-.01em', color: 'var(--text-heading)', ...style,
+        fontFamily: 'var(--font-sans)', fontSize: size, fontWeight: 700,
+        lineHeight: 1, letterSpacing: '-.02em', color: 'var(--text-heading)', ...style,
       }}
     >
       iSPACE
