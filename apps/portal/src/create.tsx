@@ -686,13 +686,17 @@ function Generating({
   useEffect(() => {
     if (!siteTouched.current && gen.site) setSiteDraft(gen.site);
   }, [gen.site]);
-  /* 工作区里有没有首页。没有的话「发布」点了也只会被服务端拦下来 */
+  /*
+    工作区里有没有东西可发。只看"有没有文件"（下划线开头的草稿目录不算）：
+    首页在不在根上、是不是 dist/ 里的构建产物，交给服务端那道自检去认——
+    它和发布链路是同一套认法，前端再学一遍只会和它对不上。
+  */
   const [hasPage, setHasPage] = useState(false);
   useEffect(() => {
     if (!gen.sessionId) { setHasPage(false); return; }
     let alive = true;
     void api.workspaceTree(gen.sessionId)
-      .then((r) => { if (alive) setHasPage(r.entries.some((e) => !e.dir && e.path === 'index.html')); })
+      .then((r) => { if (alive) setHasPage(r.entries.some((e) => !e.dir && !e.path.startsWith('_'))); })
       .catch(() => undefined);
     return () => { alive = false; };
   }, [gen.sessionId, fsRev]);

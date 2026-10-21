@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, IspaceError, appSlugSchema, type User } from '@ispace/contracts';
@@ -808,8 +807,28 @@ export function registerAgentRoutes(
     }
 
     const srcDir = sw.ws.dir(user.username, rec.workspace);
-    if (!existsSync(join(srcDir, 'index.html'))) {
+    /*
+      先跑一遍发布前自检（和模型的 check_publishable 是同一个函数）。
+
+      令牌那条路上，自检是签令牌之前的一道：没过就拿不到令牌。这里没有令牌
+      了，自检就挪到这里——不跑的话，被拦的产物要到发布链路深处才报，说法
+      也不如自检这张"文件:行:规则:怎么改"的清单好照着改。
+
+      顺带它认产物根的办法和发布链路一样：dist/index.html 这种构建产物也算
+      有页面，不能只看工作区根上有没有 index.html。
+    */
+    const check = await checkPublishable(srcDir);
+    /* error 只在认不出页面时出现。原话是给 CLI 用户的（"打包的是构建输出"），这里换成工作台的说法 */
+    if (check.error) {
       throw new IspaceError(ERROR_CODES.INVALID_INPUT, '工作区里还没有页面（index.html），等第一版做出来再发布。');
+    }
+    if (check.findings.length) {
+      const list = check.findings.slice(0, 8)
+        .map((f) => `- ${f.file}:${f.line}  ${f.rule}：${f.advice}`).join('\n');
+      throw new IspaceError(
+        ERROR_CODES.INVALID_INPUT,
+        `发布前自检没过，这几处要先改（可以直接让它照着改）：\n${list}`,
+      );
     }
 
     /*

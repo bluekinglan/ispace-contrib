@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyRequest } from 'fastify';
@@ -122,6 +122,30 @@ describe('工作台发布：点了就发，不要令牌', () => {
     const res = await post('/agent/publish-session', { sessionId: sid, site: 'kong' });
     expect(res.statusCode).toBe(422);
     expect(res.json().message).toContain('index.html');
+  });
+
+  /*
+    令牌那条路上，发布前自检是签令牌之前的一道。这里没有令牌，自检挪到发布
+    之前：被拦的产物当场拿到"文件:行:规则:怎么改"，而不是到发布链路深处才报。
+  */
+  it('自检没过不发，并把要改的地方列出来', async () => {
+    const { sid } = await sessionWithPage('<h1>天气</h1><script>el.innerHTML = data.html;</script>');
+    const n = deployed.length;
+    const res = await post('/agent/publish-session', { sessionId: sid, site: 'tianqi' });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().message).toContain('index.html:1');
+    expect(res.json().message).toContain('innerHTML-from-variable');
+    expect(deployed).toHaveLength(n);
+  });
+
+  it('构建产物在 dist/ 里也认得出来，和发布链路同一套认法', async () => {
+    const sid = (await post('/agent/session', {})).json().sessionId as string;
+    const rec = await sw.store.get(sid);
+    const dir = sw.ws.dir(me.username, rec!.workspace);
+    mkdirSync(join(dir, 'dist'), { recursive: true });
+    writeFileSync(join(dir, 'dist', 'index.html'), '<h1>构建出来的</h1>');
+    const res = await post('/agent/publish-session', { sessionId: sid, site: 'built' });
+    expect(res.statusCode).toBe(200);
   });
 
   it('没地址、地址不合法，都是 4xx', async () => {
