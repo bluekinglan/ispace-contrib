@@ -1099,13 +1099,21 @@ const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 102
  * 间来回切时会跟着内容挪，而发布是与当前看哪一页无关的事。
  */
 export function PublishMenu({
-  published, url, vis, setVis, canPublish, publishing, onPublish, onMine, onToast, onClose,
+  published, url, username, site, onSite, siteOk, vis, setVis, canPublish, notReady, publishing,
+  onPublish, onMine, onToast, onClose,
 }: {
   published: boolean;
   url: string;
+  username: string;
+  /** 发到哪个地址。模型提过的、或这段对话发过的，先填上；人可以改。 */
+  site: string;
+  onSite: (s: string) => void;
+  siteOk: boolean;
   vis: 'private' | 'shared' | 'public';
   setVis: (v: 'private' | 'shared' | 'public') => void;
   canPublish: boolean;
+  /** 现在还发不了的原因，写在按钮上。能发时为空。 */
+  notReady: string | null;
   publishing: boolean;
   onPublish: () => void;
   onMine: () => void;
@@ -1125,15 +1133,50 @@ export function PublishMenu({
       <span style={{ fontSize: 'var(--text-card-title)', fontWeight: 'var(--weight-bold)', color: 'var(--text-heading)' }}>
         {published ? '已发布到你的空间' : '发布到你的空间'}
       </span>
-      <span
-        className="mono"
-        style={{
-          padding: '10px 12px', borderRadius: 12, background: 'var(--surface-2)',
-          fontSize: 'var(--text-base)', color: 'var(--text-secondary)', wordBreak: 'break-all',
-        }}
-      >
-        {url || '模型请求发布之后才知道地址'}
-      </span>
+      {published ? (
+        <span
+          className="mono"
+          style={{
+            padding: '10px 12px', borderRadius: 12, background: 'var(--surface-2)',
+            fontSize: 'var(--text-base)', color: 'var(--text-secondary)', wordBreak: 'break-all',
+          }}
+        >
+          {url}
+        </span>
+      ) : (
+        /*
+          地址原来是模型调 request_deploy 时自己定的，人改不了，模型没提就发不了。
+          现在摆在这里：模型提过就先填上它提的，人随时能改。
+        */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label
+            className="mono"
+            style={{
+              display: 'flex', alignItems: 'center', height: 40, padding: '0 12px', borderRadius: 12,
+              background: 'var(--surface-2)', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
+              boxShadow: site && !siteOk ? 'inset 0 0 0 1.5px var(--error)' : 'none',
+            }}
+          >
+            <span style={{ whiteSpace: 'nowrap' }}>/{username}/</span>
+            <input
+              value={site}
+              onChange={(e) => onSite(e.target.value.trim().toLowerCase())}
+              placeholder="起个地址，比如 paiban"
+              spellCheck={false}
+              style={{
+                flex: 1, minWidth: 0, padding: 0, border: 0, outline: 'none', background: 'transparent',
+                font: 'inherit', color: 'var(--text-heading)',
+              }}
+            />
+            <span>/</span>
+          </label>
+          {site && !siteOk && (
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}>
+              只能用小写字母、数字和单个连字符，字母开头，2 到 31 个字。
+            </span>
+          )}
+        </div>
+      )}
 
       {published ? (
         <div style={{ display: 'flex', gap: 8 }}>
@@ -1184,7 +1227,7 @@ export function PublishMenu({
               cursor: canPublish && !publishing ? 'pointer' : 'default',
             }}
           >
-            {publishing ? '正在发布…' : canPublish ? '发布' : '还没准备好发布'}
+            {publishing ? '正在发布…' : canPublish ? '发布' : notReady ?? '还没准备好发布'}
           </button>
           <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
             发布前会自动扫一遍密钥和 XSS 规则。

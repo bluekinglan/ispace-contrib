@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { User } from '@ispace/contracts';
+import { appSlugSchema, type User } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api } from './api';
 import { AiBubble, UserBubble, type ChatFile } from './chat';
@@ -677,6 +677,25 @@ function Generating({
   const vw = useViewportWidth();
   /* 文件树的版本号。一轮做完就 +1，让「代码」页重新拉一遍 */
   const [fsRev, setFsRev] = useState(0);
+  /*
+    发到哪个地址。模型调 request_deploy 时提过的、或者这段对话以前发过的，
+    先填上；人改过之后就以人的为准，模型再提也不覆盖。
+  */
+  const [siteDraft, setSiteDraft] = useState(gen.site ?? '');
+  const siteTouched = useRef(false);
+  useEffect(() => {
+    if (!siteTouched.current && gen.site) setSiteDraft(gen.site);
+  }, [gen.site]);
+  /* 工作区里有没有首页。没有的话「发布」点了也只会被服务端拦下来 */
+  const [hasPage, setHasPage] = useState(false);
+  useEffect(() => {
+    if (!gen.sessionId) { setHasPage(false); return; }
+    let alive = true;
+    void api.workspaceTree(gen.sessionId)
+      .then((r) => { if (alive) setHasPage(r.entries.some((e) => !e.dir && e.path === 'index.html')); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [gen.sessionId, fsRev]);
   const log = useRef<HTMLDivElement | null>(null);
   /*
     一进来先要一条会话、一个工作区（docs/specs/2026-10-21-agent-harness.md §1）。
@@ -725,7 +744,12 @@ function Generating({
    * （gen.files），而不是对话里最后一条。
    */
   const run = async (text: string, images: AgentImage[], first = false) => {
-    setGen((g) => ({ ...g, busy: true }));
+    /*
+      发布过之后又说了一句要改的：这就是在做下一版了。右栏换回实时预览，
+      「发布」按钮回来——再发是更新同一个地址（这段对话记着它）。原来发布
+      过一次之后，按钮就一直是「已发布」，改完的东西再也发不出去。
+    */
+    setGen((g) => ({ ...g, busy: true, publishedUrl: null }));
     setModelAsk(null);
     /*
       这一轮有没有真的发生什么。模型可能一个字都不说、一个工具都不调就结束
@@ -946,11 +970,26 @@ function Generating({
   const setModel = (id: string) => setGen((g) => ({ ...g, choice: { ...g.choice, model: id } }));
   const setEffort = (e: Effort) => setGen((g) => ({ ...g, choice: { ...g.choice, effort: e } }));
 
-  const publish = async () => {
-    if (!gen.confirmToken || publishing) return;
+  const siteOk = appSlugSchema.safeParse(siteDraft).success;
+  /* 现在还发不了的原因。能发时为空 */
+  const notReady = !gen.sessionId || !hasPage ? '第一版还没做好'
+    : gen.busy ? '这一轮还在做'
+      : !siteOk ? '先填一个地址'
+        : null;
+
+  /**
+   * 发布：发这段对话的工作区，不要令牌——人在这里点这一下就是确认
+   * （为什么不要，见 routes/agent.ts 的 /agent/publish-session）。
+   */
+  const publish = async (overwrite = false) => {
+    if (!gen.sessionId || publishing || notReady) return;
     setPublishing(true);
+    let retry = false;
     try {
-      const r = await api.agentPublish(gen.confirmToken, gen.title);
+      const r = await api.agentPublishSession({
+        sessionId: gen.sessionId, site: siteDraft, name: gen.title,
+        ...(overwrite ? { overwrite: true } : {}),
+      });
       /*
         可见范围是发布之后的一次独立改动：发布链路本身只管"把东西放上去"，
         谁能看是 apps.visibility 那一列的事（和控制台里改它走同一条接口）。
@@ -963,6 +1002,12 @@ function Generating({
       setPubOpen(false);
       onToast(`已发布到 ${r.url}`);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : '发布失败';
+      /* 地址上已经有自己另一个页面：问一句，确认了再覆盖 */
+      if ((e as { code?: string }).code === 'ALREADY_EXISTS' && !overwrite) {
+        retry = window.confirm(`${msg}\n\n用这一版覆盖它吗？`);
+        return;
+      }
       /*
         发布失败的话留在对话里，不只弹一个会淡出的 toast。
 
@@ -970,10 +1015,12 @@ function Generating({
         话里带着**规则名和行号**——它正是下一步要照着改的东西。toast 一淡出，
         人看到的就是"点了发布，按钮还在那儿"，根本不知道发生过什么。
       */
-      const msg = e instanceof Error ? e.message : '发布失败';
       setGen((g) => ({ ...g, says: [...g.says, { me: false, text: `没能发布：${msg}` }] }));
       onToast(msg);
-    } finally { setPublishing(false); }
+    } finally {
+      setPublishing(false);
+      if (retry) void publish(true);
+    }
   };
 
   useEffect(() => {
@@ -1324,7 +1371,12 @@ function Generating({
                 url={url}
                 vis={vis}
                 setVis={setVis}
-                canPublish={gen.confirmToken !== null}
+                username={me.username}
+                site={siteDraft}
+                onSite={(v) => { siteTouched.current = true; setSiteDraft(v); }}
+                siteOk={siteOk}
+                canPublish={notReady === null}
+                notReady={notReady}
                 publishing={publishing}
                 onPublish={() => void publish()}
                 onMine={onMine}

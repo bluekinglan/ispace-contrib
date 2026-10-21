@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { API_BASE, ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
+import { API_BASE, ERROR_CODES, IspaceError, appSlugSchema, type User } from '@ispace/contracts';
 import {
   availableFromRows, type ConnectorRow,
 } from '../services/connectors-available.js';
-import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
+import { findApp, getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
   AgentSession, DEFAULT_CONTEXT_CHARS, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION,
   configuredImageModels, configuredModels, createEngine, createImageGenerator, effortEnabled,
@@ -763,6 +764,82 @@ export function registerAgentRoutes(
     await sw.store.save(p.sessionId, { slug: p.site })
       .catch((e) => req.log.warn({ err: e }, '发布成功但没能记下页面与工作区的对应'));
     return { ...outcome, summary: p.summary };
+  });
+
+  /**
+   * iDo 工作台的「发布」：人点了就发这段对话的工作区，不要确认令牌。
+   *
+   * ┌─ 为什么这里不要令牌，而 /agent/publish 要 ──────────────────────┐
+   * │ 确认令牌是"Agent 请求、人点头"的那一下：在手机壳、在外部 AI 里， │
+   * │ 人不在 iSpace 的界面前，得有个东西把发布请求攥住等他回来确认。   │
+   * │                                                                   │
+   * │ 工作台里人就坐在屏幕前，点「发布」这一下本身就是确认——再垫一个  │
+   * │ 令牌只剩副作用：它在内存里，服务每部署一次就全丢，点发布收到     │
+   * │ 「确认令牌无效或已过期」；放半小时也过期；模型没调 request_deploy │
+   * │ 时按钮干脆点不了，哪怕页面早就写好了。                           │
+   * └───────────────────────────────────────────────────────────────────┘
+   *
+   * 守住的东西一样没少：要登录、会话必须是本人的、发的是这段对话自己的
+   * 工作区（不是任意目录）、发布链路的扫描与 base path 校验照走。多出来
+   * 的一道是**覆盖保护**：地址已经被这个人另一个页面占着时，要明说覆盖。
+   */
+  app.post(`${API_BASE}/agent/publish-session`, async (req) => {
+    const user = await requireAuth(req);
+    const input = z.object({
+      sessionId: z.string().uuid(),
+      site: appSlugSchema.optional(),
+      name: z.string().max(32).optional(),
+      /** 地址已有别的页面时，确认要覆盖它。 */
+      overwrite: z.boolean().optional(),
+    }).parse(req.body);
+
+    const rec = await sw.owned(user, input.sessionId);
+    if (!rec) {
+      throw new IspaceError(ERROR_CODES.NOT_FOUND, '这段对话已经找不到了（超过 30 天会清掉），刷新一下再试。');
+    }
+    const site = input.site ?? rec.slug;
+    if (!site) {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '先给页面起个地址，比如 paiban。');
+    }
+
+    /* 模型还在往这个工作区里写：这时候发出去的是半截页面 */
+    if (busy.has(rec.id)) {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '这一轮还在做，等它做完再发布。');
+    }
+
+    const srcDir = sw.ws.dir(user.username, rec.workspace);
+    if (!existsSync(join(srcDir, 'index.html'))) {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '工作区里还没有页面（index.html），等第一版做出来再发布。');
+    }
+
+    /*
+      覆盖保护。这段对话自己发过的地址再发是"更新"，不用问；别的地址上已经
+      有页面，就是"拿这个工作区盖掉另一个页面"——多半是地址填错了。
+    */
+    if (rec.slug !== site && !input.overwrite) {
+      const existing = await findApp(sql, user.id, site);
+      if (existing) {
+        throw new IspaceError(
+          ERROR_CODES.ALREADY_EXISTS,
+          `/${user.username}/${site}/ 已经有一个页面「${existing.name}」了。换个地址，或者确认用这一版覆盖它。`,
+        );
+      }
+    }
+
+    const outcome = await deployService.deploy({
+      user,
+      slug: site,
+      srcDir,
+      name: input.name,
+      source: 'agent',
+      clientIp: req.ip,
+    });
+
+    /* 这段对话 Agent 之前签过的令牌就作废了——发的就是它们要发的东西 */
+    for (const [k, v] of pending) if (v.sessionId === rec.id) pending.delete(k);
+    await sw.store.save(rec.id, { slug: site })
+      .catch((e) => req.log.warn({ err: e }, '发布成功但没能记下页面与工作区的对应'));
+    return outcome;
   });
 
   // ── 待确认列表（手机端拉取）──────────────────────────────────────

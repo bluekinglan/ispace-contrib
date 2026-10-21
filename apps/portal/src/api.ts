@@ -393,9 +393,15 @@ export const api = {
     get<{ items: { confirmToken: string; site: string; summary: string; createdAt: number }[] }>(
       '/agent/pending',
     ),
-  /** 确认并真的发布：核销 token，把工作区走一遍正规发布链路。 */
+  /** 确认并真的发布：核销 token，把工作区走一遍正规发布链路。手机壳与外部 AI 那条路用。 */
   agentPublish: (confirmToken: string, name?: string) =>
     post<{ app: App; url: string; summary: string }>('/agent/publish', { confirmToken, name }),
+  /**
+   * iDo 工作台的发布：发这段对话的工作区，不要令牌——人在界面前点这一下就是确认。
+   * 地址被自己另一个页面占着时回 ALREADY_EXISTS，明说 overwrite 才覆盖。
+   */
+  agentPublishSession: (body: { sessionId: string; site?: string; name?: string; overwrite?: boolean }) =>
+    post<{ app: App; url: string }>('/agent/publish-session', body),
 
   /**
    * 开一个工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）。
