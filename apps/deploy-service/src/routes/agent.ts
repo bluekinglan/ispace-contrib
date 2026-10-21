@@ -8,7 +8,7 @@ import {
 } from '../services/connectors-available.js';
 import { findApp, getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
-  AgentSession, DEFAULT_CONTEXT_CHARS, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION,
+  AgentSession, contextBudget, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION,
   configuredImageModels, configuredModels, createEngine, createImageGenerator, effortEnabled,
   fanoutCount, numEnv, runFanout, toolsFor, variantDirections,
   type AvailableConnector, type Engine, type FanoutEvent, type ImageGenerator, type PublishCheck,
@@ -451,7 +451,12 @@ export function registerAgentRoutes(
       canDraw,
       canSee,
       tools: toolsFor({ canDraw, canSee, canPlan: planning }),
-      compact: { budgetChars: numEnv(process.env.AGENT_CONTEXT_CHARS, DEFAULT_CONTEXT_CHARS) },
+      /*
+        预算跟着**这一轮实际用的那个模型**走：窗口差着数量级的几条通道
+        （GPT 系 258k、deepseek 与 GLM 到 1M）用同一个保守阈值的话，后者
+        会被远早于必要地压掉历史——表现就是"它好像忘了前面说过的话"。
+      */
+      compact: { budgetChars: contextBudget(process.env, engine.model) },
       onEvent: send,
     });
     // 接上库里的历史（不含 system，构造时已按此刻的连接器、预览状态拼好）

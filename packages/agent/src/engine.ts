@@ -1,4 +1,5 @@
 import { ERROR_CODES, IspaceError } from '@ispace/contracts';
+import { DEFAULT_CONTEXT_CHARS } from './compact.js';
 
 /**
  * Agent 引擎抽象（技术方案 §6.6）。
@@ -296,16 +297,28 @@ export interface EngineChoice {
  *
  * 取自 AGENT_MODELS，格式是逗号分隔的若干条，每条用竖线分三段：
  *
- *   AGENT_MODELS=gpt-5.6|iSpace Auto|0.4x, claude-sonnet-5|Claude Sonnet 5|1x
- *                 └ 发给网关的 id  └ 给人看的名字  └ 倍率（可省）
+ *   AGENT_MODELS=gpt-6.1-sol|iSpace Auto|0.4x|258000, deepseek-flash|快|1x|1000000
+ *                 └ 发给网关的 id  └ 名字  └ 倍率（可省）  └ 窗口 token 数（可省）
  *
  * 没配就只有 AGENT_MODEL 那一个——创建屏的菜单于是只列一行。列一行而不是
  * 把菜单藏掉：用户至少该知道这次是谁在给他写页面。
+ *
+ * ┌─ 第四段「窗口」是干什么的 ──────────────────────────────────────────┐
+ * │ 平台原先不知道任何一个模型的上下文窗口，压缩阈值只有一个全局值     │
+ * │ （160000 字符），按最小的那个模型定。而这几条通道差着数量级：      │
+ * │ GPT 系 258k token，deepseek 与 GLM 到 1M——用同一个保守阈值，       │
+ * │ 后两者会被远早于必要地压掉历史，表现就是"它好像忘了前面说过的话"。 │
+ * │                                                                     │
+ * │ 填了窗口，压缩阈值就按**这一轮实际用的那个模型**算（见 budgetFor）。│
+ * │ 不填保持原样——不猜，猜错的后果是请求被网关直接拒掉。               │
+ * └─────────────────────────────────────────────────────────────────────┘
  */
 export interface ModelOption {
   id: string;
   label: string;
   mult?: string | undefined;
+  /** 上下文窗口（token）。没填就是不知道，按全局保守值走。 */
+  ctx?: number | undefined;
 }
 
 /**
@@ -335,9 +348,15 @@ export function configuredModels(env: NodeJS.ProcessEnv = process.env): ModelOpt
   if (!raw) return [{ id: fallback, label: fallback }];
 
   const list = raw.split(',').map((entry) => {
-    const [id, label, mult] = entry.split('|').map((x) => x.trim());
+    const [id, label, mult, ctx] = entry.split('|').map((x) => x.trim());
     if (!id) return null;
-    return { id, label: label || id, ...(mult ? { mult } : {}) };
+    const win = Number(ctx);
+    return {
+      id,
+      label: label || id,
+      ...(mult ? { mult } : {}),
+      ...(Number.isFinite(win) && win > 0 ? { ctx: win } : {}),
+    };
   }).filter((m): m is ModelOption => m !== null);
 
   /*
@@ -345,6 +364,53 @@ export function configuredModels(env: NodeJS.ProcessEnv = process.env): ModelOpt
     空菜单会让创建屏看起来像是坏了，而真正坏的是一行环境变量。
   */
   return list.length ? list : [{ id: fallback, label: fallback }];
+}
+
+/**
+ * 这一轮该给多大的上下文预算（字符）。
+ *
+ * ┌─ 两个容易想当然的地方 ──────────────────────────────────────────────┐
+ * │ 1. 压缩器量的是**字符**，窗口给的是**token**，两者不是一回事。      │
+ * │    中文大约一字一 token（有的分词器还更多），代码三四个字符一个。   │
+ * │    所以安全的方向只有一个：拿字符数去顶 token 额度——中文最吃亏的   │
+ * │    那种会话也不会超。反过来按"三个字符一个 token"折算，遇上一篇全   │
+ * │    中文的长对话就会直接把请求撑爆，而那是网关拒绝、不是我们截断。   │
+ * │                                                                     │
+ * │ 2. **窗口大不等于该用满。** 每一轮都要把整段历史重新发一遍：窗口    │
+ * │    1M 的模型如果真喂到 1M，一次请求又慢又贵，而这个 Agent 的典型    │
+ * │    活儿（改一个页面）根本用不到。所以上面还压一个 CAP。             │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * AGENT_CONTEXT_CHARS 配了就照它来，不再按模型算——管理员显式写的数字
+ * 应该赢过这里的推算。
+ */
+
+/** 留给工具定义、系统提示和余量的 token。 */
+const CONTEXT_RESERVE_TOKENS = 8_000;
+
+/**
+ * 预算上限。不是模型顶不住，是**每轮重发整段历史**的代价：
+ * 真用满 1M 窗口，一次请求的钱和时间都不是这个场景该花的。
+ * 要更高就显式配 AGENT_CONTEXT_CHARS。
+ */
+export const MAX_CONTEXT_CHARS = 400_000;
+
+export function contextBudget(
+  env: NodeJS.ProcessEnv = process.env,
+  modelId?: string,
+): number {
+  const explicit = (env.AGENT_CONTEXT_CHARS ?? '').trim();
+  if (explicit) return numEnv(explicit, DEFAULT_CONTEXT_CHARS);
+
+  const models = configuredModels(env);
+  const picked = models.find((m) => m.id === modelId) ?? models[0];
+  const win = picked?.ctx;
+  if (!win) return DEFAULT_CONTEXT_CHARS;
+
+  const usable = win - numEnv(env.AGENT_MAX_TOKENS, 64_000) - CONTEXT_RESERVE_TOKENS;
+  /* 窗口比输出上限还小这种配法多半是填错了，退回保守值而不是算出个负数 */
+  if (usable <= 0) return DEFAULT_CONTEXT_CHARS;
+  return Math.min(MAX_CONTEXT_CHARS, Math.max(DEFAULT_CONTEXT_CHARS, usable));
 }
 
 /** 平台有没有开启「思考档位」。没开就不在创建屏显示那一排。 */
