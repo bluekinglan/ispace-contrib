@@ -123,7 +123,8 @@ const ADVICE: Record<string, string> = {
 export function adviceFor(rule: string): string {
   return ADVICE[rule]
     ?? (rule.startsWith('gitleaks:')
-      ? '疑似密钥，从产物里删掉；要调外部服务就登记连接器，由平台在服务端注入'
+      ? '疑似密钥，从产物里删掉；要调外部服务就登记连接器，由平台在服务端注入。'
+        + '如果它其实不是密钥（只是个名字），把变量名改成不带 KEY / TOKEN / SECRET 的'
       : '按规则名检查这一行，确认不是把敏感信息或不安全写法带进了页面');
 }
 
@@ -237,11 +238,37 @@ export function assertScanClean(result: ScanResult): void {
   const secrets = result.findings.filter((f) => !f.rule.startsWith('inline') && !f.rule.includes('innerHTML') && !f.rule.includes('document-write') && !f.rule.includes('eval-of'));
   const code = secrets.length > 0 ? ERROR_CODES.SECRET_DETECTED : ERROR_CODES.XSS_DETECTED;
   const first = result.findings[0]!;
+  /* 带上怎么改：只给规则名的话，人（和模型）只知道被拦了，不知道下一步干什么 */
   throw new IspaceError(
     code,
-    `发布被阻断：${first.file}:${first.line} 命中规则 ${first.rule}（共 ${result.findings.length} 处）`,
+    `发布被阻断：${first.file}:${first.line} 命中规则 ${first.rule}（共 ${result.findings.length} 处）。`
+      + adviceFor(first.rule),
     { findings: result.findings },
   );
+}
+
+/**
+ * gitleaks 的 generic-api-key 命中的，是不是一个"存储键名"而不是密钥。
+ *
+ * 那条规则认的是"名字里带 key、值看着够随机"的赋值。页面里最常见的误伤
+ * 是 localStorage 的键名：`var LS_KEY = 'nianhui_lottery_v1'`——线上
+ * zongkelong 的年会抽奖就被它拦在了发布最后一步，而那只是个名字。
+ *
+ * 放行要两条同时成立，缺一条都照拦：
+ *   - 变量名说明它是存储 / 查找用的键：LS_KEY、STORAGE_KEY、cacheKey……
+ *     （API_KEY、SECRET_KEY、ACCESS_KEY 不在其列）
+ *   - 值长得像名字：小写单词用 _ - . : 连起来，每段不长
+ *     （真密钥是一长串随机字符，过不了这一条）
+ */
+const STORAGE_KEY_NAME =
+  /(?:^|[^a-z])(?:ls|storage|localstorage|sessionstorage|cache|state|store|cookie|db|idb|draft|prefs?|settings?)[_-]?key$/i;
+const NAME_LIKE_VALUE = /^[a-z][a-z0-9]*(?:[_.:-][a-z0-9]+)*$/;
+
+export function isStorageKeyName(match: string, secret: string): boolean {
+  const name = /([A-Za-z_$][\w$-]*)['"]?\s*[:=]/.exec(match)?.[1];
+  if (!name || !STORAGE_KEY_NAME.test(name)) return false;
+  if (secret.length > 64 || !NAME_LIKE_VALUE.test(secret)) return false;
+  return secret.split(/[_.:-]/).every((seg) => seg.length <= 16);
 }
 
 /**
@@ -293,11 +320,13 @@ export async function gitleaksScan(
     const raw = await readFile(report, 'utf8');
     await rm(report, { force: true });
     const items = JSON.parse(raw) as {
-      RuleID: string; File: string; StartLine: number; Secret: string;
+      RuleID: string; File: string; StartLine: number; Secret: string; Match?: string;
     }[];
     return {
       available: true,
-      findings: items.map((i) => ({
+      findings: items
+        .filter((i) => !(i.RuleID === 'generic-api-key' && isStorageKeyName(i.Match ?? '', i.Secret)))
+        .map((i) => ({
         rule: `gitleaks:${i.RuleID}`,
         file: i.File.replace(`${dir}/`, ''),
         line: i.StartLine,

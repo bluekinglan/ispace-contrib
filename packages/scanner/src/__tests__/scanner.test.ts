@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { adviceFor, basePathFindings, checkBasePath, scanContent } from '../index.js';
+import { IspaceError } from '@ispace/contracts';
+import {
+  adviceFor, assertScanClean, basePathFindings, checkBasePath, isStorageKeyName, scanContent,
+} from '../index.js';
 
 describe('密钥扫描', () => {
   it('拦下 AWS Access Key ID', () => {
@@ -143,5 +146,40 @@ describe('给发布前自检用的两样东西', () => {
     const fs = basePathFindings(html);
     expect(fs.map((f) => `${f.line}:${f.excerpt}`)).toEqual(['3:/assets/main.js', '4:/logo.png']);
     expect(fs.every((f) => f.rule === 'base-path')).toBe(true);
+  });
+});
+
+/*
+  线上 zongkelong 的年会抽奖：`var LS_KEY = 'nianhui_lottery_v1'` 被 gitleaks 的
+  generic-api-key 当成了密钥，拦在发布最后一步。那只是 localStorage 的键名。
+*/
+describe('gitleaks 误伤：存储键名不是密钥', () => {
+  it('名字说明是存储键、值长得像名字：放行', () => {
+    expect(isStorageKeyName("LS_KEY = 'nianhui_lottery_v1'", 'nianhui_lottery_v1')).toBe(true);
+    expect(isStorageKeyName("const STORAGE_KEY = 'paiban-state-v2'", 'paiban-state-v2')).toBe(true);
+    expect(isStorageKeyName('cacheKey: "weekly.report:v3"', 'weekly.report:v3')).toBe(true);
+  });
+
+  it('名字是 API_KEY / SECRET_KEY 这类：照拦，不管值长什么样', () => {
+    expect(isStorageKeyName("API_KEY = 'my_app_key'", 'my_app_key')).toBe(false);
+    expect(isStorageKeyName("const SECRET_KEY = 'abc_def'", 'abc_def')).toBe(false);
+    expect(isStorageKeyName("accessKey = 'team_reader'", 'team_reader')).toBe(false);
+  });
+
+  it('名字像存储键、但值像随机串：照拦', () => {
+    expect(isStorageKeyName("LS_KEY = 'a8f3k2Q9xZ7mP1vB'", 'a8f3k2Q9xZ7mP1vB')).toBe(false);
+    expect(isStorageKeyName("CACHE_KEY = '9f8e7d6c5b4a3f2e1d0c9b8a'", '9f8e7d6c5b4a3f2e1d0c9b8a')).toBe(false);
+    expect(isStorageKeyName("LS_KEY = 'x_9f8e7d6c5b4a3f2e1d0c9b8a7f6e'", 'x_9f8e7d6c5b4a3f2e1d0c9b8a7f6e')).toBe(false);
+  });
+
+  it('被拦时的那句话带着怎么改', () => {
+    try {
+      assertScanClean({ ok: false, findings: [{ rule: 'gitleaks:generic-api-key', file: 'app.js', line: 4, excerpt: '***' }] });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(IspaceError);
+      expect((e as Error).message).toContain('app.js:4');
+      expect((e as Error).message).toContain('变量名改成');
+    }
   });
 });

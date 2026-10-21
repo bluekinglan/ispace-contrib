@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Icon } from '@ispace/ui';
+import { Icon, useConfirm } from '@ispace/ui';
 import { api } from './api';
 import { IconBtn } from './workbench';
 
@@ -175,13 +175,20 @@ function VersionsList({ sessionId, onRestored, onToast }: {
 }) {
   const { data, err } = useLoad(() => api.agentVersions(sessionId));
   const [doing, setDoing] = useState<number | null>(null);
+  /* 页面自己的确认框，不用浏览器原生 confirm()：后者长得像系统报错，也说不清后果 */
+  const [confirmUI, ask] = useConfirm();
   if (err) return <Empty>没拉到：{err}</Empty>;
   if (!data) return <Empty>读取中…</Empty>;
   if (!data.items.length) return <Empty>还没有可以退回的步骤。每说一句话，这里多一步。</Empty>;
 
   const back = async (seq: number, label: string) => {
     const short = label.length > 16 ? `${label.slice(0, 16)}…` : label;
-    if (!window.confirm(`退回到「${short}」之前？这一步和它之后的改动都会撤掉，文件和对话一起退。`)) return;
+    if (!(await ask({
+      title: `退回到「${short}」之前？`,
+      description: '这一步和它之后的改动都会撤掉，文件和对话一起退。',
+      confirmLabel: '退回',
+      danger: true,
+    }))) return;
     setDoing(seq);
     try {
       onRestored(await api.agentRestore(sessionId, seq));
@@ -192,6 +199,7 @@ function VersionsList({ sessionId, onRestored, onToast }: {
 
   return (
     <>
+      {confirmUI}
       <Label>每一步开工前都存了一版，点哪步就退回到它之前</Label>
       {data.items.map((v, i) => (
         <Row key={v.seq} onClick={() => void back(v.seq, v.label)} disabled={doing !== null}>

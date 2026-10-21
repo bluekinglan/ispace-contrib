@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { appSlugSchema, type User } from '@ispace/contracts';
-import { Icon, copyText } from '@ispace/ui';
+import { Icon, copyText, useConfirm } from '@ispace/ui';
 import { api } from './api';
 import { AiBubble, UserBubble, type ChatFile } from './chat';
 import {
@@ -671,6 +671,11 @@ function Generating({
   const [publishing, setPublishing] = useState(false);
   const [tab, setTab] = useState<'preview' | 'code' | 'design'>('preview');
   const [pubOpen, setPubOpen] = useState(false);
+  /*
+    页面自己的确认框（覆盖已有页面、放下这一个）。不用浏览器原生 confirm()：
+    那个框顶着域名、长得像系统报错，也没法把后果说清楚。
+  */
+  const [confirmUI, ask] = useConfirm();
   const [showErrs, setShowErrs] = useState(false);
   /* 左栏收起来，右栏独占整屏（新稿右上角第一颗） */
   const [chatShown, setChatShown] = useState(true);
@@ -988,7 +993,7 @@ function Generating({
   const publish = async (overwrite = false) => {
     if (!gen.sessionId || publishing || notReady) return;
     setPublishing(true);
-    let retry = false;
+    let taken: string | null = null;
     try {
       const r = await api.agentPublishSession({
         sessionId: gen.sessionId, site: siteDraft, name: gen.title,
@@ -1007,23 +1012,34 @@ function Generating({
       onToast(`已发布到 ${r.url}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : '发布失败';
-      /* 地址上已经有自己另一个页面：问一句，确认了再覆盖 */
-      if ((e as { code?: string }).code === 'ALREADY_EXISTS' && !overwrite) {
-        retry = window.confirm(`${msg}\n\n用这一版覆盖它吗？`);
-        return;
-      }
+      /* 地址上已经有自己另一个页面：问一句，确认了再覆盖（问在 finally 之后，按钮先恢复） */
       /*
-        发布失败的话留在对话里，不只弹一个会淡出的 toast。
-
-        最常见的那种失败是发布链路把产物拦了（扫到密钥或 XSS 规则），而那句
-        话里带着**规则名和行号**——它正是下一步要照着改的东西。toast 一淡出，
-        人看到的就是"点了发布，按钮还在那儿"，根本不知道发生过什么。
+        ⚠️ 这里不能 return：catch 里 return 会连 finally 后面那段一起跳过，
+        确认框就永远弹不出来（实测踩过——409 回来了，屏幕上什么都没有）。
       */
-      setGen((g) => ({ ...g, says: [...g.says, { me: false, text: `没能发布：${msg}` }] }));
-      onToast(msg);
+      if ((e as { code?: string }).code === 'ALREADY_EXISTS' && !overwrite) {
+        taken = msg;
+      } else {
+        /*
+          发布失败的话留在对话里，不只弹一个会淡出的 toast。
+
+          最常见的那种失败是发布链路把产物拦了（扫到密钥或 XSS 规则），而那句
+          话里带着**规则名和行号**——它正是下一步要照着改的东西。toast 一淡出，
+          人看到的就是"点了发布，按钮还在那儿"，根本不知道发生过什么。
+        */
+        setGen((g) => ({ ...g, says: [...g.says, { me: false, text: `没能发布：${msg}` }] }));
+        onToast(msg);
+      }
     } finally {
       setPublishing(false);
-      if (retry) void publish(true);
+    }
+    if (taken && await ask({
+      title: '这个地址已经有页面了',
+      description: `${taken}覆盖之后，那个地址上换成这一版；原来那个页面的旧版本还在控制台的版本记录里，可以回滚。`,
+      confirmLabel: '用这一版覆盖',
+      danger: true,
+    })) {
+      void publish(true);
     }
   };
 
@@ -1103,9 +1119,13 @@ function Generating({
     有了刷新恢复之后，「新对话」就是必需品：不给出口的话，人会一直被困在上
     一个页面里，只有发布了才出得来。
   */
-  const newChat = () => {
+  const newChat = async () => {
     if (gen.busy) return;
-    if (!gen.publishedUrl && !window.confirm('放下这一个、做个新的？工作区里的文件会留着，但这段对话就不显示了。')) return;
+    if (!gen.publishedUrl && !(await ask({
+      title: '放下这一个、做个新的？',
+      description: '工作区里的文件会留着，在「历史版本」里还能打开；只是这一屏换成新的开场。',
+      confirmLabel: '做个新的',
+    }))) return;
     onFresh();
   };
 
@@ -1153,6 +1173,7 @@ function Generating({
 
   return (
     <div style={{ height: '100%', minHeight: 560, display: 'flex', background: 'var(--surface-canvas)' }}>
+      {confirmUI}
       {/* ── 左：对话、问答与进度 ─────────────────────────────────── */}
       {chatShown && (
         <div
