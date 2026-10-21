@@ -77,8 +77,14 @@ export type FanoutEvent =
   | { type: 'all_done'; ok: number; failed: number };
 
 export interface FanoutOptions {
-  /** 每个方向用一个独立的 Engine 实例。共用一个也行，但独立的更容易限速。 */
-  engine: () => Engine;
+  /**
+   * 每个方向用一个独立的 Engine 实例。共用一个也行，但独立的更容易限速。
+   *
+   * 把方向传进来，是为了让调用方（以及测试）能按方向区别对待——六个方向
+   * 是并行起的，谁先拿到引擎取决于前面那个 mkdir 谁先完成，靠调用次序去
+   * 对号入座是不稳的（测试里实打实时过时不过）。
+   */
+  engine: (d: DesignDirection) => Engine;
   /** 工作区根目录的绝对路径。产物写在它下面的 outRel 里。 */
   workspaceRoot: string;
   /** 产物相对目录，如 `_fanout/ab12`。每个方向写 `<outRel>/<key>/index.html`。 */
@@ -136,7 +142,7 @@ export async function runFanout(opts: FanoutOptions): Promise<{ ok: number; fail
     try {
       await mkdir(join(opts.workspaceRoot, opts.outRel, d.key), { recursive: true });
       const session = new AgentSession({
-        engine: opts.engine(),
+        engine: opts.engine(d),
         toolCtx: {
           ws: { root: opts.workspaceRoot, username: '' },
           platform: {

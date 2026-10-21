@@ -11,14 +11,12 @@ import { Segment } from './detail';
  * create.tsx 里——那边握着会话、预览和发布。
  *
  * ┌─ 哪些是真的，哪些是脚本 ────────────────────────────────────────────┐
- * │ 开头那两道题（PLATFORM_ASKS）是**平台的固定脚本**，不是模型问的：   │
- * │ 「走不走扇出」「主要在哪儿看」决定的是这一屏接下来怎么走，而不是   │
- * │ 页面长什么样——这种分叉该由平台直接问，省掉一轮模型调用，也不会出  │
- * │ 现"模型忘了问"。代码里它们和模型问的那种（from: 'model'）是两类，   │
- * │ 不混为一谈。                                                        │
+ * │ 开场**不再有平台的固定问答**。原来每次都先摆三个选项（出六版设计 / │
+ * │ 直接做 / 先聊清楚），一句话就说清楚的需求也得先点一下才开始。现在   │
+ * │ 第一句话直接交给模型：要问它自己用 ask_user 问，问什么由提示词定；  │
+ * │ 不必问就直接做。这里把它的问题画成可点的卡片。                      │
  * │                                                                      │
- * │ 模型自己要问的时候走 ask_user 工具（packages/agent/src/tools.ts），  │
- * │ 这里把它画成同一种卡片。两者的区别在数据上留着，在人眼里是一致的。  │
+ * │ 设计扇出也不再是开场的一道题，而是「设计」页里按需点的一颗按钮。    │
  * │                                                                      │
  * │ 扇出那六个 Agent 是**真的六个模型会话**（/agent/fanout），卡片里装   │
  * │ 的是它们各自写出来的那份 HTML，不是示意图。                          │
@@ -41,42 +39,6 @@ export interface Ask {
   question: string;
   options: AskOption[];
 }
-
-/**
- * 开头那两道固定题。
- *
- * 步进写成「1 / 1」和「2 / 2」而不是「1 / 2」「2 / 2」：第一问的时候还不
- * 知道要不要问第二问（选了「直接做一版」就没有第二问了）。写 1/2 是先许一
- * 个可能不兑现的诺。
- */
-export const PLATFORM_ASKS: { ask: Ask; step: string }[] = [
-  {
-    step: '1 / 1',
-    ask: {
-      from: 'platform',
-      lead: '收到。开始之前确认一件事：',
-      question: '你想从哪种方式开始？',
-      options: [
-        { key: 'fan', label: '生成六版视觉设计', hint: '先并排看 6 个方向，挑一个再往下做', recommended: true },
-        { key: 'direct', label: '直接做一版', hint: '跳过挑选，按 iSpace 默认风格生成' },
-        { key: 'talk', label: '先把需求聊清楚', hint: '我再问你一两个问题，第一版会更准' },
-      ],
-    },
-  },
-  {
-    step: '2 / 2',
-    ask: {
-      from: 'platform',
-      lead: '好，先问清楚一点：',
-      question: '主要在哪儿用？',
-      options: [
-        { key: 'phone', label: '手机为主', hint: '组里同事随手打开，竖屏优先', recommended: true },
-        { key: 'pc', label: '电脑为主', hint: '在工位上用，信息可以排得更密' },
-        { key: 'both', label: '两边都要', hint: '手机和电脑各出一套布局' },
-      ],
-    },
-  },
-];
 
 export function AskCard({ ask, step, onPick, disabled }: {
   ask: Ask;
@@ -289,13 +251,15 @@ export async function readSse(
  * iframe 一律 `pointer-events: none`：这是一张给人看的缩略图，不是能点的
  * 页面。真要点，挑中它、做出来再点。
  */
-export function DesignGallery({ dirs, previewUrl, picked, onPick, onMore, busy }: {
+export function DesignGallery({ dirs, previewUrl, picked, onPick, onMore, onStart, busy }: {
   dirs: FanDir[];
   /** 预览会话的根地址（末尾带斜杠）。为空时卡片只画底色。 */
   previewUrl: string | null;
   picked: number | null;
   onPick: (d: FanDir) => void;
   onMore: () => void;
+  /** 还一版都没有时，点一下出几版。 */
+  onStart: () => void;
   busy: boolean;
 }) {
   const done = dirs.filter((d) => d.state === 'done').length;
@@ -306,11 +270,26 @@ export function DesignGallery({ dirs, previewUrl, picked, onPick, onMore, busy }
         <div style={{ maxWidth: 340, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
           <Icon name="sparkles" size={22} color="var(--text-tertiary)" />
           <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-            还没有设计方向
+            想先看几个方向再定？
           </span>
           <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
-            在左边选「生成六版视觉设计」，这里会并排出几个方向。
+            按你那句话并排出几版视觉草案，挑一版再照着做。
+            每一版都是一次单独的模型调用，比直接做要慢、也更费。
           </span>
+          <button
+            onClick={onStart}
+            disabled={busy}
+            style={{
+              marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, height: 36,
+              padding: '0 14px', border: 0, borderRadius: 'var(--radius-pill)',
+              background: busy ? 'var(--surface-3)' : 'var(--cta)',
+              color: busy ? 'var(--text-tertiary)' : 'var(--cta-fg)',
+              fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+              cursor: busy ? 'default' : 'pointer',
+            }}
+          >
+            <Icon name="sparkles" size={14} />出几版设计看看
+          </button>
         </div>
       </div>
     );

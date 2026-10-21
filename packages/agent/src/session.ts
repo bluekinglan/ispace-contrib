@@ -97,11 +97,33 @@ const CAN_DRAW = `
 
 图里尽量不要文字——模型画的字经常是歪的。文字用 HTML 写在图上面。`;
 
+/**
+ * 「开工之前要不要问」那一段。
+ *
+ * 创建屏原来在开场摆三个固定选项，每个人都得先点一下才开始。拿掉之后，
+ * 问不问、问什么完全交给模型——但得告诉它分寸：不说的话，有的模型一句话
+ * 都不问就硬做，有的则把用户当问卷来填。
+ */
+const ASK_FIRST = `
+
+## 开工之前要不要问
+
+用户的第一句话往往不完整。先判断，再动手：
+
+- **已经够做出一个像样的第一版**（做什么、给谁用大致清楚）→ 直接做，别问。
+  宁可先做出来让他改，也别让他先答题。
+- **有一两处会让结果差很多、而你确实猜不出来** → 先用 ask_user 问。典型的是：
+  数据从哪来（手填 / 接已有系统 / 多人一起填）、主要在手机还是电脑上看、
+  要不要登录或区分每个人的数据。一次一个问题，2~4 个选项，把你推荐的标上。
+  最多问两轮，问完就动手。
+- 风格、配色、文案、布局细节这类做出来再改更快的，**不要问**。`;
+
 export function buildSystemPrompt(
   available: AvailableConnector[],
   opts: { livePreview?: boolean; canDraw?: boolean } = {},
 ): string {
   const SYSTEM_PROMPT = (opts.livePreview ? BASE_PROMPT + LIVE_PREVIEW : BASE_PROMPT)
+    + ASK_FIRST
     + (opts.canDraw ? CAN_DRAW : '');
 
   if (available.length === 0) {

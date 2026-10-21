@@ -381,13 +381,9 @@ describe('设计扇出', () => {
   it('每个方向各写一个文件，事件按方向报进度', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ispace-fan-'));
     const events: string[] = [];
-    /*
-      每个方向的引擎各写各的路径。脚本不知道自己是第几个方向，所以按调用
-      顺序发——两个方向并行，顺序不定，这里用计数器对上号。
-    */
-    let n = 0;
+    /* 每个方向的引擎各写各的路径：按方向对号，不按调用次序（并行，次序不定） */
     const r = await runFanout({
-      engine: () => writes(`out/${dirs[n++]!.key}/index.html`),
+      engine: (d) => writes(`out/${d.key}/index.html`),
       workspaceRoot: root,
       outRel: 'out',
       prompt: '做个排班表',
@@ -407,16 +403,11 @@ describe('设计扇出', () => {
 
   it('一个方向没写出页面，算失败，但别的照常出', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ispace-fan-'));
-    let first = true;
     const r = await runFanout({
-      engine: () => {
-        /* 第一个只说话不写文件——那张卡片没东西可看，就是失败 */
-        const e = first
-          ? new ScriptedEngine([[{ type: 'text', delta: '我觉得不用做' }, { type: 'done' }]])
-          : writes(`out/${dirs[1]!.key}/index.html`);
-        first = false;
-        return e;
-      },
+      /* 第一个方向只说话不写文件——那张卡片没东西可看，就是失败 */
+      engine: (d) => (d.key === dirs[0]!.key
+        ? new ScriptedEngine([[{ type: 'text', delta: '我觉得不用做' }, { type: 'done' }]])
+        : writes(`out/${d.key}/index.html`)),
       workspaceRoot: root,
       outRel: 'out',
       prompt: '做个排班表',

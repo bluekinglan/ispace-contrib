@@ -5,7 +5,7 @@ import { api } from './api';
 import { Segment } from './detail';
 import { type Device } from './wall';
 import {
-  AskCard, CodePane, DesignGallery, PLATFORM_ASKS, ProcessBlock, PublishMenu, RefineBar, TabBar,
+  AskCard, CodePane, DesignGallery, ProcessBlock, PublishMenu, RefineBar, TabBar,
   useFanout, type Ask, type AskOption, type FanDir,
 } from './workbench';
 
@@ -758,13 +758,6 @@ function usePreview(active: boolean) {
   return { url, rev, kind, errs, frame, refresh, release, clear: () => setErrs([]) };
 }
 
-/** 设备那句话。三种都要说，模型据此决定布局，不是摆设。 */
-const DEVICE_SAY = {
-  phone: '这页主要在手机上看，竖屏优先，点击目标别太小。',
-  pc: '这页主要在电脑上看，版心可以宽一些、信息密一些。',
-  both: '手机和电脑都要能看，用能自然塌成一列的布局。',
-};
-
 function Generating({
   me, gen, setGen, onMine, onToast, onFresh,
 }: {
@@ -790,16 +783,13 @@ function Generating({
   const preview = usePreview(gen.publishedUrl === null);
 
   /*
-    开头那两道题。askStep 是"下一道问第几个"，到 2 就是问完了。
+    开场不再摆平台的固定三选项（出六版设计 / 直接做 / 先聊清楚）。
 
-    它们是**平台的固定脚本**，不是模型问的（见 workbench.tsx 顶上的说明）：
-    走不走扇出、主要在哪儿看，决定的是这一屏接下来怎么走，而不是页面长什么
-    样——这种分叉该由平台直接问，省掉一轮模型调用，也不会出现"模型忘了问"。
+    那三项每次都问，等于让每个人先回答一道和他的需求无关的题——「做个打字
+    速度挑战」这种一句话就说清楚的，也得先点一下才开始。现在第一句话直接交
+    给模型：该问它自己用 ask_user 问（问什么由提示词决定），不该问就直接做。
+    设计扇出改成「设计」页里按需点的，见 DesignGallery 的 onStart。
   */
-  /* 恢复出来的那一个早就过了开头两道题，再问一遍是在为难人 */
-  const [askStep, setAskStep] = useState(gen.restored ? 2 : 0);
-  const [startMode, setStartMode] = useState<'fan' | 'direct' | 'talk'>('direct');
-  const [device, setDevice] = useState<'phone' | 'pc' | 'both'>('both');
   /** 模型自己用 ask_user 问的那种。回答之后清掉。 */
   const [modelAsk, setModelAsk] = useState<Ask | null>(null);
   const fan = useFanout();
@@ -905,31 +895,21 @@ function Generating({
     }
   };
 
-  /** 开头两道题的回答。最后一道答完才真正开始干活。 */
-  const answerPlatform = (o: AskOption) => {
-    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: o.label }] }));
-    if (askStep === 0) {
-      setStartMode((o.key ?? 'direct') as 'fan');
-      setAskStep(1);
-      return;
-    }
-    const d = (o.key ?? 'both') as 'phone' | 'pc' | 'both';
-    setDevice(d);
-    setAskStep(2);
+  /*
+    第一句话在挂载时直接发给模型，只发一次。
 
-    if (startMode === 'fan') {
-      setTab('design');
-      void fan.start({
-        text: gen.text, device: d,
-        model: gen.choice.model, effort: gen.choice.effort,
-      });
-      return;
-    }
-    const extra = startMode === 'talk'
-      ? `（${DEVICE_SAY[d]}动手之前先用 ask_user 问我一两个你拿不准的关键问题。）`
-      : `（${DEVICE_SAY[d]}）`;
-    void run(`${gen.text}\n\n${extra}`, gen.images);
-  };
+    守卫用 ref 而不是 state：严格模式会把 effect 跑两遍，而 setGen 是异步的，
+    第二遍读到的还是旧值，于是发两次，对话里出现两条一模一样的回答（实测
+    踩过）。刷新恢复出来的那一个不发——它早就发过了，再发一遍等于把同一个
+    需求又做一次。
+  */
+  const sent = useRef(false);
+  useEffect(() => {
+    if (sent.current || gen.restored || gen.says.length > 0) return;
+    sent.current = true;
+    void run(gen.text, gen.images);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** 模型问的那种，回答就是下一轮的输入。 */
   const answerModel = (o: AskOption) => {
@@ -946,7 +926,7 @@ function Generating({
     void run(
       `就按「${d.name}」这一版的视觉来做。那一版在 ${d.path}，`
       + `先 read_file 看它的配色、字体和排版，再把真正的页面写成 index.html。`
-      + `${DEVICE_SAY[device]}原始需求是：${gen.text}`,
+      + `原始需求是：${gen.text}`,
       [],
     );
   };
@@ -955,8 +935,6 @@ function Generating({
     const t = follow.trim();
     if (!t || gen.busy) return;
     setFollow('');
-    /* 答问期间直接打字 = 跳过剩下的题。设计稿那句「都不合适？直接在下面输入」 */
-    if (askStep < 2) setAskStep(2);
     setGen((g) => ({ ...g, says: [...g.says, { me: true, text: t }] }));
     await run(t, []);
   };
@@ -993,7 +971,7 @@ function Generating({
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight });
-  }, [gen.says, gen.steps, askStep, modelAsk, fan.dirs]);
+  }, [gen.says, gen.steps, modelAsk, fan.dirs]);
 
   const url = gen.publishedUrl
     ?? (gen.site ? `${location.origin}/${me.username}/${gen.site}/` : '');
@@ -1022,8 +1000,7 @@ function Generating({
     void run(text, []);
   };
 
-  const platformAsk = askStep < 2 ? PLATFORM_ASKS[askStep] : undefined;
-  const waiting = platformAsk !== undefined || modelAsk !== null;
+  const waiting = modelAsk !== null;
   const status = gen.publishedUrl ? '已上线'
     : waiting ? '在等你回答'
       : fan.running ? '正在出设计方向'
@@ -1124,22 +1101,14 @@ function Generating({
                 setPick(null);
                 setTab('design');
                 void fan.start({
-                  text: gen.text, device,
+                  text: gen.text, device: 'both',
                   model: gen.choice.model, effort: gen.choice.effort,
                 });
               }}
             />
           )}
 
-          {platformAsk && (
-            <AskCard
-              ask={platformAsk.ask}
-              step={platformAsk.step}
-              onPick={answerPlatform}
-              disabled={gen.busy}
-            />
-          )}
-          {!platformAsk && modelAsk && (
+          {modelAsk && (
             <AskCard ask={modelAsk} onPick={answerModel} disabled={gen.busy} />
           )}
 
@@ -1252,7 +1221,13 @@ function Generating({
               if (!pick) return;
               void fan.start({
                 text: `${gen.text}（再出几个和「${pick.name}」相近的方向）`,
-                device, model: gen.choice.model, effort: gen.choice.effort,
+                device: 'both', model: gen.choice.model, effort: gen.choice.effort,
+              });
+            }}
+            onStart={() => {
+              void fan.start({
+                text: gen.text, device: 'both',
+                model: gen.choice.model, effort: gen.choice.effort,
               });
             }}
             busy={fan.running || gen.busy}
