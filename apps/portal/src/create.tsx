@@ -7,7 +7,7 @@ import {
   AddButton, ImageChips, MAX_ATTACH, ModelPill, useModels,
   type AgentChoice, type AgentImage, type Effort,
 } from './composer';
-import { Segment } from './detail';
+import { Segment, ago } from './detail';
 import { usePlayUrl, type Device } from './wall';
 import {
   AskCard, CodePane, DesignGallery, IconBtn, ProcessBlock, PublishMenu, RefineBar, TabBar,
@@ -143,6 +143,7 @@ export function Create({
       <Idle
         draft={draft} setDraft={setDraft} remix={remix} onClearRemix={onClearRemix}
         onStart={(text, images, choice) => setGen(freshGen(text, images, choice))}
+        onOpen={(id) => void openSession(id)}
         onToast={onToast}
       />
     );
@@ -150,13 +151,15 @@ export function Create({
 
 // ── 没开始之前 ──────────────────────────────────────────────────────────
 function Idle({
-  draft, setDraft, remix, onClearRemix, onStart, onToast,
+  draft, setDraft, remix, onClearRemix, onStart, onOpen, onToast,
 }: {
   draft: string;
   setDraft: (v: string) => void;
   remix: { name: string; author: string } | null;
   onClearRemix: () => void;
   onStart: (text: string, images: AgentImage[], choice: AgentChoice) => void;
+  /** 打开一个做过的页面，接着做（和工作台左上角「历史版本」同一条路）。 */
+  onOpen: (sessionId: string) => void;
   onToast: (t: string) => void;
 }) {
   const [sugTab, setSugTab] = useState(0);
@@ -285,6 +288,8 @@ function Idle({
         </a>
       </div>
 
+      <RecentPages onOpen={onOpen} />
+
       <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
           {SUGS.map((g, i) => {
@@ -383,6 +388,69 @@ function Idle({
             复制
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 「接着做」：最近做过的页面。
+ *
+ * 「历史版本」原来只在工作台左上角——得先开始做一个新页面才看得见，开场这一屏
+ * 回不到以前做过的。想改一个已经发布的页面（比如把它改成手机页面重发），就
+ * 无从下手。这里列最近几个，点一下和在历史版本里点是同一回事。
+ */
+function RecentPages({ onOpen }: { onOpen: (sessionId: string) => void }) {
+  const [items, setItems] = useState<{ id: string; title: string; slug: string | null; updatedAt: number }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void api.agentSessions()
+      .then((r) => { if (alive) setItems(r.items.slice(0, 6)); })
+      .catch(() => { /* 拉不到就不摆这一块，开场照常能用 */ });
+    return () => { alive = false; };
+  }, []);
+  if (!items.length) return null;
+
+  return (
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 6 }}>
+      <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-secondary)' }}>
+        接着做
+      </span>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8 }}>
+        {items.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => onOpen(s.id)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, padding: '10px 12px',
+              border: '1px solid var(--border-subtle)', borderRadius: 12, background: 'var(--surface-1)',
+              cursor: 'pointer', textAlign: 'left',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--border-hover)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-subtle)'; }}
+          >
+            <Icon name="history" size={16} color="var(--text-tertiary)" />
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span
+                style={{
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)',
+                }}
+              >
+                {s.title}
+              </span>
+              <span
+                style={{
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)',
+                }}
+              >
+                {ago(new Date(s.updatedAt).toISOString())}{s.slug ? ` · 已发布 /${s.slug}/` : ''}
+              </span>
+            </span>
+            <Icon name="chevRight" size={15} color="var(--text-tertiary)" />
+          </button>
+        ))}
       </div>
     </div>
   );
