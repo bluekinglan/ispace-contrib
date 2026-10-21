@@ -65,11 +65,12 @@ export async function screenshotCover(
       去掉预算之后那四个 12 秒就截出来了，但也不能干脆不要它：没有它的话
       异步渲染的页面会被截成一片空白。所以是"先讲究，不行再将就"。
     */
-    if (await runChromium([...SHOT_FLAGS, '--virtual-time-budget=2500'], indexHtmlPath, outPngPath)) {
+    const budgeted = [...SHOT_FLAGS, '--virtual-time-budget=2500'];
+    if (await runChromium(budgeted, indexHtmlPath, outPngPath, FAST_MS)) {
       await chmod(outPngPath, 0o644);
       return true;
     }
-    if (await runChromium(SHOT_FLAGS, indexHtmlPath, outPngPath)) {
+    if (await runChromium(SHOT_FLAGS, indexHtmlPath, outPngPath, PATIENT_MS)) {
       await chmod(outPngPath, 0o644);
       return true;
     }
@@ -108,14 +109,31 @@ const SHOT_FLAGS = [
   '--allow-file-access-from-files',
 ];
 
+/**
+ * 两次尝试各给多久。
+ *
+ * 第一次快进快出：绝大多数页面两三秒就截完，卡住的那种再等也是白等。
+ * 第二次给足：实测有页面要 32 秒（秦皇岛那张图多）、60 秒出头
+ * （故宫导览，近 900 KB 的首屏）——原来统一 30 秒，把这两个一直卡在门外，
+ * 它们的封面因此一直是空的。最坏情况两分钟，而这是后台 best-effort 的活，
+ * 不挡任何人。
+ */
+const FAST_MS = 30_000;
+const PATIENT_MS = 90_000;
+
 /** 跑一次 chromium。出了文件才算成功——它偶尔会静默地什么都不写。 */
-function runChromium(flags: string[], indexHtmlPath: string, outPngPath: string): Promise<boolean> {
+function runChromium(
+  flags: string[],
+  indexHtmlPath: string,
+  outPngPath: string,
+  timeoutMs: number,
+): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const child = execFile(
       CHROMIUM,
       [...flags, `--screenshot=${outPngPath}`, `file://${indexHtmlPath}`],
-      // 硬超时兜底：某些页面会让 chromium 挂住，30s 后连进程一起杀
-      { timeout: 30_000, killSignal: 'SIGKILL' },
+      // 硬超时兜底：某些页面会让 chromium 挂住，到点连进程一起杀
+      { timeout: timeoutMs, killSignal: 'SIGKILL' },
       () => resolve(existsSync(outPngPath)),
     );
     child.on('error', () => resolve(false));
