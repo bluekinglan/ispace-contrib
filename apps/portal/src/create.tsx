@@ -44,10 +44,20 @@ export function Create({
   onToast: (t: string) => void;
 }) {
   const [draft, setDraft] = useState(initialDraft);
-  const [gen, setGen] = useState<Gen | null>(null);
+  /* 刷新之前正在做的那一个，有就接着摆出来——见 loadGen 的说明 */
+  const [gen, setGen] = useState<Gen | null>(() => (initialDraft ? null : loadGen(me.username)));
 
   useEffect(() => { setDraft(initialDraft); }, [initialDraft]);
   useEffect(() => { onWorkbench(gen !== null); }, [gen, onWorkbench]);
+
+  /*
+    改动就存，但攒半秒再写：流式回复每来一个字就是一次 setGen，每次都把整
+    段对话 JSON 一遍写进 localStorage，长对话里是实打实的卡顿。
+  */
+  useEffect(() => {
+    const t = setTimeout(() => saveGen(me.username, gen), 500);
+    return () => clearTimeout(t);
+  }, [gen, me.username]);
   /* 离开这一屏（去我的作品、点侧栏别处）要归位，否则外壳一直没有顶栏 */
   useEffect(() => () => onWorkbench(false), [onWorkbench]);
 
@@ -60,6 +70,7 @@ export function Create({
         setGen={(fn) => setGen((g) => (g ? fn(g) : g))}
         onMine={onMine}
         onToast={onToast}
+        onFresh={() => { saveGen(me.username, null); setGen(null); }}
       />
     )
     : (
@@ -551,6 +562,68 @@ interface Gen {
   says: { me: boolean; text: string }[];
   busy: boolean;
   publishedUrl: string | null;
+  /** 刷新之后从本地恢复出来的。开头那两道题就不再问了，对话里补一句说明。 */
+  restored?: boolean;
+}
+
+// ── 刷新之后接着做 ───────────────────────────────────────────────────────
+/**
+ * 工作台的状态存在本地，刷新之后接着摆出来。
+ *
+ * ┌─ 为什么要存，以及存的是什么 ────────────────────────────────────────┐
+ * │ 原来这一屏的对话和进度只活在 React 的内存里：刷新一下就回到「今天想做 │
+ * │ 个什么页面？」，用户的感受是"刚做的东西没了"。其实没有——模型写的文件 │
+ * │ 一直在服务端这个人的工作区里，只是界面不认得它了。                    │
+ * │                                                                      │
+ * │ 存的是界面上那份东西：标题、对话、进度、发布到哪个 slug。**模型那边的 │
+ * │ 记忆存不回来**——Agent 会话在服务端内存里（routes/agent.ts 的 NOTE），│
+ * │ 刷新不丢、但服务一重启就没了。所以恢复出来时在对话里明说这一点：文件 │
+ * │ 都在，它可以 read_file 接着改；但它不记得之前聊过什么。              │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *
+ * 按用户分 key：同一台电脑换个账号登录，不该看到上一个人做到一半的东西。
+ * 12 小时过期：工作区是一个人一份、会被下一个页面覆盖，太老的对话摆出来
+ * 只会和文件对不上。发布成功就清掉——那时它已经在「我的作品」里了。
+ */
+const SAVE_TTL_MS = 12 * 60 * 60 * 1000;
+const saveKey = (username: string) => `ispace-workbench-v1:${username}`;
+
+function saveGen(username: string, g: Gen | null): void {
+  try {
+    if (!g || g.publishedUrl) { localStorage.removeItem(saveKey(username)); return; }
+    /* 图片是 base64，一张就上百 KB，不存——恢复出来也不会再发给模型 */
+    const slim: Gen = { ...g, images: [], busy: false };
+    localStorage.setItem(saveKey(username), JSON.stringify({ at: Date.now(), gen: slim }));
+  } catch { /* 隐身窗口或配额满了：存不了就算了，不挡正事 */ }
+}
+
+function loadGen(username: string): Gen | null {
+  try {
+    const raw = localStorage.getItem(saveKey(username));
+    if (!raw) return null;
+    const { at, gen } = JSON.parse(raw) as { at: number; gen: Gen };
+    if (!gen || Date.now() - at > SAVE_TTL_MS) {
+      localStorage.removeItem(saveKey(username));
+      return null;
+    }
+    return {
+      ...gen,
+      busy: false,
+      restored: true,
+      /* 模型那一轮已经断了，进度一律收尾，不然会一直转圈 */
+      steps: (gen.steps ?? []).map((st) => ({ ...st, done: true })),
+      says: [
+        ...(gen.says ?? []),
+        {
+          me: false,
+          text: '（刷新前做到这里。工作区里的文件都还在，右边就是；'
+            + '但它不记得之前聊过什么——想接着改的话，直接说要改哪里就行。）',
+        },
+      ],
+    };
+  } catch {
+    return null;
+  }
 }
 
 const freshGen = (text: string, images: AgentImage[], choice: AgentChoice): Gen => ({
@@ -693,13 +766,15 @@ const DEVICE_SAY = {
 };
 
 function Generating({
-  me, gen, setGen, onMine, onToast,
+  me, gen, setGen, onMine, onToast, onFresh,
 }: {
   me: User;
   gen: Gen;
   setGen: (fn: (g: Gen) => Gen) => void;
   onMine: () => void;
   onToast: (t: string) => void;
+  /** 放下这一个，回到「今天想做个什么页面？」。工作区里的文件不动。 */
+  onFresh: () => void;
 }) {
   const [dev, setDev] = useState<Device>('phone');
   const [vis, setVis] = useState<'private' | 'shared' | 'public'>('private');
@@ -721,7 +796,8 @@ function Generating({
     走不走扇出、主要在哪儿看，决定的是这一屏接下来怎么走，而不是页面长什么
     样——这种分叉该由平台直接问，省掉一轮模型调用，也不会出现"模型忘了问"。
   */
-  const [askStep, setAskStep] = useState(0);
+  /* 恢复出来的那一个早就过了开头两道题，再问一遍是在为难人 */
+  const [askStep, setAskStep] = useState(gen.restored ? 2 : 0);
   const [startMode, setStartMode] = useState<'fan' | 'direct' | 'talk'>('direct');
   const [device, setDevice] = useState<'phone' | 'pc' | 'both'>('both');
   /** 模型自己用 ask_user 问的那种。回答之后清掉。 */
@@ -964,9 +1040,33 @@ function Generating({
         }}
       >
         <div style={{ padding: '4px 28px 18px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, lineHeight: 1.2, color: 'var(--text-heading)' }}>
-            {gen.title}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, lineHeight: 1.2, color: 'var(--text-heading)' }}>
+              {gen.title}
+            </span>
+            {/*
+              有了刷新恢复之后，这一颗就是必需品：不给出口的话，人会一直被
+              困在上一个页面里，只有发布了才出得来。
+            */}
+            <button
+              onClick={() => {
+                if (gen.busy) return;
+                if (!gen.publishedUrl && !window.confirm('放下这一个、做个新的？工作区里的文件会留着，但这段对话就不显示了。')) return;
+                onFresh();
+              }}
+              disabled={gen.busy}
+              title={gen.busy ? '等这一轮做完' : '做个新的'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, height: 32, padding: '0 11px',
+                flex: 'none', border: '1px solid var(--border-subtle)', borderRadius: 10,
+                background: 'var(--surface-1)', fontSize: 'var(--text-base)',
+                color: gen.busy ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                cursor: gen.busy ? 'default' : 'pointer',
+              }}
+            >
+              <Icon name="plus" size={14} />新做一个
+            </button>
+          </div>
           {shown && (
             <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
               {shown}
