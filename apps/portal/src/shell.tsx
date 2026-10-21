@@ -84,7 +84,25 @@ export function Shell({
           overflow——自带版面的那两屏（为你推荐、创建工作台）自己管滚动。
         */}
         {chrome && <TopBar me={me} back={back} shares={shares} onShareDone={onShareDone} />}
-        <div style={{ flex: 1, minHeight: 0, overflow: chrome ? 'auto' : 'hidden' }}>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            /*
+              ⚠️ 自带版面的那两屏（为你推荐、创建工作台）的根元素是 `flex: 1`
+              ——它们原先直接挂在 main 这个 flex 列下面。这一层若是 block，
+              `flex: 1` 当场失效，整屏塌成内容高度：为你推荐只占了上面大半截，
+              下面一片空白。实测踩过。
+
+              所以**只对这两屏**把这一层也变成 flex 列。普通屏仍旧是 block +
+              overflow auto，和改版前一模一样——在滚动页上改成 flex 列，内容
+              会被 flex-shrink 压扁，那是另一个坑。
+            */
+            ...(chrome
+              ? { overflow: 'auto' as const }
+              : { display: 'flex' as const, flexDirection: 'column' as const, overflow: 'hidden' as const }),
+          }}
+        >
           {children}
         </div>
       </main>
