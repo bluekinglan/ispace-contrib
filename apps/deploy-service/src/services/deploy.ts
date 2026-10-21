@@ -53,8 +53,13 @@ import { coverShotAvailable, screenshotCover } from './cover-shot.js';
 /** 保留的历史版本数。超出的自动清理，防止 releases 目录吃满磁盘。 */
 const KEEP_RELEASES = 10;
 
-/** 自动截图落地的文件名。前缀 __ispace 避免撞用户产物里的同名文件。 */
-const AUTO_COVER_FILE = '__ispace_cover.png';
+/**
+ * 自动截图落地的文件名。前缀 __ispace 避免撞用户产物里的同名文件。
+ *
+ * 从线上版本反推工作区时要认得它、不拷（services/release-seed.ts）：它是发布
+ * 之后平台截的，拷进工作区再发一次，就成了"用户自己放的封面"。
+ */
+export const AUTO_COVER_FILE = '__ispace_cover.png';
 
 export interface DeployInput {
   user: User;

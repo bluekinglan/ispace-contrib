@@ -1084,7 +1084,8 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     按页面分的工作区与落库的 Agent 会话（docs/specs/2026-10-21-agent-harness.md）。
     预览与对话共用这一个解析器：右边伺服的目录必须就是左边模型在改的那个。
   */
-  const sessionWorkspaces = new SessionWorkspaces(new PgAgentStore(sql), new Workspaces(WORKSPACE_ROOT));
+  /* 带上 storage：改一个没有工作区的页面时，从它的线上版本拷一份（services/release-seed.ts） */
+  const sessionWorkspaces = new SessionWorkspaces(new PgAgentStore(sql), new Workspaces(WORKSPACE_ROOT), storage);
   registerPreviewRoutes(app, {
     requireAuth,
     workspaceRoot: WORKSPACE_ROOT,

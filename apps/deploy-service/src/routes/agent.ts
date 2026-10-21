@@ -385,10 +385,11 @@ export function registerAgentRoutes(
       引擎每一句都按这次请求的选择来建——历史在库里，不绑定哪个模型，输入框里
       中途换了模型就从这一句起生效。
     */
-    const { record, switched } = await sw.forAsk(user, {
+    const { record, switched, seed } = await sw.forAsk(user, {
       sessionId: input.sessionId, targetSlug: input.targetSlug,
     });
     const sid = record.id;
+    if (seed) req.log.info({ sid, slug: input.targetSlug, seed }, 'agent 从线上版本拷工作区');
     if (busy.has(sid)) {
       /* 契约里没有"冲突"这个码；这确实是一次此刻不能做的请求 */
       throw new IspaceError(ERROR_CODES.INVALID_INPUT, '上一句还没做完，等它停下来再说。');
@@ -457,6 +458,15 @@ export function registerAgentRoutes(
         : '',
       /* 工作区换了，前面对话里提到的文件可能已经不在眼前——让它先看一眼再动手 */
       switched ? '【工作区已切换到这个页面的文件。先 list_files 看看现在有什么，别照着前面的对话改。】' : '',
+      /*
+        从线上拷来的文件不是它写的：不说的话，它可能当工作区是空的从头写一个，
+        或者把这些文件当成上一轮自己的产物。拷不成更要说——它在这里做完发出去，
+        会整页替换线上那个它从没见过的版本。
+      */
+      seed?.ok ? '【工作区里是这个页面线上版本的文件，刚从线上拷下来。先 list_files、read_file 看清现在的样子，在它上面改，别从头重写。】' : '',
+      seed && !seed.ok
+        ? `【这个页面线上的文件没法拷进工作区（${seed.reason}）。在这里发布会整页替换线上版本——动手前先跟用户说清楚。】`
+        : '',
     ].filter(Boolean).join('\n');
     const text = `${prefix ? `${prefix}\n` : ''}${input.text}${att?.note ?? ''}`;
 

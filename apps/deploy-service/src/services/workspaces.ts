@@ -53,6 +53,21 @@ export class Workspaces {
     return join(this.userDir(username), META, 'snapshots', key);
   }
 
+  /**
+   * 往一个新工作区里成批放东西时的暂存目录（眼下只有「从线上版本拷一份」）。
+   *
+   * 在 .ispace/ 下面：和工作区同一块盘，放满了一次 rename 进位；中途断了，
+   * 留下的也只是一个看不见的半成品，不会被当成工作区。只建父目录，它本身由
+   * 调用方建。
+   */
+  async staging(username: string, key: string): Promise<string> {
+    this.assertKey(key);
+    await this.ensureLayout(username);
+    const parent = join(this.userDir(username), META, 'seeding');
+    await mkdir(parent, { recursive: true });
+    return join(parent, key);
+  }
+
   /** 工作区的绝对路径。不建目录、不搬家——只读场景（文件树、预览）用它。 */
   dir(username: string, key: string): string {
     this.assertKey(key);
@@ -92,8 +107,8 @@ export class Workspaces {
    * │ 搬完之后人的东西不会"看起来消失"，靠的是两条兜底（routes/agent.ts）：│
    * │   · 刷新前开着的工作台带着旧会话 id 回来，会话表里查不到它——那就   │
    * │     是改版前的会话，接回 legacy                                     │
-   * │   · 改一个从没在新布局下发布过的页面，同样落到 legacy——和改版前    │
-   * │     的行为一致                                                       │
+   * │   · 改一个从没在新布局下发布过的页面：先从它的线上版本拷一份出来    │
+   * │     （services/release-seed.ts）；拷不了才落到 legacy，和改版前一样  │
    * └────────────────────────────────────────────────────────────────────┘
    *
    * 中途崩溃也能接着搬：先把东西挪进 .migrating/，写标记，再把 .migrating

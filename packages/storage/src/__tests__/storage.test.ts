@@ -8,6 +8,7 @@ import {
   injectShellScript,
   makeStamp,
   resolveArtifactRoot,
+  stripShellScript,
   switchSymlink,
   extractCover,
 } from '../index.js';
@@ -111,6 +112,44 @@ describe('shell.js 注入', () => {
     expect(await injectShellScript(f)).toBe(false);
     const out = readFileSync(f, 'utf8');
     expect(out.split('/platform/shell.js').length - 1).toBe(1);
+  });
+});
+
+describe('shell.js 摘除（从线上版本反推工作区用）', () => {
+  // 三种注入位置 × </head>、<body> 前后有没有换行
+  const originals = [
+    '<html><head><title>x</title></head><body>hi</body></html>',
+    '<!doctype html>\n<html>\n<head>\n  <meta charset="utf-8">\n</head>\n<body>\n  <h1>周报</h1>\n</body>\n</html>\n',
+    '<html><body>hi</body></html>',
+    '<html><body class="a">\n<p>hi</p></body></html>',
+    '<h1>裸片段</h1>',
+    '\n<p>前面带换行的裸片段</p>',
+  ];
+
+  it.each(originals)('摘完与注入前逐字节相同：%j', async (orig) => {
+    const f = join(tmp(), 'index.html');
+    writeFileSync(f, orig);
+    await injectShellScript(f);
+    expect(readFileSync(f, 'utf8')).not.toBe(orig);
+    expect(stripShellScript(readFileSync(f, 'utf8'))).toBe(orig);
+  });
+
+  it('摘完再注入、再摘，不会越滚越多', async () => {
+    const f = join(tmp(), 'index.html');
+    const orig = originals[1]!;
+    writeFileSync(f, orig);
+    for (let i = 0; i < 3; i++) {
+      await injectShellScript(f);
+      expect(readFileSync(f, 'utf8').split('data-ispace-shell').length - 1).toBe(1);
+      writeFileSync(f, stripShellScript(readFileSync(f, 'utf8')));
+    }
+    expect(readFileSync(f, 'utf8')).toBe(orig);
+  });
+
+  it('没注入过的原样返回；属性顺序不同的同一个标签也摘得掉', () => {
+    expect(stripShellScript(originals[0]!)).toBe(originals[0]);
+    const odd = '<head>\n  <script src="/platform/shell.js" data-ispace-shell defer></script>\n</head>';
+    expect(stripShellScript(odd)).toBe('<head>\n</head>');
   });
 });
 
