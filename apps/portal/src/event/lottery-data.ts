@@ -1,18 +1,32 @@
 /**
  * 全员抽奖的名册与奖品表。
  *
- * 名单是办活动时定下来的 84 人（花名 | 真名），与 event_judges、ispace.users
+ * 名单是办活动时定下来的 85 人（花名 | 真名），与 event_judges、ispace.users
  * 都不联动——抽奖抽的是「到场的同事」，不是「系统里的账号」，两者对不上是
  * 正常的（有人没注册过 iSpace，也照样参与抽奖）。
  *
- * 甜豆是组织者，不参与抽奖，所以在 EXCLUDE 里；她也是唯一没有头像的一位。
+ * 10.21 起组织者甜豆也参与抽奖，另加了小爱（编号 85，排在最后，不打乱
+ * 已有的编号和头像文件名）。
  */
 
-/** 不参与抽奖的人，按花名写。 */
-export const LOTTERY_EXCLUDE = ['甜豆'];
+/** 不参与抽奖的人，按花名写。现在没有人被排除，留着这个口子备用。 */
+export const LOTTERY_EXCLUDE: string[] = [];
+
+/**
+ * 普通轮数。之后紧跟一轮压轴（1024 红包），所以压轴的轮次号是它 + 1。
+ *
+ * 10.21 从 4 轮改成 5 轮：85 人人人有奖，每轮 17 个，大屏一屏排得下；
+ * 每轮各有一个 666 红包做「本轮大奖」。
+ */
+export const LOTTERY_ROUNDS = 5;
+export const LOTTERY_JACKPOT = LOTTERY_ROUNDS + 1;
+/** 普通轮：1…LOTTERY_ROUNDS */
+export const LOTTERY_REGULAR = Array.from({ length: LOTTERY_ROUNDS }, (_, i) => i + 1);
+/** 全部轮次，含压轴 */
+export const LOTTERY_ALL = [...LOTTERY_REGULAR, LOTTERY_JACKPOT];
 
 /** 有照片的那些人的编号。其余用花名首字的文字头像。 */
-const WITH_AVATAR = new Set([1, 2, 3, 4, 5, 10, 12, 13, 14, 15, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31, 34, 35, 37, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 55, 56, 57, 59, 61, 62, 63, 65, 66, 67, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 81, 83]);
+const WITH_AVATAR = new Set([1, 2, 3, 4, 5, 10, 12, 13, 14, 15, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31, 34, 35, 37, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 55, 56, 57, 59, 61, 62, 63, 65, 66, 67, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 81, 83, 85]);
 
 /** 花名|真名，顺序即编号（pid 从 1 起）。 */
 const RAW: string[] = [
@@ -37,6 +51,7 @@ const RAW: string[] = [
   '家烨|赵杰鹏', '道长|邱伟龙', '花火|牛榕', '巨星|李连杰',
   '向日葵|尹揆', '青岚|张玉龙', '明桐|董飞', '包黑子|赵东贺',
   '白芷|邱云肖', '白开水|雷宗文', '阿秀|李秀丹', '恩泰|梁鹏飞',
+  '小爱|张爱华',
 ];
 
 export interface LotteryPerson {
@@ -76,42 +91,46 @@ export const LOTTERY_BY_PID: Record<number, LotteryPerson> =
 export interface LotteryPrize {
   k: string;
   name: string;
-  /** 压轴大奖，只在第 5 轮出现 */
+  /** 压轴大奖，只在压轴那一轮出现 */
   jack?: boolean;
-  /** 现金类，卡片上用橙底强调 */
+  /** 现金类，卡片上用橙底强调；普通轮里它是「本轮大奖」 */
   cash?: boolean;
-  /** 五轮各放出几份 */
-  r: [number, number, number, number, number];
+  /** 每轮各放出几份：前 LOTTERY_ROUNDS 个是普通轮，最后一个是压轴 */
+  r: number[];
 }
 
 /**
- * 奖品表。前四轮共 83 份——**人人有奖**，抽过的人不再进下一轮的池子；
- * 第五轮是压轴，从全员 83 人里重新抽一个，所以它和前四轮的名额是叠加的。
+ * 奖品表（10.21 组织者定的新表）。普通轮共 85 份——**人人有奖**，抽过的人
+ * 不再进下一轮的池子；压轴从全员 85 人里重新抽一个，和普通轮的名额叠加。
+ *
+ * 表上只给了每样的总数，按轮摊开是这里排的：每轮正好 17 份、各一个 666
+ * 红包，其余尽量均匀。顺序就是中奖名单里的排序。
  */
 export const LOTTERY_PRIZES: LotteryPrize[] = [
-  { k: 'p1024', name: '1024红包', jack: true, r: [0, 0, 0, 0, 1] },
-  { k: 'p666', name: '666红包', cash: true, r: [1, 1, 1, 1, 0] },
-  { k: 'pbank', name: '小米磁吸充电宝', r: [1, 1, 1, 1, 0] },
-  { k: 'pcof', name: '山姆星巴克咖啡液', r: [1, 1, 1, 1, 0] },
-  { k: 'ppil', name: '蕉下U型枕', r: [1, 1, 1, 1, 0] },
-  { k: 'pnut', name: '山姆每日坚果', r: [1, 1, 1, 1, 0] },
-  { k: 'pcho', name: '山姆每日黑巧', r: [1, 1, 2, 1, 0] },
-  { k: 'ptea', name: '喜茶茶包4盒装', r: [2, 1, 2, 1, 0] },
-  { k: 'peye', name: '蕉下睡眠眼罩', r: [2, 2, 1, 1, 0] },
-  { k: 'plmp', name: '小米护眼台灯', r: [1, 2, 1, 2, 0] },
-  { k: 'pblk', name: '四季毯子', r: [2, 2, 2, 2, 0] },
-  { k: 'pcsh', name: '葫芦靠垫', r: [2, 2, 2, 2, 0] },
-  { k: 'pcrm', name: '护手霜 ×2', r: [2, 2, 2, 2, 0] },
-  { k: 'poil', name: '橄榄油', r: [2, 2, 2, 2, 0] },
-  { k: 'pfm', name: '面膜 ×2', r: [2, 2, 2, 2, 0] },
+  { k: 'p1024', name: '1024红包', jack: true, r: [0, 0, 0, 0, 0, 1] },
+  { k: 'pkey', name: 'vibekey小键盘麦克', r: [1, 1, 1, 1, 0, 0] },
+  { k: 'p666', name: '666红包', cash: true, r: [1, 1, 1, 1, 1, 0] },
+  { k: 'pbank', name: '小米磁吸充电宝', r: [1, 1, 1, 0, 1, 0] },
+  { k: 'pai', name: 'AIpassport', r: [1, 1, 2, 1, 1, 0] },
+  { k: 'ppil', name: '蕉下U型枕', r: [1, 1, 0, 1, 1, 0] },
+  { k: 'pnut', name: '山姆每日坚果', r: [1, 0, 1, 1, 1, 0] },
+  { k: 'pcho', name: '山姆每日黑巧', r: [0, 1, 1, 1, 1, 0] },
+  { k: 'ptea', name: '喜茶茶包4盒装', r: [1, 1, 1, 1, 0, 0] },
+  { k: 'peye', name: '蕉下睡眠眼罩', r: [1, 1, 1, 2, 1, 0] },
+  { k: 'plmp', name: '小米护眼台灯', r: [1, 1, 1, 1, 2, 0] },
+  { k: 'pblk', name: '四季毯子', r: [1, 1, 1, 2, 2, 0] },
+  { k: 'pcsh', name: '葫芦靠垫', r: [2, 2, 1, 1, 1, 0] },
+  { k: 'pcrm', name: '护手霜+喷雾', r: [2, 2, 1, 1, 2, 0] },
+  { k: 'poil', name: '橄榄油', r: [1, 1, 2, 2, 2, 0] },
+  { k: 'pfm', name: '面膜 ×2', r: [2, 2, 2, 1, 1, 0] },
 ];
 
 export const LOTTERY_PRIZE_BY_K: Record<string, LotteryPrize & { i: number }> =
   LOTTERY_PRIZES.reduce<Record<string, LotteryPrize & { i: number }>>((m, p, i) => { m[p.k] = { ...p, i }; return m; }, {});
 
-/** 轮次名。第五轮不叫「第五轮」，它是压轴。 */
-export const LOTTERY_ROUND_CN = ['一', '二', '三', '四'];
+/** 轮次名。最后一轮不叫「第六轮」，它是压轴。 */
+export const LOTTERY_ROUND_CN = ['一', '二', '三', '四', '五'];
 export function lotteryRoundTitle(r: number): string {
-  return r < 5 ? '第' + LOTTERY_ROUND_CN[r - 1] + '轮' : '压轴大奖';
+  return r < LOTTERY_JACKPOT ? '第' + LOTTERY_ROUND_CN[r - 1] + '轮' : '压轴大奖';
 }
 

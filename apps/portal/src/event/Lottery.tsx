@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
-  LOTTERY_BY_PID, LOTTERY_PEOPLE, LOTTERY_PRIZES, LOTTERY_PRIZE_BY_K,
-  lotteryRoundTitle, LOTTERY_ROUND_CN,
+  LOTTERY_ALL, LOTTERY_BY_PID, LOTTERY_JACKPOT, LOTTERY_PEOPLE, LOTTERY_PRIZES, LOTTERY_PRIZE_BY_K,
+  LOTTERY_REGULAR, LOTTERY_ROUNDS, lotteryRoundTitle, LOTTERY_ROUND_CN,
 } from './lottery-data';
 import { dots1024, DOTS_ON_SCREEN, Mark } from './visual';
 /*
@@ -23,9 +23,10 @@ registerEventEffects();
  * │ 没定」这件事的可见证明。少了它，抽奖和念一份早就写好的名单没区别。   │
  * └────────────────────────────────────────────────────────────────────┘
  *
- * 四轮普通奖 + 一轮压轴：
- *   第一~四轮各 21/21/21/20 人，**人人有奖**，抽过的人不再进下一轮的池子；
- *   压轴从全员 83 人里重新抽 1 个 1024 红包，和前四轮的名额叠加。
+ * 五轮普通奖 + 一轮压轴（轮数见 lottery-data 的 LOTTERY_ROUNDS）：
+ *   第一~五轮各 17 人，**人人有奖**，抽过的人不再进下一轮的池子；
+ *   压轴从全员 85 人里重新抽 1 个 1024 红包，和普通轮的名额叠加。
+ *   代码里不写死轮次号：压轴是 LOTTERY_JACKPOT，普通轮是它之前的那些。
  *
  * 结果写 localStorage。这一点很重要：万一大屏那台机器在抽奖中途刷新了，
  * 已经抽出的轮次不能丢——当众重抽一遍，前面念过的名字就全不算数了。
@@ -38,7 +39,12 @@ const CX = 1220;
 const CY = 570;
 /** 透视焦距。越小越「鼓」，1500 是稿上的手感 */
 const FOCAL = 1500;
-const STORE_KEY = 'ispace-1024-lottery-v3';
+/*
+  v4：10.21 普通轮从 4 轮改成 5 轮，轮次号的含义变了（原先第 5 轮是压轴，
+  现在是第五轮普通奖）。换键名让旧存档自动作废，免得大屏把旧的压轴结果
+  当成第五轮接着走。
+*/
+const STORE_KEY = 'ispace-1024-lottery-v4';
 
 type Phase = 'ready' | 'rolling' | 'stopping' | 'reveal';
 type Win = { pid: number; prize: string };
@@ -116,9 +122,9 @@ function expand(r: number): string[] {
   return out;
 }
 
-/** 第 r 轮的候选池。压轴是全员重来，前四轮要扣掉已经中过的人。 */
+/** 第 r 轮的候选池。压轴是全员重来，普通轮要扣掉已经中过的人。 */
 function poolFor(r: number, res: Results): number[] {
-  if (r === 5) return LOTTERY_PEOPLE.map((p) => p.pid);
+  if (r === LOTTERY_JACKPOT) return LOTTERY_PEOPLE.map((p) => p.pid);
   const used: Record<number, 1> = {};
   for (let k = 1; k < r; k += 1) (res[k] ?? []).forEach((x) => { used[x.pid] = 1; });
   return LOTTERY_PEOPLE.filter((p) => !used[p.pid]).map((p) => p.pid);
@@ -131,8 +137,8 @@ function sortWins(list: Win[]): Win[] {
 
 /** 第一个还没抽的轮次。刷新后从这里接着走。 */
 function firstOpen(res: Results): number {
-  for (let r = 1; r <= 5; r += 1) if (!res[r]) return r;
-  return 5;
+  for (let r = 1; r <= LOTTERY_JACKPOT; r += 1) if (!res[r]) return r;
+  return LOTTERY_JACKPOT;
 }
 
 function load(): Results {
@@ -359,11 +365,11 @@ export const LotteryStage = forwardRef<LotteryHandle>(
           正中那行名字。压轴停下来时它要越跳越慢最后定在中奖者身上——
           这是「还在抽」到「就是他」之间唯一的过渡，节奏全靠这段间隔。
         */
-        const solo = stopping && live.current.round === 5 && !live.current.landed;
+        const solo = stopping && live.current.round === LOTTERY_JACKPOT && !live.current.landed;
         let tp = 0;
         if (solo && !s.tickDone && now - stopAt.current > 1500) { tp = soloPid.current; s.tickDone = true; }
-        /* 前四轮一次抽二十来个人，中间跳一个名字没有意义——只在压轴（一次一个）时跳 */
-        else if (((rolling && live.current.round === 5) || solo) && !s.tickDone && s.pool.length
+        /* 普通轮一次抽十几个人，中间跳一个名字没有意义——只在压轴（一次一个）时跳 */
+        else if (((rolling && live.current.round === LOTTERY_JACKPOT) || solo) && !s.tickDone && s.pool.length
           && now - s.tickAt > (solo ? 60 + (now - stopAt.current) * 0.22 : 60)) {
           tp = s.pool[Math.floor(Math.random() * s.pool.length)]!;
         }
@@ -429,7 +435,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
       bindNodes();
       layoutPool(true);
       const t = later(60, () => setShown(true));
-      if (phase === 'reveal') { if (round === 5) startGather(); else runIntro(); }
+      if (phase === 'reveal') { if (round === LOTTERY_JACKPOT) startGather(); else runIntro(); }
       return () => {
         clearTimeout(t);
         timers.current.forEach(clearTimeout);
@@ -446,7 +452,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
         bindNodes(); layoutPool(true);
       }
       if (phase === 'reveal' && (p.phase !== 'reveal' || p.round !== round)) {
-        if (round === 5) { flyFrom.current = null; startGather(); }
+        if (round === LOTTERY_JACKPOT) { flyFrom.current = null; startGather(); }
         else if (flyFrom.current) { runFly(); flyFrom.current = null; }
         else runIntro();
       }
@@ -493,7 +499,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
       stopAt.current = performance.now();
       soloPid.current = list[0]?.pid ?? 0;
 
-      if (r === 5) {
+      if (r === LOTTERY_JACKPOT) {
         setResults(next); setPhase('stopping'); setLanded(false);
         /* 压轴多留两秒：名字要一个一个慢下来，最后才定住 */
         later(2300, () => { markWinners(list, true); setLanded(true); });
@@ -508,7 +514,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
     const go = useCallback((r: number) => {
       const s = live.current;
       const busy = s.phase === 'rolling' || s.phase === 'stopping';
-      if (r < 1 || r > 5 || r > firstOpen(s.results) || busy) return;
+      if (r < 1 || r > LOTTERY_JACKPOT || r > firstOpen(s.results) || busy) return;
       setRound(r);
       setPhase(s.results[r] ? 'reveal' : 'ready');
       setFresh(false);
@@ -529,7 +535,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
       /* 700ms 内的第二下当手抖，忽略——不然「开始」和「停」会连在一起 */
       if (ph === 'rolling') { if (now - rollAt.current > 700) stopDraw(); return true; }
       if (ph === 'stopping') return true;
-      if (r === 5) return false;
+      if (r === LOTTERY_JACKPOT) return false;
       go(r + 1);
       return true;
     }, [stopDraw, go]);
@@ -552,7 +558,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
     const copyList = useCallback(() => {
       const lines: string[] = [];
       let n = 0;
-      ([1, 2, 3, 4, 5]).forEach((k) => {
+      LOTTERY_ALL.forEach((k) => {
         const list = results[k];
         if (!list) return;
         lines.push(lotteryRoundTitle(k));
@@ -586,24 +592,24 @@ export const LotteryStage = forwardRef<LotteryHandle>(
     const open = firstOpen(results);
     const cur = results[round] ?? [];
     const isDraw = phase === 'ready' || phase === 'rolling' || phase === 'stopping';
-    const isReveal = phase === 'reveal' && round < 5;
-    const isJackpot = phase === 'reveal' && round === 5;
-    const total = [1, 2, 3, 4].reduce((a, k) => a + (results[k]?.length ?? 0), 0);
-    const jpEntry = (results[5] ?? [])[0];
+    const isReveal = phase === 'reveal' && round < LOTTERY_JACKPOT;
+    const isJackpot = phase === 'reveal' && round === LOTTERY_JACKPOT;
+    const total = LOTTERY_REGULAR.reduce((a, k) => a + (results[k]?.length ?? 0), 0);
+    const jpEntry = (results[LOTTERY_JACKPOT] ?? [])[0];
     const jpw = jpEntry ? LOTTERY_BY_PID[jpEntry.pid] : null;
     const poolN = poolFor(round, results).length;
     const slots = expand(round).length;
 
     /* 停下来那一刻给中奖者描橙边，按名次先后依次亮 */
     const winIdx: Record<number, number> = {};
-    if (phase === 'stopping' && (round < 5 || landed)) cur.forEach((x, i) => { winIdx[x.pid] = i; });
+    if (phase === 'stopping' && (round < LOTTERY_JACKPOT || landed)) cur.forEach((x, i) => { winIdx[x.pid] = i; });
 
     const cta = (() => {
-      if (phase === 'ready') return { label: round === 5 ? '开始压轴抽奖' : '开始抽奖', bg: '#fb923c', fg: '#001217' };
+      if (phase === 'ready') return { label: round === LOTTERY_JACKPOT ? '开始压轴抽奖' : '开始抽奖', bg: '#fb923c', fg: '#001217' };
       if (phase === 'rolling') return { label: 'STOP', bg: '#f93920', fg: '#ffffff' };
       if (phase === 'stopping') return { label: '抽取中…', bg: 'rgba(255,255,255,.14)', fg: '#ffffff' };
-      if (round === 5) return { label: '查看名单', bg: '#001217', fg: '#ffffff' };
-      if (round === 4) return { label: results[5] ? '查看压轴大奖' : '压轴抽奖', bg: '#fb923c', fg: '#001217' };
+      if (round === LOTTERY_JACKPOT) return { label: '查看名单', bg: '#001217', fg: '#ffffff' };
+      if (round === LOTTERY_ROUNDS) return { label: results[LOTTERY_JACKPOT] ? '查看压轴大奖' : '压轴抽奖', bg: '#fb923c', fg: '#001217' };
       return { label: results[round + 1] ? `查看第${LOTTERY_ROUND_CN[round]}轮` : '下一轮', bg: '#fb923c', fg: '#001217' };
     })();
 
@@ -626,7 +632,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
             <span style={{ fontSize: 24, fontWeight: 700 }}>第 8 届程序员节 · 幸运抽奖</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {[1, 2, 3, 4, 5].map((k) => {
+            {LOTTERY_ALL.map((k) => {
               const isCur = k === round;
               const done = !!results[k];
               const ok = k <= open;
@@ -643,7 +649,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
                     border: `1.5px solid ${isCur ? '#fb923c' : done ? 'transparent' : ok ? 'rgba(255,255,255,.35)' : 'rgba(255,255,255,.12)'}`,
                     transition: 'background-color .2s ease, color .2s ease',
                   }}
-                >{k < 5 ? `第${LOTTERY_ROUND_CN[k - 1]}轮` : '压轴'}</span>
+                >{k < LOTTERY_JACKPOT ? `第${LOTTERY_ROUND_CN[k - 1]}轮` : '压轴'}</span>
               );
             })}
             <span style={{ width: 1, height: 28, background: 'rgba(255,255,255,.2)', margin: '0 6px' }} />
@@ -684,7 +690,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
             <span className="mono" style={{
               fontSize: 24, fontWeight: 700, letterSpacing: '.14em', color: '#fb923c',
               animation: 'rise .7s cubic-bezier(.16,1,.3,1) both',
-            }}>{round < 5 ? `ROUND 0${round} / 04` : 'JACKPOT · 全员参与'}</span>
+            }}>{round < LOTTERY_JACKPOT ? `ROUND 0${round} / 0${LOTTERY_ROUNDS}` : 'JACKPOT · 全员参与'}</span>
             <span style={{
               marginTop: 14, fontSize: 160, fontWeight: 900, lineHeight: 1,
               letterSpacing: '-.02em', whiteSpace: 'nowrap',
@@ -693,7 +699,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
             <span style={{
               marginTop: 22, fontSize: 32, fontWeight: 700, opacity: 0.85,
               animation: 'rise .7s cubic-bezier(.16,1,.3,1) .12s both',
-            }}>{round < 5 ? `${slots} 个名额 · ${poolN} 人待抽` : `1024红包 · 全员 ${poolN} 人参与`}</span>
+            }}>{round < LOTTERY_JACKPOT ? `${slots} 个名额 · ${poolN} 人待抽` : `1024红包 · 全员 ${poolN} 人参与`}</span>
             <div style={{ marginTop: 64, display: 'flex', animation: 'rise .7s cubic-bezier(.16,1,.3,1) .18s both' }}>
               <div style={{
                 height: 128, minWidth: 460, boxSizing: 'border-box', padding: '0 72px',
@@ -836,7 +842,7 @@ function Sphere({ phase, shown, chipBox, ringBox, tickNick, tickReal, winIdx, la
 }) {
   const rolling = phase === 'rolling';
   const stopping = phase === 'stopping';
-  const tickOn = round === 5 && (rolling || (stopping && !landed));
+  const tickOn = round === LOTTERY_JACKPOT && (rolling || (stopping && !landed));
   return (
     <>
       {rolling && (
@@ -942,9 +948,13 @@ function RevealGrid({ gridRef, round, list, meta }: {
         <span className="mono" style={{ fontSize: 24, fontWeight: 700, opacity: 0.75 }}>{meta}</span>
       </div>
       {/*
-        6×4，前四轮的现金大奖（666 红包）单独占正中 2×2 一张大卡，其余 20 个
-        普通奖品绕着它自动排。显式定位的格子先占位、自动排的再填空，所以大
-        卡在 DOM 里排第一个也不会把别人挤乱。
+        6×4，普通轮的现金大奖（666 红包）单独占正中一张大卡，其余奖品绕着它
+        自动排。显式定位的格子先占位、自动排的再填空，所以大卡在 DOM 里排第
+        一个也不会把别人挤乱。
+
+        大卡的宽度按人数定，让 24 格正好排满、不留空洞：稿上是一轮 21 人
+        （大卡 2×2 + 20 张）；改成 5 轮后一轮 17 人，大卡放宽到 4×2，上下
+        各一整排、左右各两张，正好 16 张。
 
         z-index 压过彩纸（40）：彩纸从卡片后面飘，不糊在名字上。
       */}
@@ -957,7 +967,9 @@ function RevealGrid({ gridRef, round, list, meta }: {
           const p = LOTTERY_BY_PID[x.pid]!;
           const pz = LOTTERY_PRIZE_BY_K[x.prize]!;
           const cash = !!pz.cash;
-          if (cash && round < 5) return <HeroCard key={x.pid} pid={x.pid} prize={pz.name} />;
+          if (cash && round < LOTTERY_JACKPOT) {
+            return <HeroCard key={x.pid} pid={x.pid} prize={pz.name} wide={list.length - 1 === 16} />;
+          }
           return (
             <div key={x.pid} data-pid={x.pid} style={{
               position: 'relative', minWidth: 0, boxSizing: 'border-box', borderRadius: 22,
@@ -997,17 +1009,17 @@ function RevealGrid({ gridRef, round, list, meta }: {
 }
 
 /**
- * 「本轮大奖」：前四轮各一个的 666 红包，占名单正中 2×2。
+ * 「本轮大奖」：每个普通轮各一个的 666 红包，占名单正中（2×2，一轮 17 人时 4×2）。
  *
  * 金额和「红包」两个字分开排（稿上一大一小），从奖品名里拆：写死 666 的话
  * 哪天改了金额，大屏上就是错的。
  */
-function HeroCard({ pid, prize }: { pid: number; prize: string }) {
+function HeroCard({ pid, prize, wide }: { pid: number; prize: string; wide: boolean }) {
   const p = LOTTERY_BY_PID[pid]!;
   const m = /^(\d+)(.*)$/.exec(prize);
   return (
     <div data-pid={pid} style={{
-      position: 'relative', gridColumn: '3 / 5', gridRow: '2 / 4', minWidth: 0,
+      position: 'relative', gridColumn: wide ? '2 / 6' : '3 / 5', gridRow: '2 / 4', minWidth: 0,
       boxSizing: 'border-box', borderRadius: 32, padding: '24px 28px',
       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, textAlign: 'left',
       background: 'radial-gradient(120% 90% at 50% 0%,rgba(255,210,122,.32),rgba(251,146,60,.14) 60%,rgba(251,146,60,.08))',
@@ -1023,7 +1035,8 @@ function HeroCard({ pid, prize }: { pid: number; prize: string }) {
         boxShadow: '0 6px 18px rgba(251,146,60,.5)',
       }}>本轮大奖</span>
       <Face pid={pid} size={150} />
-      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+      {/* 宽卡里文字不撑满，头像和文字作为一组居中；窄卡照稿撑满 */}
+      <span style={{ flex: wide ? '0 1 auto' : 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
         <span style={{
           maxWidth: '100%', fontSize: 56, fontWeight: 900, lineHeight: 1.05,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -1162,7 +1175,7 @@ function WinnerDrawer({ results, total, onClose, onCopy, onReset, resetLabel }: 
   results: Results; total: number; onClose: () => void;
   onCopy: () => void; onReset: () => void; resetLabel: string;
 }) {
-  const groups = [1, 2, 3, 4, 5].filter((k) => results[k]).map((k) => ({
+  const groups = LOTTERY_ALL.filter((k) => results[k]).map((k) => ({
     title: `${lotteryRoundTitle(k)} · ${results[k]!.length} 人`,
     rows: sortWins(results[k]!).map((x) => {
       const p = LOTTERY_BY_PID[x.pid]!;
@@ -1189,7 +1202,7 @@ function WinnerDrawer({ results, total, onClose, onCopy, onReset, resetLabel }: 
         <div>
           <div style={{ fontSize: 34, fontWeight: 900 }}>中奖名单</div>
           <div style={{ marginTop: 6, fontSize: 20, color: 'rgba(0,18,23,.6)' }}>
-            已抽出 {total} / {LOTTERY_PEOPLE.length} 人{results[5] ? ' · 压轴已抽出' : ''} · 结果保存在这台机器的浏览器里
+            已抽出 {total} / {LOTTERY_PEOPLE.length} 人{results[LOTTERY_JACKPOT] ? ' · 压轴已抽出' : ''} · 结果保存在这台机器的浏览器里
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 22 }}>
