@@ -139,7 +139,7 @@ export const DOTS_ON_SCREEN = {
   off: 'rgba(28,31,35,.18)',
 };
 
-export function DotMatrix({ size, gap, palette, radius, solid = false, stacked = false }: {
+export function DotMatrix({ size, gap, palette, radius, solid = false, stacked = false, still = false }: {
   size: number;
   gap: number;
   palette: { on: [string, string, string]; off: string };
@@ -148,6 +148,8 @@ export function DotMatrix({ size, gap, palette, radius, solid = false, stacked =
   solid?: boolean;
   /** 两行两列的摞法，给侧栏这种窄处用。 */
   stacked?: boolean;
+  /** 不放逐格入场，直接是终态。入场已经放过一遍、又被重新挂上时用。 */
+  still?: boolean;
 }) {
   return (
     <div
@@ -165,8 +167,10 @@ export function DotMatrix({ size, gap, palette, radius, solid = false, stacked =
           data-solid={solid ? '0' : undefined}
           style={{
             width: size, height: size, borderRadius: radius, background: d.bg,
-            animation: 'commit .45s cubic-bezier(.16,1,.3,1) both',
-            animationDelay: d.delay,
+            ...(still ? {} : {
+              animation: 'commit .45s cubic-bezier(.16,1,.3,1) both',
+              animationDelay: d.delay,
+            }),
           }}
         />
       ))}

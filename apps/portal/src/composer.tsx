@@ -76,16 +76,25 @@ const Backdrop = ({ onClose }: { onClose: () => void }) => (
 );
 
 /** 平台配了哪些模型、开没开思考档位。问不到就当没有，输入框照常能用。 */
+/**
+ * 上一次问到的结果。换到别的屏再回来时先拿它画，模型胶囊就不会在输入框里
+ * "空一下再冒出来"；同时照样再问一次，管理员改了通道也能跟上。
+ */
+let lastModels: { models: ModelOption[]; effortOn: boolean } | null = null;
+
 export function useModels() {
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [effortOn, setEffortOn] = useState(false);
+  const [models, setModels] = useState<ModelOption[]>(lastModels?.models ?? []);
+  const [effortOn, setEffortOn] = useState(lastModels?.effortOn ?? false);
   useEffect(() => {
     void api.agentStatus()
       .then((s) => {
         /* 没配通道就连模型名都不显示——这一屏现在什么都生成不了 */
-        if (!s.configured) return;
-        setModels(s.models ?? []);
-        setEffortOn(Boolean(s.effort));
+        const next = s.configured
+          ? { models: s.models ?? [], effortOn: Boolean(s.effort) }
+          : { models: [], effortOn: false };
+        lastModels = next;
+        setModels(next.models);
+        setEffortOn(next.effortOn);
       })
       .catch(() => { /* 问不到就当没有 */ });
   }, []);

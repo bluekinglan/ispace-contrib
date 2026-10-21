@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   EVENT_PATH,
   type App as AppEntity, type Interest,
@@ -11,6 +11,7 @@ import { Award } from './event/Award';
 import {
   api, type InstalledApp, type Listing, type MeResponse, type PendingShare,
 } from './api';
+import { isSpaPath } from './nav';
 import { Shell, type NavKey, type PinnedApp } from './shell';
 import { Explore, playInNewTab } from './explore';
 import { Detail } from './detail';
@@ -118,19 +119,64 @@ function Space() {
   const [remix, setRemix] = useState<Listing | null>(null);
   /** 带进创建页的初稿与来源。 */
   const [draft, setDraft] = useState('');
+  const [draftSeq, setDraftSeq] = useState(0);
   const [remixFrom, setRemixFrom] = useState<Listing | null>(null);
+  /*
+    创建屏去过一次就一直挂着，切到别的屏只是藏起来。
+
+    原来点侧栏离开 iDo 就把整屏卸掉：回来时只能从本地存档"恢复"，对话里
+    多一句「刷新前做到这里」，而模型正在跑的那一轮（还在往回流字、往工作区
+    写文件）在屏幕上就此断了，预览会话也得重开。藏起来而不是卸掉，回来时
+    一切照旧——连输入框里打了一半的字都在。
+  */
+  const createAlive = useRef(false);
+  if (route.k === 'create') createAlive.current = true;
+
+  /** 这一次换屏是不是前进后退来的——是的话把那一屏原来的滚动位置还回去。 */
+  const [popped, setPopped] = useState(false);
 
   /* 前进后退。所有导航都走 pushState，返回键才有东西可回。 */
   const go = useCallback((to: string, r?: Route) => {
+    const next = r ?? parse(to);
+    /* 点的就是当前这一屏：不压一条重复的历史，也不闪一下 */
+    if (to === location.pathname + location.search) return;
     history.pushState({}, '', to);
-    setRoute(r ?? parse(to));
-    window.scrollTo(0, 0);
+    setPopped(false);
+    setRoute(next);
   }, []);
 
   useEffect(() => {
-    const onPop = () => setRoute(parse(location.pathname));
+    const onPop = () => { setPopped(true); setRoute(parse(location.pathname)); };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  /*
+    站内链接一律在页面里切，不整页刷新。
+
+    侧栏、头像、「去创建」「回到探索」这些原来都是普通的 <a href>，每点一下
+    就是一次整页加载：白屏、「载入中…」、/me 和整面墙的数据全部重拉一遍，
+    看上去就是"闪"。在这里统一拦，比给每个链接各接一个 onClick 牢靠——以后
+    新加的链接自动就对了。
+
+    留给浏览器的：新标签页打开（⌘/Ctrl/Shift/中键）、target=_blank、
+    download、别的源、以及不是这个应用的地址（见 isSpaPath）。
+  */
+  const goRef = useRef(go);
+  goRef.current = go;
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.('a');
+      if (!a || !a.href || a.hasAttribute('download')) return;
+      if (a.target && a.target !== '_self') return;
+      const url = new URL(a.href);
+      if (url.origin !== location.origin || url.hash || !isSpaPath(url.pathname)) return;
+      e.preventDefault();
+      goRef.current(url.pathname.replace(/(.)\/+$/, '$1') + url.search);
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
   }, []);
 
   const reloadMine = useCallback(async () => {
@@ -217,6 +263,7 @@ function Space() {
   /** 带着一句话进创建页。探索页的输入框和「做同款」都走这条。 */
   const startCreate = (text: string, from: Listing | null) => {
     setDraft(text);
+    setDraftSeq((n) => n + 1);
     setRemixFrom(from);
     go('/create', { k: 'create' });
   };
@@ -267,17 +314,7 @@ function Space() {
           />
         );
       case 'create':
-        return (
-          <Create
-            me={user}
-            initialDraft={draft}
-            remix={remixFrom ? { name: remixFrom.name, author: remixFrom.owner_name } : null}
-            onClearRemix={() => setRemixFrom(null)}
-            onMine={() => { void reloadMine(); go('/mine', { k: 'mine' }); }}
-            onWorkbench={setWorkbench}
-            onToast={setToast}
-          />
-        );
+        return null; // 一直挂着，见下面 createAlive 那一支
       case 'detail':
         if (!detailItem) {
           return (
@@ -332,8 +369,28 @@ function Space() {
         离开创建屏时 workbench 跟着归位（见 setWorkbench 那个 effect）。
       */
       chrome={route.k !== 'foryou' && !(route.k === 'create' && workbench)}
+      scrollKey={location.pathname}
+      restoreScroll={popped}
       {...(route.k === 'detail' || route.k === 'author' ? { back: () => history.back() } : {})}
     >
+      {createAlive.current && (
+        /*
+          contents：在这一屏时它的根元素直接当外壳容器的孩子，工作台那个
+          flex: 1 / height: 100% 的版面不受这层包装影响；不在时整个不显示。
+        */
+        <div style={{ display: route.k === 'create' ? 'contents' : 'none' }}>
+          <Create
+            me={user}
+            initialDraft={draft}
+            draftSeq={draftSeq}
+            remix={remixFrom ? { name: remixFrom.name, author: remixFrom.owner_name } : null}
+            onClearRemix={() => setRemixFrom(null)}
+            onMine={() => { void reloadMine(); go('/mine', { k: 'mine' }); }}
+            onWorkbench={setWorkbench}
+            onToast={setToast}
+          />
+        </div>
+      )}
       {route.k === 'foryou' ? (
         <ForYou
           listings={listings}

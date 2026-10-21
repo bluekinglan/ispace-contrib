@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { User } from '@ispace/contracts';
 import { Icon, Mark, Wordmark, type IconName } from '@ispace/ui';
 import { api, type PendingShare } from './api';
@@ -52,7 +52,8 @@ export interface PinnedApp {
 }
 
 export function Shell({
-  me, nav, q, onQ, pinned, shares, onShareDone, back, chrome = true, children,
+  me, nav, q, onQ, pinned, shares, onShareDone, back, chrome = true,
+  scrollKey, restoreScroll = false, children,
 }: {
   me: User;
   /** 当前高亮哪一项。详情页与作者页都算在「探索」下（稿上如此）。 */
@@ -65,9 +66,14 @@ export function Shell({
   /** 返回按钮。详情、作者页、以及正在生成的创建页才有。 */
   back?: () => void;
   chrome?: boolean;
+  /** 当前是哪一屏（地址）。换了就把滚动交接一下，见 useScrollMemory。 */
+  scrollKey?: string;
+  /** 这一次是前进后退来的：回到那一屏离开时的位置，而不是顶上。 */
+  restoreScroll?: boolean;
   children: ReactNode;
 }) {
   const wide = useWide();
+  const scroller = useScrollMemory(scrollKey, restoreScroll);
 
   return (
     <div
@@ -94,6 +100,7 @@ export function Shell({
         */}
         {chrome && <TopBar me={me} back={back} shares={shares} onShareDone={onShareDone} />}
         <div
+          ref={scroller}
           style={{
             flex: 1,
             minHeight: 0,
@@ -340,6 +347,53 @@ function Sidebar({
       </div>
     </aside>
   );
+}
+
+/**
+ * 每一屏各记各的滚动位置。
+ *
+ * 页面在这个容器里滚，不在 window 上滚，所以浏览器自带的滚动恢复管不到它：
+ * 原来整页刷新时每次都从顶上开始，改成页面内切换之后反过来——从探索墙
+ * 往下翻到一半点进详情，新的一屏会接着停在"一半"的位置。
+ *
+ * 新开一屏回到顶上；前进后退回到离开时的位置（探索墙翻到哪、回来还在哪）。
+ * 用 layout effect：在浏览器画出来之前就挪好，不会先闪一下旧位置。
+ */
+function useScrollMemory(key: string | undefined, restore: boolean) {
+  const el = useRef<HTMLDivElement | null>(null);
+  const saved = useRef(new Map<string, number>());
+  const cur = useRef(key);
+
+  /*
+    边滚边记，而不是换屏那一刻再读：到换屏的时候新的一屏已经渲染上去了，
+    内容一变短，浏览器会把 scrollTop 夹到新的最大值，读到的就不是原来的位置。
+  */
+  useEffect(() => {
+    const box = el.current;
+    if (!box) return;
+    const onScroll = () => { if (cur.current !== undefined) saved.current.set(cur.current, box.scrollTop); };
+    box.addEventListener('scroll', onScroll, { passive: true });
+    return () => box.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const box = el.current;
+    if (!box || key === undefined || key === cur.current) return;
+    cur.current = key;
+    box.scrollTop = restore ? saved.current.get(key) ?? 0 : 0;
+    /*
+      新的一屏从七分淡入到全亮，0.16 秒。只动内容区的透明度，侧栏不动。
+
+      试过浏览器自带的 View Transitions：它要先给旧画面拍快照，带着 iframe
+      的屏（为你推荐、工作台）拍一次要两三百毫秒，有一次新画面等了将近一秒
+      才出来，期间整屏冻住、点什么都没反应——比原来的闪更糟。这个淡入不拍
+      快照、不挡点击，最多就是没效果。
+    */
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      box.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
+    }
+  }, [key, restore]);
+  return el;
 }
 
 function NavRow({

@@ -13,6 +13,11 @@ import { Wall, WallCard, fmt, initial, washOf } from './wall';
  * 所以同一个地址在两版里的含义变了。看自己的主页时顶上会写明这件事，
  * 并给一条去「我的作品」的路——否则作者会以为自己的页面丢了。
  */
+type AuthorData = { profile: AuthorProfile; apps: Listing[] };
+
+/** 这次打开门户以来看过的作者。只活在内存里，刷新就清。 */
+const seen = new Map<string, AuthorData>();
+
 export function Author({
   username, onOpen, onPlay, onRemix, onAuthor, onToast,
 }: {
@@ -23,16 +28,20 @@ export function Author({
   onAuthor: (username: string) => void;
   onToast: (t: string) => void;
 }) {
-  const [data, setData] = useState<{ profile: AuthorProfile; apps: Listing[] } | null>(null);
+  const [data, setData] = useState<AuthorData | null>(() => seen.get(username) ?? null);
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setData(null);
+    /* 来过的人先用上次的画出来，再在后面刷新——不先闪一下「正在加载…」 */
+    setData(seen.get(username) ?? null);
     setMissing(false);
     let alive = true;
     void api.author(username)
-      .then((r) => { if (alive) setData(r); })
+      .then((r) => {
+        seen.set(username, r);
+        if (alive) setData(r);
+      })
       .catch(() => { if (alive) setMissing(true); });
     return () => { alive = false; };
   }, [username]);

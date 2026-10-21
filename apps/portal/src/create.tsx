@@ -36,11 +36,16 @@ import {
  * └──────────────────────────────────────────────────────────────────┘
  */
 export function Create({
-  me, initialDraft, remix, onClearRemix, onMine, onWorkbench, onToast,
+  me, initialDraft, draftSeq, remix, onClearRemix, onMine, onWorkbench, onToast,
 }: {
   me: User;
   /** 从探索页那句话或「做同款」带进来的初稿。 */
   initialDraft: string;
+  /**
+   * 每带进来一次初稿就 +1。这一屏切到别处时不卸载（见 App 的 createAlive），
+   * 所以不能靠"挂载时读一次 initialDraft"——同一句话再带一次也得认得出来。
+   */
+  draftSeq: number;
   remix: { name: string; author: string } | null;
   onClearRemix: () => void;
   onMine: () => void;
@@ -52,7 +57,20 @@ export function Create({
   /* 刷新之前正在做的那一个，有就接着摆出来——见 loadGen 的说明 */
   const [gen, setGen] = useState<Gen | null>(() => (initialDraft ? null : loadGen(me.username)));
 
-  useEffect(() => { setDraft(initialDraft); }, [initialDraft]);
+  /*
+    又带进来一句话（探索页的输入框、「做同款」）：回到开场那一屏，把这句话
+    摆进输入框——和原来整页进来时一样。正在做的那一个例外：模型还在跑，
+    这时候换掉就是把它半路扔下，先留着它，说一声。
+  */
+  const seq = useRef(draftSeq);
+  useEffect(() => {
+    if (seq.current === draftSeq) return;
+    seq.current = draftSeq;
+    setDraft(initialDraft);
+    if (!initialDraft || !gen) return;
+    if (gen.busy) { onToast('这一个还在做，做完点「新对话」再开新的——那句话已经放进输入框了'); return; }
+    setGen(null);
+  }, [draftSeq, initialDraft, gen, onToast]);
   useEffect(() => { onWorkbench(gen !== null); }, [gen, onWorkbench]);
 
   /*
@@ -402,6 +420,9 @@ function saveGen(username: string, g: Gen | null): void {
   } catch { /* 隐身窗口或配额满了：存不了就算了，不挡正事 */ }
 }
 
+const RESTORE_PREFIX = '（刷新前做到这里';
+const RESTORE_NOTE = `${RESTORE_PREFIX}。文件和对话都还在，接着说要改哪里就行。）`;
+
 function loadGen(username: string): Gen | null {
   try {
     const raw = localStorage.getItem(saveKey(username));
@@ -418,11 +439,12 @@ function loadGen(username: string): Gen | null {
       /* 模型那一轮已经断了，进度一律收尾，不然会一直转圈 */
       steps: (gen.steps ?? []).map((st) => ({ ...st, done: true })),
       says: [
-        ...(gen.says ?? []),
-        {
-          me: false,
-          text: '（刷新前做到这里。文件和对话都还在，接着说要改哪里就行。）',
-        },
+        /*
+          先把以前补的那句去掉再补一句。这句话会跟着对话一起存回去，不去掉
+          的话每刷新一次就多一句，攒成一摞（实测见过三句叠在一起）。
+        */
+        ...(gen.says ?? []).filter((m) => m.me || !m.text.startsWith(RESTORE_PREFIX)),
+        { me: false, text: RESTORE_NOTE },
       ],
     };
   } catch {

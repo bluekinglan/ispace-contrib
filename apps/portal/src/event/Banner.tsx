@@ -24,16 +24,33 @@ import { Caret, DOTS_ON_ORANGE, DotMatrix, EventKeyframes } from './visual';
  * 版式照设计稿：一条横的，左边一块点阵 1024，中间 tag + 标题 + 一句说明，
  * 右边一颗按钮，整条都可以点。右侧那个出血的巨大 1024 是水印。
  */
+/*
+  上一次拿到的活动数据，以及点阵入场有没有放过。
+
+  门户改成页面内切换之后，每回到一次探索，腰带就重新挂一次：原来它要等
+  接口回来才画，于是每次都先没有、再"啪"地冒出来把整面墙往下推；点阵的
+  逐格入场也每次重放一遍。两样叠在一起，看上去就是切菜单时那一下闪。
+  所以：数据先用上一次的画（同时照样再问一次），入场只在这次打开门户时放一遍。
+*/
+let lastEvent: EventResponse | null = null;
+let introPlayed = false;
+
 export function EventBanner() {
-  const [data, setData] = useState<EventResponse | null>(null);
+  const [data, setData] = useState<EventResponse | null>(lastEvent);
+  /* 挂载那一刻定下来：这一次要不要放入场。放过之后再挂就是静止的终态 */
+  const [still] = useState(introPlayed);
 
   useEffect(() => {
     /*
       吞掉错误：这是首页上的一块装饰性入口，活动不存在、接口挂了、
       还没跑迁移，都该表现为「没有腰带」，而不是首页上一条报错。
     */
-    void api.event(CURRENT_EVENT_SLUG).then(setData).catch(() => setData(null));
+    void api.event(CURRENT_EVENT_SLUG)
+      .then((r) => { lastEvent = r; setData(r); })
+      .catch(() => { lastEvent = null; setData(null); });
   }, []);
+
+  useEffect(() => { if (data) introPlayed = true; }, [data]);
 
   if (!data || data.event.phase === 'ended') return null;
 
@@ -88,7 +105,7 @@ export function EventBanner() {
         等高。
       */}
       <div style={{ position: 'relative', flex: 'none' }}>
-        <DotMatrix size={8} gap={2} radius={2} palette={DOTS_ON_ORANGE} />
+        <DotMatrix size={8} gap={2} radius={2} palette={DOTS_ON_ORANGE} still={still} />
       </div>
 
       <div style={{
