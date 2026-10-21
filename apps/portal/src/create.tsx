@@ -8,7 +8,7 @@ import {
   type AgentChoice, type AgentImage, type Effort,
 } from './composer';
 import { Segment } from './detail';
-import { type Device } from './wall';
+import { usePlayUrl, type Device } from './wall';
 import {
   AskCard, CodePane, DesignGallery, IconBtn, ProcessBlock, PublishMenu, RefineBar, TabBar,
   useFanout, variantAsk, type Ask, type AskOption, type FanDir, type VariantKind,
@@ -1060,8 +1060,24 @@ function Generating({
   /* 带服务端 / 要构建的项目不渲染——伺服出去是半截页面或白屏，见 preview-kind.ts */
   const renderable = preview.kind === null || preview.kind.kind === 'static'
     || preview.kind.kind === 'empty';
+  /*
+    发布之后右栏装的是正式页面，但**不能直接装 publishedUrl**。
+
+    预览框是沙箱 iframe（不给 allow-same-origin），里面的页面是 opaque origin：
+    它自己去取 style.css、app.js 时带不上登录态，"仅自己可见"的页面就把这些
+    请求全挡了——框里剩一页裸 HTML；平台还会往页面顶上注入那条带「登录」的
+    顶栏。线上年会抽奖发布完就是这个样子。
+
+    详情页和为你推荐早就不这么装了：换一个短时效的试玩地址
+    （/deploy/api/play/{token}/），凭证在路径里、不靠 cookie，也不注入顶栏。
+    这里照做。令牌还没换到时先摆骨架屏。
+  */
+  const play = usePlayUrl(gen.publishedUrl && gen.site
+    ? { owner_username: me.username, slug: gen.site, status: 'running' }
+    : null);
   const frameUrl = gen.publishedUrl
-    ?? (preview.url && renderable ? `${preview.url}?_r=${preview.rev}` : null);
+    ? play
+    : (preview.url && renderable ? `${preview.url}?_r=${preview.rev}` : null);
 
   /** 把预览里的报错作为一次追问发出去，让模型自己改。 */
   const fixErrors = () => {
