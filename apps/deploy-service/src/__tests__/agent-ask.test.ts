@@ -11,6 +11,7 @@ import type { DeployInput } from '../services/deploy.js';
 import { MemoryAgentStore } from '../services/agent-store.js';
 import { SessionWorkspaces } from '../services/session-workspace.js';
 import { Workspaces } from '../services/workspaces.js';
+import { publish, tempStorage, withFiles } from './release-fixture.js';
 
 /**
  * 一句话从进门到落盘：/agent/ask 的整条接线。
@@ -22,7 +23,8 @@ import { Workspaces } from '../services/workspaces.js';
  *   - 每一句开工前拍了快照，撤回能退回去
  *   - 历史存下来了，下一句接得上
  *   - 自检没过拿不到发布令牌；过了，发布的是这条会话的工作区，并记下页面
- *   - 「改 /这个页面/」找回的是当初那个工作区
+ *   - 「改 /这个页面/」找回的是当初那个工作区；没有工作区的，从线上拷一份，
+ *     并告诉模型这些文件哪来的（拷不了的，告诉它发出去会整页替换）
  */
 
 type Script = EngineEvent[][];
@@ -52,9 +54,10 @@ describe('/agent/ask 整条接线', () => {
   const fed: EngineMessage[][] = [];
   const deployed: DeployInput[] = [];
   const me = { id: 'u-me', username: 'lixiao' } as User;
+  const storage = tempStorage();
 
   beforeAll(async () => {
-    sw = new SessionWorkspaces(new MemoryAgentStore(), new Workspaces(mkdtempSync(join(tmpdir(), 'ispace-ask-'))));
+    sw = new SessionWorkspaces(new MemoryAgentStore(), new Workspaces(mkdtempSync(join(tmpdir(), 'ispace-ask-'))), storage);
     app = Fastify();
     app.setErrorHandler((err, _req, reply) => {
       if (err instanceof IspaceError) return reply.status(err.httpStatus).send(err.toJSON());
@@ -179,6 +182,25 @@ describe('/agent/ask 整条接线', () => {
     const other = String(ev2[0]!.id);
     expect(other).not.toBe(sid);
     expect((await sw.store.get(other))!.workspace).toBe(sid);
+  });
+
+  it('改一个 CLI 发的页面：工作区从线上拷来，模型被告知；拷不了的，告诉它发出去会整页替换', async () => {
+    await publish(storage, 'lixiao', 'cli-page', 1, withFiles({ 'index.html': '<head></head><h1>CLI 发的</h1>' }));
+    const { events } = await ask({ targetSlug: 'cli-page', text: '标题改成红色' }, [
+      [call('read_file', { path: 'index.html' }), { type: 'done' }],
+      say('好'),
+    ]);
+    const read = events.find((e) => e.type === 'tool_result' && e.name === 'read_file')!;
+    expect(String(read.result)).toContain('<h1>CLI 发的</h1>');
+    expect(String(read.result)).not.toContain('data-ispace-shell');
+    const told = fed.at(-2)!.filter((m) => m.role === 'user').at(-1)!.content;
+    expect(told).toContain('线上版本的文件');
+
+    await publish(storage, 'lixiao', 'next-page', 1, withFiles({ 'index.html': '<h1>x</h1>', '_next/a.js': 'x' }));
+    await ask({ targetSlug: 'next-page', text: '改个字' }, [say('好')]);
+    const warned = fed.at(-1)!.filter((m) => m.role === 'user').at(-1)!.content;
+    expect(warned).toContain('_next');
+    expect(warned).toContain('整页替换线上版本');
   });
 
   it('两次创建是两个工作区，第二个页面的文件不会混进第一个', async () => {

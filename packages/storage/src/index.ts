@@ -307,23 +307,51 @@ export function extractCover(
  */
 export const SHELL_SCRIPT_SRC = '/platform/shell.js';
 const SHELL_MARKER = 'data-ispace-shell';
+/** 注入的就是这一行，一个字都不变——stripShellScript 靠它逐字摘回去。改它就得同时改下面三种写法。 */
+const SHELL_TAG = `<script ${SHELL_MARKER} src="${SHELL_SCRIPT_SRC}" defer></script>`;
 
 export async function injectShellScript(indexHtmlPath: string): Promise<boolean> {
   const html = await readFile(indexHtmlPath, 'utf8');
   if (html.includes(SHELL_MARKER)) return false;
 
-  const tag = `<script ${SHELL_MARKER} src="${SHELL_SCRIPT_SRC}" defer></script>`;
   let out: string;
   if (/<\/head>/i.test(html)) {
-    out = html.replace(/<\/head>/i, `  ${tag}\n</head>`);
+    out = html.replace(/<\/head>/i, `  ${SHELL_TAG}\n</head>`);
   } else if (/<body[^>]*>/i.test(html)) {
-    out = html.replace(/(<body[^>]*>)/i, `$1\n  ${tag}`);
+    out = html.replace(/(<body[^>]*>)/i, `$1\n  ${SHELL_TAG}`);
   } else {
     // 没有 head 也没有 body 的裸片段，直接前置
-    out = `${tag}\n${html}`;
+    out = `${SHELL_TAG}\n${html}`;
   }
   await writeFile(indexHtmlPath, out, 'utf8');
   return true;
+}
+
+/**
+ * injectShellScript 的逆操作：把发布时注入的那一行摘掉，还原成注入前的样子。
+ *
+ * 给「从线上版本反推工作区」用（deploy-service 的 services/release-seed.ts）。
+ * 不摘的话这行会进到工作区：模型读 index.html 时看见一个它没写过的平台脚本，
+ * 可能当成自己的东西去改；工作区预览也会多加载一份平台 chrome。
+ *
+ * ┌─ 为什么标记够用，不用另加 ────────────────────────────────────────┐
+ * │ 注入的那一行是写死的字面量（SHELL_TAG），自第一版起没变过；注入   │
+ * │ 本身就是按 data-ispace-shell 判断幂等的。所以按注入时的三种写法     │
+ * │ 逐字摘，摘完与注入前逐字节相同（有用例钉住 strip(inject(x)) === x）。│
+ * └────────────────────────────────────────────────────────────────────┘
+ *
+ * 三种写法若有重叠（例如 </head> 前恰好是换行），摘哪种结果都一样——
+ * 用例里也钉了。最后那条正则只兜"属性顺序不同的同一个标签"，正常走不到。
+ */
+export function stripShellScript(html: string): string {
+  let out = html;
+  for (const form of [`  ${SHELL_TAG}\n`, `\n  ${SHELL_TAG}`, `${SHELL_TAG}\n`, SHELL_TAG]) {
+    if (out.includes(form)) {
+      out = out.replace(form, '');
+      break;
+    }
+  }
+  return out.replace(/[ \t]*<script\b[^>]*\bdata-ispace-shell\b[^>]*>\s*<\/script>[ \t]*\n?/gi, '');
 }
 
 /** 收集目录下所有文件的绝对路径，供扫描器使用。 */
