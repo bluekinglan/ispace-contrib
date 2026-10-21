@@ -110,7 +110,7 @@ export class OpenAiCompatibleEngine implements Engine {
           }
         : {}),
       stream: true,
-      max_tokens: this.cfg.maxTokens ?? 32_000,
+      max_tokens: this.cfg.maxTokens ?? 64_000,
       ...(this.cfg.effort ? { reasoning_effort: this.cfg.effort } : {}),
     };
 
@@ -385,8 +385,13 @@ export function createEngine(
 
       而且本来也该大：这个 Agent 的典型动作是一次 write_file 写出一整页
       HTML（实测 13~17 KB），2048 个 token 连写完都不够。
+
+      现在是 64000：32000 已经能让它正常写文件，但"先想后说"的模型里，
+      思考那一段本身就可能吃掉一两万，剩下的留给一整页 HTML 仍然紧。
+      这是**上限不是预算**——模型写完就停，不会因为给得多就多写；给小了
+      才会在半句话上截断，而截断的表现正是那种最难查的"没反应"。
     */
-    maxTokens: numEnv(env.AGENT_MAX_TOKENS, 32_000),
+    maxTokens: numEnv(env.AGENT_MAX_TOKENS, 64_000),
     timeoutMs: numEnv(env.AGENT_TIMEOUT_MS, 120_000),
     ...(effortEnabled(env) && choice.effort ? { effort: choice.effort } : {}),
   });
