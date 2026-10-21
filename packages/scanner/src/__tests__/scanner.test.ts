@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkBasePath, scanContent } from '../index.js';
+import { adviceFor, basePathFindings, checkBasePath, scanContent } from '../index.js';
 
 describe('密钥扫描', () => {
   it('拦下 AWS Access Key ID', () => {
@@ -112,5 +112,36 @@ describe('扫描不会因异常输入卡死', () => {
   it('多行内容逐行定位准确', () => {
     const r = scanContent('line1\nline2\nconst k="AKIAIOSFODNN7EXAMPLE";');
     expect(r.findings[0]?.line).toBe(3);
+  });
+});
+
+describe('给发布前自检用的两样东西', () => {
+  it('每条内置规则都有一句改法——只给规则名，模型会去骗正则而不是修', () => {
+    const r = scanContent([
+      'el.innerHTML = data.name;',
+      'document.write(html);',
+      'const k = "AKIAIOSFODNN7EXAMPLE";',
+    ].join('\n'));
+    for (const f of r.findings) {
+      expect(adviceFor(f.rule)).not.toMatch(/按规则名检查/);
+    }
+    expect(adviceFor('innerHTML-from-variable')).toContain('textContent');
+  });
+
+  it('gitleaks 的规则与未知规则都有兜底的话，不会是空串', () => {
+    expect(adviceFor('gitleaks:generic-api-key')).toContain('连接器');
+    expect(adviceFor('something-new')).toBeTruthy();
+  });
+
+  it('根绝对路径带回行号，外链与相对路径不算', () => {
+    const html = [
+      '<!doctype html>',
+      '<link href="./a.css" rel="stylesheet">',
+      '<script src="/assets/main.js"></script>',
+      '<img src="//cdn/x.png"><img src="/logo.png">',
+    ].join('\n');
+    const fs = basePathFindings(html);
+    expect(fs.map((f) => `${f.line}:${f.excerpt}`)).toEqual(['3:/assets/main.js', '4:/logo.png']);
+    expect(fs.every((f) => f.rule === 'base-path')).toBe(true);
   });
 });

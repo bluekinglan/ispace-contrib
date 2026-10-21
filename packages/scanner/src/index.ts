@@ -92,6 +92,64 @@ const XSS_RULES: Rule[] = [
   { id: 'eval-of-remote', re: /\beval\s*\(\s*(await\s+)?fetch\s*\(/g },
 ];
 
+/**
+ * 每条规则命中后**该怎么改**。
+ *
+ * 发布前自检（Agent 的 check_publishable）把命中项交给模型去修。只给一个规
+ * 则名，模型多半会做最省事的事——把那行删掉，或者换个写法骗过正则（比如
+ * `el['inner'+'HTML'] = x`），问题原样还在。给它一句正确的改法，它照着改的
+ * 才是真的修好了。
+ */
+const ADVICE: Record<string, string> = {
+  'aws-access-key-id': '别把 AWS 密钥写进页面；需要调云服务就在控制台登记连接器，由平台在服务端注入凭据',
+  'aws-secret-access-key': '别把 AWS 密钥写进页面；需要调云服务就在控制台登记连接器，由平台在服务端注入凭据',
+  'github-token': '删掉这个令牌；页面要用 GitHub 数据就登记连接器，令牌留在服务端',
+  'openai-key': '删掉这个 key；页面要调模型就走平台的连接器，key 不能出现在前端',
+  'anthropic-key': '删掉这个 key；页面要调模型就走平台的连接器，key 不能出现在前端',
+  'slack-token': '删掉这个令牌；要发 Slack 消息就登记连接器，由平台在服务端发',
+  'google-api-key': '删掉这个 key；需要地图或谷歌接口就登记连接器，由平台注入',
+  'private-key-block': '私钥绝不能进页面产物，整段删掉',
+  'jwt-with-service-role': '这是 Supabase 的 service_role key，等于整个数据库的写权限；前端只能用 anon key',
+  'generic-password-assignment': '把这个口令/令牌从代码里拿掉；要鉴权就走平台的登录态或连接器，示例值写成 your-xxx 这种明显的占位',
+  'postgres-url-with-password': '数据库连接串不能出现在前端；页面读写数据走平台的数据接口',
+  'inline-event-handler-with-eval': '别在 onclick 之类的属性里 eval/setTimeout 字符串；改成 addEventListener 绑一个函数',
+  'innerHTML-from-variable': '变量里的内容别直接塞 innerHTML：纯文字用 textContent；要拼结构就用 createElement + textContent，或先把 < > & " \' 转义再拼',
+  'document-write-with-variable': '别用 document.write 输出变量；用 createElement + textContent 插到页面里',
+  'eval-of-remote': '别 eval 网络取回来的内容；要数据就取 JSON 然后 JSON.parse',
+  'base-path': '改成相对路径（./assets/x.js）——页面挂在 /用户/页面/ 子路径下，根绝对路径会 404',
+};
+
+/** 命中某条规则时的修改建议。gitleaks 的规则没有逐条写，给一句通用的。 */
+export function adviceFor(rule: string): string {
+  return ADVICE[rule]
+    ?? (rule.startsWith('gitleaks:')
+      ? '疑似密钥，从产物里删掉；要调外部服务就登记连接器，由平台在服务端注入'
+      : '按规则名检查这一行，确认不是把敏感信息或不安全写法带进了页面');
+}
+
+/**
+ * 根绝对路径出现在 index.html 的第几行。
+ *
+ * checkBasePath 只给出了哪些地址有问题（发布链路报错只需要这个），自检要
+ * 告诉模型"去改第几行"，所以在这里把行号找回来。同一个地址出现多次就报多次。
+ */
+export function basePathFindings(indexHtml: string, file = 'index.html'): ScanFinding[] {
+  const out: ScanFinding[] = [];
+  const lines = indexHtml.split('\n');
+  const attrRe = /\b(?:src|href)\s*=\s*["']([^"']+)["']/gi;
+  for (let i = 0; i < lines.length; i++) {
+    attrRe.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = attrRe.exec(lines[i]!)) !== null) {
+      const url = m[1]!;
+      if (url.startsWith('/') && !url.startsWith('//')) {
+        out.push({ rule: 'base-path', file, line: i + 1, excerpt: url });
+      }
+    }
+  }
+  return out;
+}
+
 /** 遮蔽命中片段：保留头尾各 4 字符，中间打码。审计日志里不能有明文密钥。 */
 function mask(s: string): string {
   const t = s.trim();

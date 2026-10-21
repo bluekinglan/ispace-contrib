@@ -252,6 +252,8 @@ export async function runFanout(opts: FanoutOptions): Promise<{ ok: number; fail
         /* 只给写文件：这一步不需要读、不需要删，更不需要发布 */
         tools: [WRITE_ONLY],
         maxTurns: DIR_MAX_TURNS,
+        /* 一轮就完的草案会话，上下文涨不起来，压缩只是白算一遍 */
+        compact: false,
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
 

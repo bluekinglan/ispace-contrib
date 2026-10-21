@@ -1,5 +1,6 @@
+import { compact, engineSummarizer, type CompactOptions } from './compact.js';
 import type { Engine, EngineMessage, ToolDef } from './engine.js';
-import { ALL_TOOLS, parseAsk, runTool, type ToolContext } from './tools.js';
+import { ALL_TOOLS, parseAsk, runToolOutput, type ToolContext, type ToolImage } from './tools.js';
 
 /**
  * 会话循环（技术方案 §6.1 的「线程语义恰好对应会话」）。
@@ -18,6 +19,19 @@ const BASE_PROMPT = `你是 ispace 内部平台的编码助手，帮助员工修
 - 用户用自然语言描述想改什么，你读代码、改代码，然后请求发布。
 - 你只能操作该用户自己的工作区文件，不能执行任意命令。
 - 发布必须经用户在手机上二次确认，你无权直接发布。
+
+改文件的方式：
+- 先找再改：不确定改哪儿时用 search_files 定位，别把文件一个个读进来。
+- **小改用 edit_file**（old_string → new_string，old_string 要在文件里只出现一次）；
+  只有新建文件或整页重写才用 write_file。为了改一行把整页重写一遍，又慢又贵，
+  还容易把别处改坏。
+- 用户附的文件存在 _uploads/ 下，不会跟着页面发布；要用进页面就 copy_file 拷到
+  assets/ 之类的位置再引用。
+
+发布之前：
+- request_deploy 之前**先调 check_publishable**，把它列出的每一条都修掉——照它给的
+  建议改，不要换个写法绕过规则——再调一次确认干净，然后才 request_deploy。
+  自检没过的工作区，request_deploy 会直接拒绝。
 
 平台约束（AGENTS.md 的等价约束，违反会在构建期被拒）：
 - 不得引入新的原生依赖——会改变 runtimeVersion，导致更新不被壳接受。
@@ -98,6 +112,28 @@ const CAN_DRAW = `
 图里尽量不要文字——模型画的字经常是歪的。文字用 HTML 写在图上面。`;
 
 /**
+ * 「你能看见自己做的页面」那一段。
+ *
+ * 和 CAN_DRAW 同一个道理：机器上没有截图器时 screenshot_preview 不挂，这段
+ * 也不能出现——否则模型会说"我截个图看看"，然后去调一个不存在的工具。
+ */
+const CAN_SEE = `
+
+## 你能看见自己做的页面
+
+有 screenshot_preview 工具：把页面在无头浏览器里打开、截一张图给你看。写完第一
+版、或者改完布局之后截一次，自己检查：
+
+- 有没有横向溢出、元素叠在一起、文字被截断
+- 深色或浅色背景上的字看不看得清
+- 手机宽度（390）下是不是挤成一团
+
+发现问题就改，改完可以再截一次确认。一次要十几秒，别每改一行就截。
+
+截的是本地文件：走 /deploy/api/connect 取数的区域会是空的、根绝对路径的资源加载
+不到——这是截图的盲区，不是你写错了。`;
+
+/**
  * 「开工之前要不要问」那一段。
  *
  * 创建屏原来在开场摆三个固定选项，每个人都得先点一下才开始。拿掉之后，
@@ -120,11 +156,12 @@ const ASK_FIRST = `
 
 export function buildSystemPrompt(
   available: AvailableConnector[],
-  opts: { livePreview?: boolean; canDraw?: boolean } = {},
+  opts: { livePreview?: boolean; canDraw?: boolean; canSee?: boolean } = {},
 ): string {
   const SYSTEM_PROMPT = (opts.livePreview ? BASE_PROMPT + LIVE_PREVIEW : BASE_PROMPT)
     + ASK_FIRST
-    + (opts.canDraw ? CAN_DRAW : '');
+    + (opts.canDraw ? CAN_DRAW : '')
+    + (opts.canSee ? CAN_SEE : '');
 
   if (available.length === 0) {
     return `${SYSTEM_PROMPT}
@@ -214,6 +251,16 @@ export interface SessionOptions {
    * 两面：挂了工具就得在提示里说，说了就得真能调。
    */
   canDraw?: boolean;
+  /**
+   * 平台能不能截图（screenshot_preview）。与 toolCtx.platform.screenshot 同进同出，
+   * 道理同 canDraw。
+   */
+  canSee?: boolean;
+  /**
+   * 上下文压缩（compact.ts）。默认开着，预算按 DEFAULT_CONTEXT_CHARS；
+   * 传 false 关掉——设计扇出那种一轮就完的会话用不着。
+   */
+  compact?: CompactOptions | false;
   onEvent?: (e: SessionEvent) => void;
   signal?: AbortSignal;
 }
@@ -224,7 +271,9 @@ export type SessionEvent =
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'turn'; index: number }
   | { type: 'done'; turns: number; stopReason: StopReason }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  /** 上下文太长、压过一次。stage 见 compact.ts（1 裁剪 / 2 摘要 / 3 硬截断）。 */
+  | { type: 'compacted'; stage: 1 | 2 | 3; before: number; after: number };
 
 /**
  * 一轮为什么停了。
@@ -246,6 +295,7 @@ export class AgentSession {
           ?? buildSystemPrompt(opts.connectors ?? [], {
             livePreview: opts.livePreview ?? false,
             canDraw: opts.canDraw ?? false,
+            canSee: opts.canSee ?? false,
           }),
       },
     ];
@@ -277,6 +327,7 @@ export class AgentSession {
 
     for (let turn = 0; turn < maxTurns; turn++) {
       emit({ type: 'turn', index: turn });
+      await this.compactIfNeeded(emit);
 
       let assistantText = '';
       const calls: { id: string; name: string; arguments: Record<string, unknown> }[] = [];
@@ -316,11 +367,14 @@ export class AgentSession {
       }
 
       let asked = false;
+      const seen: ToolImage[] = [];
       for (const call of calls) {
         emit({ type: 'tool_start', name: call.name, args: call.arguments });
         let result: string;
         try {
-          result = await runTool(this.opts.toolCtx, call.name, call.arguments);
+          const out = await runToolOutput(this.opts.toolCtx, call.name, call.arguments);
+          result = out.text;
+          seen.push(...(out.images ?? []));
         } catch (e) {
           // 工具失败要回灌给模型而非中断——模型据此改正是正常流程的一部分，
           // 比如路径写错了、文件不存在。直接中断会让用户看到"没反应"。
@@ -329,6 +383,21 @@ export class AgentSession {
         emit({ type: 'tool_result', name: call.name, result });
         this.messages.push({ role: 'tool', content: result, toolCallId: call.id });
         if (call.name === 'ask_user' && parseAsk(call.arguments)) asked = true;
+      }
+
+      /*
+        截图之类的图，等这一轮的工具结果全部回灌完再补一条带图的 user 消息。
+
+        不能塞进 role='tool'：OpenAI 兼容协议的工具结果只收文本。也不能插在
+        两条工具结果中间：一个 assistant 发起的几次调用，结果必须紧挨着它，
+        中间夹一条 user 消息网关会直接 400。
+      */
+      if (seen.length) {
+        this.messages.push({
+          role: 'user',
+          content: '（这是 screenshot_preview 截到的页面，平台自动附上的，不是用户发的消息。）',
+          images: seen,
+        });
       }
 
       /*
@@ -347,5 +416,22 @@ export class AgentSession {
     // 到上限要说清楚，不能假装完成
     emit({ type: 'done', turns: maxTurns, stopReason: 'max_turns' });
     return { stopReason: 'max_turns', turns: maxTurns };
+  }
+
+  /**
+   * 每次要模型输出之前看一眼上下文有没有超预算，超了就压（compact.ts）。
+   *
+   * 放在每一轮开头而不是只在 send 开头：一句话里模型可能连读十几个文件，
+   * 上下文是在这一句之内涨爆的。
+   */
+  private async compactIfNeeded(emit: (e: SessionEvent) => void): Promise<void> {
+    if (this.opts.compact === false) return;
+    const r = await compact(this.messages, {
+      summarize: engineSummarizer(this.opts.engine, this.opts.signal),
+      ...this.opts.compact,
+    });
+    if (r.stage === 0) return;
+    this.messages.splice(0, this.messages.length, ...r.messages);
+    emit({ type: 'compacted', stage: r.stage, before: r.before, after: r.after });
   }
 }

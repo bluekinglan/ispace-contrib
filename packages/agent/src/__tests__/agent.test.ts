@@ -8,7 +8,7 @@ import { DESIGN_DIRECTIONS, fanoutCount, runFanout, variantDirections } from '..
 import { configuredImageModels, createImageGenerator } from '../image.js';
 import {
   configuredModels, createEngine, effortEnabled, numEnv,
-  type Engine, type EngineEvent, type ToolCall,
+  type Engine, type EngineEvent, type EngineMessage, type ToolCall,
 } from '../engine.js';
 
 const ws = () => {
@@ -584,5 +584,84 @@ describe('生图', () => {
   it('平台没配时，工具自己说清楚，并给出替代做法', async () => {
     const out = await runTool({ ws: ws(), platform }, 'generate_image', { prompt: 'x', path: 'a.png' });
     expect(out).toContain('没有配生图通道');
+  });
+});
+
+describe('harness 接进会话循环', () => {
+  /** 记下每一次被喂了什么——要验证的正是"模型下一轮看到了什么"。 */
+  class RecordingEngine implements Engine {
+    readonly name = 'recording';
+    readonly model = 'test';
+    readonly seen: EngineMessage[][] = [];
+    private turn = 0;
+    constructor(private readonly script: EngineEvent[][]) {}
+    async *run(input: { messages: EngineMessage[] }): AsyncGenerator<EngineEvent> {
+      this.seen.push(input.messages.map((m) => ({ ...m })));
+      for (const e of this.script[this.turn++] ?? [{ type: 'done' as const }]) yield e;
+    }
+  }
+
+  it('截图在这一轮所有工具结果之后作为一条带图的 user 消息补上，不夹在工具结果中间', async () => {
+    const w = ws();
+    const engine = new RecordingEngine([
+      [
+        { type: 'tool_call', call: { id: 'a', name: 'screenshot_preview', arguments: {} } },
+        { type: 'tool_call', call: { id: 'b', name: 'read_file', arguments: { path: 'index.html' } } },
+        { type: 'done' },
+      ],
+      [{ type: 'text', delta: '标题溢出了，我改一下' }, { type: 'done' }],
+    ]);
+    const s = new AgentSession({
+      engine,
+      toolCtx: { ws: w, platform: { ...platform, screenshot: async () => ({ mimeType: 'image/png', dataBase64: 'iVBOR' }) } },
+      canSee: true,
+    });
+    await s.send('看看手机上什么样');
+
+    const second = engine.seen[1]!;
+    const roles = second.slice(1).map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool', 'tool', 'user']);
+    const last = second.at(-1)!;
+    expect(last.images).toEqual([{ mimeType: 'image/png', dataBase64: 'iVBOR' }]);
+    expect(last.content).toContain('不是用户发的消息');
+  });
+
+  it('上下文超预算就在要模型输出之前压一次，并发出 compacted 事件', async () => {
+    const w = ws();
+    const events: string[] = [];
+    const engine = new RecordingEngine([[{ type: 'text', delta: '好' }, { type: 'done' }]]);
+    const s = new AgentSession({
+      engine, toolCtx: { ws: w, platform },
+      compact: { budgetChars: 15_000, keepTurns: 1 },
+      onEvent: (e) => { if (e.type === 'compacted') events.push(`${e.stage}`); },
+    });
+    const big = 'x'.repeat(20_000);
+    s.messages.push(
+      { role: 'user', content: '第一句' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'r', name: 'read_file', arguments: { path: 'index.html' } }] },
+      { role: 'tool', content: big, toolCallId: 'r' },
+      { role: 'assistant', content: '读完了' },
+    );
+    await s.send('第二句');
+    expect(events).toEqual(['1']);
+    const fed = engine.seen[0]!;
+    expect(fed.find((m) => m.toolCallId === 'r')!.content).toContain('已从上下文裁掉');
+    expect(fed.at(-1)!.content).toBe('第二句');
+  });
+
+  it('设计扇出那种关掉压缩的会话，一个字节都不动', async () => {
+    const engine = new RecordingEngine([[{ type: 'done' }]]);
+    const s = new AgentSession({ engine, toolCtx: { ws: ws(), platform }, compact: false });
+    s.messages.push({ role: 'user', content: 'x'.repeat(500_000) }, { role: 'assistant', content: 'ok' });
+    await s.send('再来');
+    expect(engine.seen[0]![1]!.content).toHaveLength(500_000);
+  });
+
+  it('提示词：小改用 edit_file、发布前先自检；能截图时才说能截图', () => {
+    const base = buildSystemPrompt([]);
+    expect(base).toContain('小改用 edit_file');
+    expect(base).toContain('先调 check_publishable');
+    expect(base).not.toContain('screenshot_preview');
+    expect(buildSystemPrompt([], { canSee: true })).toContain('screenshot_preview');
   });
 });
