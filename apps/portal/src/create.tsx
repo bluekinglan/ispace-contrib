@@ -1573,6 +1573,22 @@ function Generating({
             busy={gen.busy}
             onToast={onToast}
             onFork={(id) => { onToast('复制好了，这是新的一份'); onOpen(id, { forkOf: gen.title }); }}
+            onImported={() => { setFsRev((n) => n + 1); preview.refresh(); }}
+            log={() => ({
+              app: 'iDo',
+              exportedAt: new Date().toISOString(),
+              title: gen.title,
+              prompt: gen.text,
+              model: gen.choice.model,
+              effort: gen.choice.effort,
+              sessionId: gen.sessionId,
+              publishedUrl: gen.publishedUrl,
+              messages: gen.says.map((m) => ({
+                role: m.sys ? ('system' as const) : m.me ? ('user' as const) : ('assistant' as const),
+                text: m.text,
+              })),
+              steps: gen.steps.map((st) => ({ tool: st.key, detail: st.detail })),
+            })}
           />
 
           <div style={{ position: 'relative', flex: 'none' }}>

@@ -380,6 +380,23 @@ export const api = {
   /** 「更多 → 导出代码」的下载地址。同源、带登录态，直接给 <a download>。 */
   workspaceZipUrl: (sessionId: string, name: string) =>
     `${BASE}/agent/workspace/zip?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(name)}`,
+  /**
+   * 把已有的代码包导进工作区接着改。
+   *
+   * 走 multipart 而不是 base64：代码包可以到几十 MB，base64 会再胀三分之一，
+   * 而且要整份进内存。
+   */
+  workspaceImport: async (sessionId: string, file: File) => {
+    const fd = new FormData();
+    fd.append('sessionId', sessionId);
+    fd.append('file', file, file.name);
+    const res = await fetch(`${BASE}/agent/workspace/import`, {
+      method: 'POST', credentials: 'same-origin', body: fd,
+    });
+    const body = (await res.json()) as { files: number; bytes: number } & Partial<ApiError>;
+    if (!res.ok) throw Object.assign(new Error(body.message ?? '导入失败'), { code: body.code });
+    return body;
+  },
   /** 工作区文件树（工作台「代码」页）。扁平路径表，前端自己摞成树。 */
   workspaceTree: (sessionId?: string | null) => get<{ entries: { path: string; dir: boolean; size: number }[] }>(
     `/agent/workspace${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,

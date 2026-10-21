@@ -1,5 +1,7 @@
 import { createReadStream } from 'node:fs';
-import { cp, stat } from 'node:fs/promises';
+import { cp, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
 import { safePath, Snapshots } from '@ispace/agent';
@@ -8,6 +10,7 @@ import type { AgentSessionRecord } from '../services/agent-store.js';
 import type { SessionWorkspaces } from '../services/session-workspace.js';
 import { sessionTitle, toView } from '../services/session-view.js';
 import { zipDir } from '../services/zip.js';
+import { extractZip } from '@ispace/storage';
 
 /**
  * 创建屏 harness 的几条周边接口（docs/specs/2026-10-21-agent-harness.md）：
@@ -39,6 +42,12 @@ const MAX_RAW_BYTES = 20 * 1024 * 1024;
 export function snapshotsFor(sw: SessionWorkspaces, username: string, workspace: string): Snapshots {
   return new Snapshots(sw.ws.snapshotDir(username, workspace), sw.ws.dir(username, workspace));
 }
+
+/**
+ * 导入代码包的限额。比发布链路那档小：那边解的是一次性产物，这边解进的是
+ * 人的工作区，而工作区本身只有 500 MB 配额——一个包就不该把它占满。
+ */
+const IMPORT_LIMITS = { maxTotalBytes: 50 * 1024 * 1024, maxEntries: 3000 };
 
 export function registerAgentHarnessRoutes(
   app: FastifyInstance,
@@ -187,6 +196,43 @@ export function registerAgentHarnessRoutes(
       .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(base)}.zip`)
       .header('cache-control', 'private, no-store')
       .send(buf);
+  });
+
+  /**
+   * 把已有的代码包导进来接着改（改版稿「把已有的代码包导进来接着改」）。
+   *
+   * ┌─ 为什么敢把用户的 zip 解到工作区里 ─────────────────────────────────┐
+   * │ 解压用的是 @ispace/storage 的 extractZip —— 发布链路解用户产物用的  │
+   * │ 就是它：条目归一化后必须仍落在目标目录内（挡 ../../etc/passwd 和    │
+   * │ Windows 风格的 ..\ 与绝对路径），条目数与总字节都有上限。         │
+   * │ 这里不另写一份解压，正是因为那一份已经被发布链路验过。             │
+   * └──────────────────────────────────────────────────────────────────────┘
+   *
+   * 限额比发布链路小一档：那边解的是一次性产物，这边解进的是人的工作区，
+   * 而工作区本身有 500 MB 配额。
+   */
+  app.post(`${API_BASE}/agent/workspace/import`, async (req) => {
+    const user = await requireAuth(req);
+    const file = await req.file();
+    if (!file) throw new IspaceError(ERROR_CODES.INVALID_ARTIFACT, '没收到代码包。');
+
+    const fields = file.fields as Record<string, { value?: string } | undefined>;
+    const { sessionId } = z
+      .object({ sessionId: z.string().min(1).max(64) })
+      .parse({ sessionId: fields.sessionId?.value });
+    const r = await mine(user, sessionId);
+    /* 正在跑一轮时不许导入：解出来的文件会和模型正在写的打架 */
+    notBusy(sessionId, '这一轮还在做，等它完了再导入。');
+
+    const tmp = await mkdtemp(join(tmpdir(), 'ispace-import-'));
+    const zipPath = join(tmp, 'in.zip');
+    try {
+      await writeFile(zipPath, await file.toBuffer());
+      const out = await extractZip(zipPath, sw.ws.dir(user.username, r.workspace), IMPORT_LIMITS);
+      return { ok: true, files: out.files.length, bytes: out.totalBytes };
+    } finally {
+      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 
   /**

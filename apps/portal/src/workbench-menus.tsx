@@ -228,14 +228,39 @@ function VersionsList({ sessionId, onRestored, onToast }: {
 
 // ── 右上角：更多 ────────────────────────────────────────────────────────
 
-export function MoreMenu({ sessionId, title, busy, onFork, onToast }: {
+/**
+ * 导出的会话日志。只放平台真有的东西——稿上那几项（permission / preset /
+ * goal）是照 DeepSeek Harness 画的，这台平台没有那些概念，就不编。
+ */
+export interface SessionLog {
+  app: 'iDo';
+  exportedAt: string;
+  title: string;
+  /** 第一句话。 */
+  prompt: string;
+  model: string;
+  effort: string | null;
+  sessionId: string | null;
+  /** 发布到了哪儿，没发布就是 null。 */
+  publishedUrl: string | null;
+  messages: { role: 'user' | 'assistant' | 'system'; text: string }[];
+  /** 模型真调过的工具，按顺序。 */
+  steps: { tool: string; detail: string }[];
+}
+
+export function MoreMenu({ sessionId, title, busy, onFork, onToast, log, onImported }: {
   sessionId: string | null;
   title: string;
   busy: boolean;
   onFork: (newId: string) => void;
   onToast: (t: string) => void;
+  /** 这次会话的内容，导出 JSON 用。拿不到就不画那一项。 */
+  log?: () => SessionLog;
+  /** 导入完要让「代码」页和预览重新读一遍——文件变了。 */
+  onImported: () => void;
 }) {
   const [forking, setForking] = useState(false);
+  const [importing, setImporting] = useState(false);
   return (
     <Dropdown icon="more" title="更多" align="right" width={248} disabled={!sessionId}>
       {(close) => (
@@ -255,6 +280,57 @@ export function MoreMenu({ sessionId, title, busy, onFork, onToast }: {
             <Icon name="download" size={15} color="var(--text-secondary)" />
             <span style={{ flex: 1 }}>导出代码<span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>打包成 zip，就是会发布出去的那些文件</span></span>
           </Row>
+          <Row
+            disabled={busy || importing}
+            onClick={() => {
+              if (!sessionId) return;
+              /* 不自己画文件选择框：系统的那个已经会按扩展名过滤、会记住上次的目录 */
+              const el = document.createElement('input');
+              el.type = 'file';
+              el.accept = '.zip,application/zip';
+              el.onchange = async () => {
+                const f = el.files?.[0];
+                if (!f) return;
+                close();
+                setImporting(true);
+                try {
+                  const r = await api.workspaceImport(sessionId, f);
+                  onToast(`导进来 ${r.files} 个文件，接着说要改什么就行`);
+                  onImported();
+                } catch (e) {
+                  onToast(e instanceof Error ? e.message : '导入失败');
+                } finally { setImporting(false); }
+              };
+              el.click();
+            }}
+          >
+            <Icon name="fileUp" size={15} color="var(--text-secondary)" />
+            <span style={{ flex: 1 }}>导入代码包<span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>把已有的 zip 解进工作区，接着改</span></span>
+          </Row>
+          {log && (
+            <Row
+              onClick={() => {
+                close();
+                /*
+                  稿上这一项导出的字段里有 harness: 'DeepSeek Harness'——那是
+                  设计稿照着 dsh 画的。我们不是它，就不写那一行；也不写
+                  permission / preset / goal 这些平台根本没有的概念。
+                  导出的是这台平台真有的东西。
+                */
+                const data = log();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `${title || 'ido'}-会话.json`;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+                onToast('会话日志已下载');
+              }}
+            >
+              <Icon name="scroll" size={15} color="var(--text-secondary)" />
+              <span style={{ flex: 1 }}>下载日志<span style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>把这次会话导出为 JSON 文件</span></span>
+            </Row>
+          )}
           <Row
             disabled={busy || forking}
             onClick={async () => {
