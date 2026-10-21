@@ -1,12 +1,16 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { User } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api } from './api';
+import {
+  AddButton, ImageChips, ModelPill, useModels,
+  type AgentChoice, type AgentImage, type Effort,
+} from './composer';
 import { Segment } from './detail';
 import { type Device } from './wall';
 import {
-  AskCard, CodePane, DesignGallery, ProcessBlock, PublishMenu, RefineBar, TabBar,
-  useFanout, type Ask, type AskOption, type FanDir,
+  AskCard, CodePane, DesignGallery, IconBtn, ProcessBlock, PublishMenu, RefineBar, TabBar,
+  useFanout, variantAsk, type Ask, type AskOption, type FanDir, type VariantKind,
 } from './workbench';
 
 /**
@@ -82,51 +86,6 @@ export function Create({
     );
 }
 
-/** 创建屏那两个菜单选出来的东西，一路带到 /agent/ask。 */
-interface AgentChoice {
-  /** 空字符串表示没得选（平台只有一条通道），让服务端用它的默认。 */
-  model: string;
-  /** null 表示平台没开思考档位，这次就别提它。 */
-  effort: Effort | null;
-}
-
-type Effort = 'low' | 'medium' | 'high';
-
-interface ModelOption { id: string; label: string; mult?: string }
-
-const EFFORTS: { k: Effort; label: string }[] = [
-  { k: 'low', label: '快速' },
-  { k: 'medium', label: '深度思考' },
-  { k: 'high', label: '最大' },
-];
-
-/**
- * 「添加内容」里的五项。
- *
- * 只有第一项真的做事——其余四项点了说一句它是干什么的。设计稿里它们也
- * 是这样：弹一句话，不是做好的功能。与其画五个按钮里四个点了没反应，
- * 不如把"它将来会是什么"说清楚。
- */
-const ADDS: { label: string; icon: 'fileUp' | 'link' | 'shapes' | 'heart' | 'archive'; tip: string | null }[] = [
-  { label: '上传图片', icon: 'fileUp', tip: null },
-  { label: '粘贴链接', icon: 'link', tip: '贴一个网址、AI 先读一遍再动手——这一项还没接上' },
-  { label: '选择 Skill', icon: 'shapes', tip: '挑一个团队沉淀的 Skill，比如「飞书表格」「审批流」——这一项还没接上' },
-  { label: '收藏风格', icon: 'heart', tip: '从你收藏的页面里挑一个风格照着做——这一项还没接上' },
-  { label: '导入项目', icon: 'archive', tip: '把已有的代码包导进来接着改——这一项还没接上' },
-];
-
-/** 两个菜单共用的那块白板。 */
-const panel: React.CSSProperties = {
-  position: 'absolute', left: 0, top: 'calc(100% + 8px)', zIndex: 31, boxSizing: 'border-box',
-  display: 'flex', flexDirection: 'column', borderRadius: 20, background: 'var(--surface-1)',
-  border: '1px solid var(--border-subtle)',
-  boxShadow: '0 24px 48px -16px rgba(24,23,21,.22), 0 2px 6px rgba(24,23,21,.05)',
-};
-
-const menuLabel: React.CSSProperties = {
-  padding: '4px 12px 6px', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)',
-};
-
 // ── 没开始之前 ──────────────────────────────────────────────────────────
 function Idle({
   draft, setDraft, remix, onClearRemix, onStart, onToast,
@@ -140,29 +99,11 @@ function Idle({
 }) {
   const [sugTab, setSugTab] = useState(0);
   const [images, setImages] = useState<AgentImage[]>([]);
-  const [menu, setMenu] = useState<null | 'add' | 'model'>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const { models, effortOn } = useModels();
   const [modelId, setModelId] = useState('');
-  const [effortOn, setEffortOn] = useState(false);
   const [effort, setEffort] = useState<Effort>('medium');
-  const file = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    void api.agentStatus()
-      .then((s) => {
-        /* 没配通道就连模型名都不显示——这一屏现在什么都生成不了 */
-        if (!s.configured) return;
-        const list = s.models ?? [];
-        setModels(list);
-        setModelId(list[0]?.id ?? '');
-        setEffortOn(Boolean(s.effort));
-      })
-      .catch(() => { /* 问不到就当没有，输入框照常能用 */ });
-  }, []);
 
   const picked = models.find((m) => m.id === modelId) ?? models[0] ?? null;
-  /* 有得选才画下拉：一条通道又没开思考时，菜单里只有一行、点了还是它 */
-  const pickable = picked !== null && (models.length > 1 || effortOn);
 
   const go = () => {
     const t = draft.trim();
@@ -240,177 +181,21 @@ function Idle({
           }}
         />
 
-        {images.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {images.map((im, i) => (
-              <span
-                key={i}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 6px 0 10px',
-                  borderRadius: 'var(--radius-pill)', background: 'var(--surface-2)',
-                  fontSize: 'var(--text-base)', color: 'var(--text-secondary)',
-                }}
-              >
-                <Icon name="image" size={13} />{im.name}
-                <button
-                  onClick={() => setImages((prev) => prev.filter((_, k) => k !== i))}
-                  style={{
-                    width: 20, height: 20, border: 0, borderRadius: 'var(--radius-pill)',
-                    background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                >
-                  <Icon name="close" size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <ImageChips images={images} onRemove={(i) => setImages((prev) => prev.filter((_, k) => k !== i))} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input
-            ref={file}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            multiple
-            hidden
-            onChange={async (e) => {
-              const picked = [...(e.target.files ?? [])].slice(0, 4);
-              e.target.value = '';
-              const next: AgentImage[] = [];
-              for (const f of picked) next.push(await toAgentImage(f));
-              setImages((prev) => [...prev, ...next].slice(0, 4));
-            }}
+          <AddButton
+            onImages={(next) => setImages((prev) => [...prev, ...next].slice(0, 4))}
+            onToast={onToast}
           />
-          {/* 背板：点菜单以外的任何地方都关掉它。铺在菜单下面一层 */}
-          {menu && (
-            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
-          )}
-
-          <div style={{ position: 'relative' }}>
-            <button
-              onClick={() => setMenu((m) => (m === 'add' ? null : 'add'))}
-              title="添加内容"
-              style={{
-                width: 36, height: 36, border: 0, borderRadius: 'var(--radius-pill)',
-                background: 'var(--surface-2)', color: 'var(--text-primary)', display: 'flex',
-                alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-              }}
-            >
-              <Icon name="plus" size={18} />
-            </button>
-            {menu === 'add' && (
-              <div style={{ ...panel, width: 240, padding: '10px 8px', gap: 2 }}>
-                <span style={menuLabel}>添加内容</span>
-                {ADDS.map((it, i) => (
-                  <Fragment key={it.label}>
-                    {i === 2 && (
-                      <div style={{ height: 1, margin: '4px 6px', background: 'var(--border-tabby)' }} />
-                    )}
-                    <button
-                      onClick={() => {
-                        setMenu(null);
-                        if (it.tip) onToast(it.tip);
-                        else file.current?.click();
-                      }}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 12, height: 40, padding: '0 12px',
-                        border: 0, borderRadius: 12, background: 'transparent',
-                        color: 'var(--text-primary)', fontSize: 'var(--text-md)',
-                        cursor: 'pointer', textAlign: 'left',
-                      }}
-                    >
-                      <Icon name={it.icon} size={18} color="var(--text-tertiary)" />
-                      {it.label}
-                    </button>
-                  </Fragment>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {picked && !pickable && (
-            <span
-              title="平台只配了这一条模型通道"
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 14px',
-                borderRadius: 'var(--radius-pill)', background: 'var(--surface-2)',
-                color: 'var(--text-secondary)', fontSize: 'var(--text-md)',
-                fontWeight: 'var(--weight-medium)', whiteSpace: 'nowrap',
-              }}
-            >
-              {picked.label}
-            </span>
-          )}
-
-          {picked && pickable && (
-            <div style={{ position: 'relative' }}>
-              <button
-                onClick={() => setMenu((m) => (m === 'model' ? null : 'model'))}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 12px 0 14px',
-                  border: 0, borderRadius: 'var(--radius-pill)', background: 'var(--surface-2)',
-                  color: 'var(--text-primary)', fontSize: 'var(--text-md)',
-                  fontWeight: 'var(--weight-medium)', whiteSpace: 'nowrap', cursor: 'pointer',
-                }}
-              >
-                {picked.label}
-                <Icon name="chevDown" size={15} color="var(--text-tertiary)" />
-              </button>
-              {menu === 'model' && (
-                <div style={{ ...panel, width: 320, overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '10px 8px' }}>
-                    <span style={menuLabel}>模型</span>
-                    {models.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => { setModelId(m.id); setMenu(null); }}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 10, height: 42, padding: '0 12px',
-                          border: 0, borderRadius: 12, background: 'transparent',
-                          color: 'var(--text-heading)', fontSize: 'var(--text-md)',
-                          fontWeight: 'var(--weight-semibold)', cursor: 'pointer', textAlign: 'left',
-                        }}
-                      >
-                        <span style={{ width: 18, display: 'inline-flex' }}>
-                          {m.id === picked.id && (
-                            <Icon name="check" size={17} color="var(--tabby-orange)" />
-                          )}
-                        </span>
-                        <span style={{ flex: 1 }}>{m.label}</span>
-                        {m.mult && (
-                          <span
-                            style={{
-                              fontFamily: 'var(--font-mono)', fontSize: 'var(--text-base)',
-                              fontWeight: 'var(--weight-regular)', color: 'var(--text-tertiary)',
-                            }}
-                          >
-                            {m.mult}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                  {effortOn && (
-                    <div
-                      style={{
-                        display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 16px 16px',
-                        borderTop: '1px solid var(--border-tabby)',
-                      }}
-                    >
-                      <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>思考</span>
-                      <Segment
-                        options={EFFORTS}
-                        value={effort}
-                        onPick={(k) => setEffort(k as Effort)}
-                        style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)' }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+          <ModelPill
+            models={models}
+            effortOn={effortOn}
+            modelId={picked?.id ?? ''}
+            effort={effort}
+            onModel={setModelId}
+            onEffort={setEffort}
+          />
           <div style={{ flex: 1 }} />
           <button
             onClick={go}
@@ -542,8 +327,6 @@ function Idle({
 }
 
 // ── 生成中 / 生成完 ─────────────────────────────────────────────────────
-interface AgentImage { name: string; mimeType: string; dataBase64: string }
-
 interface Step { key: string; title: string; detail: string; done: boolean }
 
 interface Gen {
@@ -555,7 +338,7 @@ interface Gen {
   site: string | null;
   confirmToken: string | null;
   sessionId: string | null;
-  /** 模型和思考档位，整段生成都用同一个——后面追问也还是它。 */
+  /** 模型和思考档位。开场选的那个；工作台输入框里能换，下一轮起生效。 */
   choice: AgentChoice;
   steps: Step[];
   /** 模型说的话，按轮次分段。 */
@@ -758,6 +541,28 @@ function usePreview(active: boolean) {
   return { url, rev, kind, errs, frame, refresh, release, clear: () => setErrs([]) };
 }
 
+/** 视口宽度。右栏那三页的字只在放得下时显示。 */
+function useViewportWidth(): number {
+  const [w, setW] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const on = () => setW(window.innerWidth);
+    window.addEventListener('resize', on);
+    return () => window.removeEventListener('resize', on);
+  }, []);
+  return w;
+}
+
+/**
+ * 还没接上的那几颗（新稿顶栏的「历史版本 / 版本记录」「更多」）。
+ *
+ * 按钮照稿摆着，点了说清楚它将来是什么、现在为什么还不行——和「添加内容」
+ * 里那四项同一个处理。
+ */
+const NOT_YET = {
+  history: '版本记录还没接上：现在每次改动都直接写进工作区，退不回上一版',
+  more: '「更多」里的复制项目、导出代码、删除还没接上',
+};
+
 function Generating({
   me, gen, setGen, onMine, onToast, onFresh,
 }: {
@@ -772,15 +577,20 @@ function Generating({
   const [dev, setDev] = useState<Device>('phone');
   const [vis, setVis] = useState<'private' | 'shared' | 'public'>('private');
   const [follow, setFollow] = useState('');
+  const [followImgs, setFollowImgs] = useState<AgentImage[]>([]);
   const [publishing, setPublishing] = useState(false);
   const [tab, setTab] = useState<'preview' | 'code' | 'design'>('preview');
   const [pubOpen, setPubOpen] = useState(false);
   const [showErrs, setShowErrs] = useState(false);
+  /* 左栏收起来，右栏独占整屏（新稿右上角第一颗） */
+  const [chatShown, setChatShown] = useState(true);
+  const vw = useViewportWidth();
   /* 文件树的版本号。一轮做完就 +1，让「代码」页重新拉一遍 */
   const [fsRev, setFsRev] = useState(0);
   const log = useRef<HTMLDivElement | null>(null);
   /* 发布之后右栏换成正式地址，预览就不用再开着了 */
   const preview = usePreview(gen.publishedUrl === null);
+  const { models, effortOn } = useModels();
 
   /*
     开场不再摆平台的固定三选项（出六版设计 / 直接做 / 先聊清楚）。
@@ -794,6 +604,8 @@ function Generating({
   const [modelAsk, setModelAsk] = useState<Ask | null>(null);
   const fan = useFanout();
   const [pick, setPick] = useState<FanDir | null>(null);
+  /* 收藏只记在这一屏里：它是"挑方向时先标一下"，不是一个要留档的东西 */
+  const [favs, setFavs] = useState<Set<string>>(() => new Set());
 
   const run = async (text: string, images: AgentImage[]) => {
     setGen((g) => ({ ...g, busy: true }));
@@ -882,13 +694,13 @@ function Generating({
           的这个明明还新鲜。所以先按 site 对，对不上再退回最新的那条。
         */
         const mine = g.site ? pend.items.find((x) => x.site === g.site) : undefined;
-        const pick = mine ?? pend.items[0];
+        const pk = mine ?? pend.items[0];
         return {
           ...g,
           busy: false,
           steps: g.steps.map((s) => ({ ...s, done: true })),
-          confirmToken: pick?.confirmToken ?? g.confirmToken,
-          site: pick?.site ?? g.site,
+          confirmToken: pk?.confirmToken ?? g.confirmToken,
+          site: pk?.site ?? g.site,
         };
       });
       setFsRev((n) => n + 1);
@@ -920,6 +732,8 @@ function Generating({
 
   /** 挑中一个方向：让模型照它做真正的页面。 */
   const usePick = (d: FanDir) => {
+    if (pick?.id === d.id) { setTab('preview'); return; }
+    if (gen.busy) { onToast('等这一轮做完再换'); return; }
     setPick(d);
     setTab('preview');
     setGen((g) => ({ ...g, says: [...g.says, { me: true, text: `用「${d.name}」这一版` }] }));
@@ -931,13 +745,66 @@ function Generating({
     );
   };
 
+  /** 基于某一版再出设计（卡片上的 ✦、微调条、更多类似）。出来的进「设计」页的下一批。 */
+  const variant = (base: FanDir, kind: VariantKind) => {
+    if (fan.running) { onToast('上一批还没出完'); return; }
+    setTab('design');
+    setGen((g) => ({
+      ...g,
+      says: [
+        ...g.says,
+        { me: true, text: variantAsk(kind, base.name) },
+        { me: false, text: '在做了，新版本会出现在右边「设计」里，好了点 + 就能换过去。' },
+      ],
+    }));
+    void fan.start({
+      text: gen.text, device: 'both', model: gen.choice.model, effort: gen.choice.effort,
+      variant: { kind, base },
+    });
+  };
+
+  /** 下载设计稿：就是那一版写出来的那个 HTML，原样存下来。 */
+  const download = async (d: FanDir) => {
+    try {
+      const f = await api.workspaceFile(d.path);
+      if (f.binary || f.tooBig) { onToast('这一版的文件太大，没法直接下载'); return; }
+      const href = URL.createObjectURL(new Blob([f.text], { type: 'text/html;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `${d.name}.html`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+      onToast(`「${d.name}」设计稿已下载`);
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : '下载失败');
+    }
+  };
+
+  const toggleFav = (d: FanDir) => setFavs((s) => {
+    const n = new Set(s);
+    if (n.has(d.id)) n.delete(d.id); else n.add(d.id);
+    return n;
+  });
+
+  const startFan = () => {
+    void fan.start({ text: gen.text, device: 'both', model: gen.choice.model, effort: gen.choice.effort });
+  };
+
   const sendFollow = async () => {
     const t = follow.trim();
     if (!t || gen.busy) return;
+    const imgs = followImgs;
     setFollow('');
-    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: t }] }));
-    await run(t, []);
+    setFollowImgs([]);
+    const shownText = imgs.length ? `${t}\n（附了 ${imgs.length} 张图）` : t;
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: shownText }] }));
+    await run(t, imgs);
   };
+
+  /* 输入框里换模型，下一轮起生效（服务端会给这个会话换上新引擎） */
+  const modelId = gen.choice.model || models[0]?.id || '';
+  const setModel = (id: string) => setGen((g) => ({ ...g, choice: { ...g.choice, model: id } }));
+  const setEffort = (e: Effort) => setGen((g) => ({ ...g, choice: { ...g.choice, effort: e } }));
 
   const publish = async () => {
     if (!gen.confirmToken || publishing) return;
@@ -1000,204 +867,242 @@ function Generating({
     void run(text, []);
   };
 
+  /*
+    有了刷新恢复之后，「新对话」就是必需品：不给出口的话，人会一直被困在上
+    一个页面里，只有发布了才出得来。
+  */
+  const newChat = () => {
+    if (gen.busy) return;
+    if (!gen.publishedUrl && !window.confirm('放下这一个、做个新的？工作区里的文件会留着，但这段对话就不显示了。')) return;
+    onFresh();
+  };
+
+  /* 分享的是正式地址。没发布之前没有别人打得开的地址，不复制一个会 404 的出去 */
+  const share = () => {
+    if (!gen.publishedUrl) { onToast('还没发布：发布之后才有能分享的地址'); return; }
+    void copyText(gen.publishedUrl).then((ok) => onToast(ok ? '地址已复制，发给同事就能打开' : gen.publishedUrl!));
+  };
+
+  /*
+    新窗口打开只开正式地址。
+
+    工作区预览和门户是同源的，它能安全地放在 iframe 里，靠的正是沙箱不给
+    allow-same-origin。拿到顶层窗口去开就没有这层沙箱了——一段还没过发布前
+    扫描的、模型刚写的脚本，会以门户的身份跑起来。
+  */
+  const openFull = () => {
+    if (!gen.publishedUrl) { onToast('发布之后才能在新窗口打开——预览里的代码还没过发布前的安全扫描'); return; }
+    window.open(gen.publishedUrl, '_blank', 'noopener');
+  };
+
   const waiting = modelAsk !== null;
+  const working = gen.busy || fan.running;
   const status = gen.publishedUrl ? '已上线'
     : waiting ? '在等你回答'
       : fan.running ? '正在出设计方向'
         : gen.busy ? '正在做，写一个文件右边刷一次'
           : '预览 · 还没发布';
+  const placeholder = waiting ? '或者直接输入你的想法…'
+    : gen.busy ? '等这一轮做完再改'
+      : fan.dirs.length > 0 && !pick ? '先在右边挑一个方向'
+        : '说说哪里要改，比如「换班加一个备注栏」';
+  const canSend = follow.trim().length > 0 && !gen.busy;
 
   return (
-    <div style={{ height: '100%', minHeight: 560, display: 'flex' }}>
+    <div style={{ height: '100%', minHeight: 560, display: 'flex', background: 'var(--surface-canvas)' }}>
       {/* ── 左：对话、问答与进度 ─────────────────────────────────── */}
-      <div
-        style={{
-          width: 'min(440px, 46%)', flex: 'none', display: 'flex', flexDirection: 'column',
-          borderRight: '1px solid var(--border-tabby)',
-        }}
-      >
-        <div style={{ padding: '4px 28px 18px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, lineHeight: 1.2, color: 'var(--text-heading)' }}>
-              {gen.title}
-            </span>
-            {/*
-              有了刷新恢复之后，这一颗就是必需品：不给出口的话，人会一直被
-              困在上一个页面里，只有发布了才出得来。
-            */}
-            <button
-              onClick={() => {
-                if (gen.busy) return;
-                if (!gen.publishedUrl && !window.confirm('放下这一个、做个新的？工作区里的文件会留着，但这段对话就不显示了。')) return;
-                onFresh();
-              }}
-              disabled={gen.busy}
-              title={gen.busy ? '等这一轮做完' : '做个新的'}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, height: 32, padding: '0 11px',
-                flex: 'none', border: '1px solid var(--border-subtle)', borderRadius: 10,
-                background: 'var(--surface-1)', fontSize: 'var(--text-base)',
-                color: gen.busy ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-                cursor: gen.busy ? 'default' : 'pointer',
-              }}
-            >
-              <Icon name="plus" size={14} />新做一个
-            </button>
-          </div>
-          {shown && (
-            <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
-              {shown}
-            </span>
-          )}
-        </div>
-
+      {chatShown && (
         <div
-          ref={log}
           style={{
-            flex: 1, minHeight: 0, overflow: 'auto', padding: '4px 28px 20px',
-            display: 'flex', flexDirection: 'column', gap: 22,
+            width: 'clamp(320px, 32%, 560px)', flex: 'none', minHeight: 0, display: 'flex',
+            flexDirection: 'column', borderRight: '1px solid var(--border-tabby)',
           }}
         >
-          <Bubble text={gen.text} />
-
-          {gen.says.map((m, i) => (
-            m.me
-              ? <Bubble key={i} text={m.text} />
-              : (
-                <div key={i} style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
-                  {m.text}
-                </div>
-              )
-          ))}
-
-          <ProcessBlock
-            steps={gen.steps}
-            agents={fan.dirs}
-            busy={gen.busy || fan.running}
-            skill={fan.dirs.length ? 'design-fanout' : null}
-          />
-
-          {fan.err && (
-            <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--error)' }}>
-              设计方向没能跑起来：{fan.err}
-            </div>
-          )}
-
-          {fan.dirs.length > 0 && !pick && !fan.running && (
-            <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)' }}>
-              右边是 {fan.dirs.length} 个方向，挑一个「用这一版」，我就照它把页面做出来。
-            </div>
-          )}
-
-          {pick && !gen.busy && (
-            <RefineBar
-              pickName={pick.name}
-              busy={gen.busy}
-              onRefine={(t) => {
-                setGen((g) => ({ ...g, says: [...g.says, { me: true, text: t }] }));
-                void run(t, []);
-              }}
-              onFresh={() => {
-                setPick(null);
-                setTab('design');
-                void fan.start({
-                  text: gen.text, device: 'both',
-                  model: gen.choice.model, effort: gen.choice.effort,
-                });
-              }}
-            />
-          )}
-
-          {modelAsk && (
-            <AskCard ask={modelAsk} onPick={answerModel} disabled={gen.busy} />
-          )}
-
-          {gen.busy && !waiting && (
-            <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>正在做…</span>
-          )}
-        </div>
-
-        <div style={{ padding: '14px 20px 20px' }}>
-          <div
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8, height: 50, padding: '0 7px 0 16px',
-              borderRadius: 16, background: 'var(--surface-1)', border: '1px solid var(--border)',
-              boxShadow: '0 1px 3px rgba(0,0,0,.04)',
-            }}
-          >
-            <input
-              value={follow}
-              onChange={(e) => setFollow(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.keyCode === 229) return;
-                e.preventDefault();
-                void sendFollow();
-              }}
-              placeholder={gen.busy
-                ? '等这一轮做完再说'
-                : waiting ? '或者直接说你的想法' : '说说哪里要改，比如「换班加一个备注栏」'}
-              disabled={gen.busy}
+          <div style={{ height: 56, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px 0 16px' }}>
+            <span
+              title={gen.title}
               style={{
-                flex: 1, minWidth: 0, border: 0, outline: 'none', background: 'transparent',
-                fontSize: 'var(--text-md)', color: 'var(--text-primary)', fontFamily: 'inherit',
-              }}
-            />
-            <button
-              onClick={() => void sendFollow()}
-              title="发送"
-              disabled={gen.busy}
-              style={{
-                width: 36, height: 36, flex: 'none', border: 0, borderRadius: 'var(--radius-pill)',
-                background: gen.busy ? 'var(--surface-3)' : 'var(--cta)',
-                color: gen.busy ? 'var(--text-tertiary)' : 'var(--cta-fg)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: gen.busy ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 8, height: 34, minWidth: 0, maxWidth: '70%',
+                padding: '0 14px', borderRadius: 12, background: 'var(--surface-1)',
+                boxShadow: '0 0 0 1px var(--border-subtle)', fontSize: 'var(--text-md)',
+                fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)', whiteSpace: 'nowrap',
               }}
             >
-              <Icon name="up" size={17} />
-            </button>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{gen.title}</span>
+              {working && (
+                <Icon
+                  name="rotate"
+                  size={14}
+                  color="var(--tabby-orange)"
+                  style={{ animation: 'ispace-spin 1s linear infinite' }}
+                />
+              )}
+            </span>
+            <IconBtn icon="plus" title={gen.busy ? '等这一轮做完' : '新对话'} onClick={newChat} disabled={gen.busy} />
+            <div style={{ flex: 1 }} />
+            <IconBtn icon="history" title="历史版本" onClick={() => onToast(NOT_YET.history)} />
+            <IconBtn icon="forward" title="分享" onClick={share} />
+          </div>
+
+          <div
+            ref={log}
+            style={{
+              flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 28px 20px',
+              display: 'flex', flexDirection: 'column', gap: 20,
+            }}
+          >
+            <Bubble text={gen.text} />
+
+            {gen.says.map((m, i) => (
+              m.me
+                ? <Bubble key={i} text={m.text} />
+                : (
+                  <div key={i} style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
+                    {m.text}
+                  </div>
+                )
+            ))}
+
+            <ProcessBlock
+              steps={gen.steps}
+              agents={fan.dirs}
+              busy={working}
+              skill={fan.dirs.length ? 'design-fanout' : null}
+            />
+
+            {fan.err && (
+              <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--error)' }}>
+                设计方向没能跑起来：{fan.err}
+              </div>
+            )}
+
+            {fan.dirs.length > 0 && !pick && !fan.running && (
+              <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)' }}>
+                右边是 {fan.dirs.length} 个方案，挑一个「用这一版」，我就照它把页面做出来。
+              </div>
+            )}
+
+            {gen.busy && !waiting && (
+              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>正在做…</span>
+            )}
+          </div>
+
+          {/* 底部：问题卡片、微调条、输入框——都是"接下来你说什么" */}
+          <div style={{ flex: 'none', padding: '8px 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {modelAsk && <AskCard ask={modelAsk} onPick={answerModel} disabled={gen.busy} />}
+
+            {pick && !modelAsk && (
+              <RefineBar pick={pick} busy={fan.running} onVariant={(k) => variant(pick, k)} />
+            )}
+
+            <div
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 10, padding: '14px 12px 10px 16px',
+                borderRadius: 22, background: 'var(--surface-1)',
+                boxShadow: '0 1px 3px rgba(24,23,21,.04), 0 0 0 1px var(--border-subtle)',
+              }}
+            >
+              <input
+                value={follow}
+                onChange={(e) => setFollow(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  e.preventDefault();
+                  void sendFollow();
+                }}
+                placeholder={placeholder}
+                disabled={gen.busy}
+                style={{
+                  width: '100%', boxSizing: 'border-box', height: 30, padding: 0, border: 0, outline: 'none',
+                  background: 'transparent', fontSize: 'var(--text-md)', color: 'var(--text-primary)',
+                  fontFamily: 'inherit',
+                }}
+              />
+              <ImageChips
+                images={followImgs}
+                onRemove={(i) => setFollowImgs((prev) => prev.filter((_, k) => k !== i))}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <AddButton
+                  up
+                  size={34}
+                  onImages={(next) => setFollowImgs((prev) => [...prev, ...next].slice(0, 4))}
+                  onToast={onToast}
+                />
+                <ModelPill
+                  up
+                  size={34}
+                  models={models}
+                  effortOn={effortOn}
+                  modelId={modelId}
+                  effort={gen.choice.effort ?? 'medium'}
+                  onModel={setModel}
+                  onEffort={setEffort}
+                />
+                <div style={{ flex: 1 }} />
+                <button
+                  onClick={() => void sendFollow()}
+                  title={gen.busy ? '等这一轮做完' : '发送'}
+                  disabled={!canSend}
+                  style={{
+                    width: 34, height: 34, flex: 'none', border: 0, borderRadius: 'var(--radius-pill)',
+                    background: canSend ? 'var(--cta)' : 'var(--surface-3)',
+                    color: canSend ? 'var(--cta-fg)' : 'var(--text-tertiary)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: canSend ? 'pointer' : 'default',
+                  }}
+                >
+                  <Icon name="up" size={16} />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* ── 右：预览 / 代码 / 设计 ───────────────────────────────── */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-sidebar)' }}>
-        <div style={{ height: 60, flex: 'none', display: 'flex', alignItems: 'center', gap: 12, padding: '0 20px' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-base)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-            <Icon
-              name={gen.publishedUrl ? 'check' : gen.busy || fan.running ? 'rotate' : 'info'}
-              size={15}
-              color={gen.publishedUrl ? 'var(--success)' : 'var(--tabby-orange)'}
-            />
-            {status}
-          </span>
-          <div style={{ flex: 1 }} />
-          <TabBar cur={tab} onPick={setTab} />
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-1)' }}>
+        <div
+          style={{
+            height: 56, flex: 'none', display: 'flex', alignItems: 'center', gap: 6, padding: '0 14px',
+            borderBottom: '1px solid var(--border-tabby)',
+          }}
+        >
+          <IconBtn
+            icon="panel"
+            title={chatShown ? '收起对话' : '显示对话'}
+            onClick={() => setChatShown((v) => !v)}
+          />
+          <IconBtn icon="expand" title="新窗口打开" onClick={openFull} />
+          <span style={{ width: 1, height: 18, margin: '0 6px', flex: 'none', background: 'var(--border-tabby)' }} />
+          <TabBar cur={tab} onPick={setTab} labels={vw >= 1180 || !chatShown} />
+          <div style={{ flex: 1, minWidth: 0 }} />
+          <IconBtn icon="history" title="版本记录" onClick={() => onToast(NOT_YET.history)} />
+          <IconBtn icon="more" title="更多" onClick={() => onToast(NOT_YET.more)} />
 
-          <div style={{ position: 'relative' }}>
+          <div style={{ position: 'relative', flex: 'none' }}>
             {pubOpen && (
               <div onClick={() => setPubOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
             )}
             <button
               onClick={() => setPubOpen((v) => !v)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 12px 0 14px',
-                border: 0, borderRadius: 'var(--radius-pill)',
+                display: 'flex', alignItems: 'center', gap: 6, height: 36, padding: '0 10px 0 14px',
+                border: 0, borderRadius: 11,
                 background: gen.publishedUrl ? 'var(--success-subtle)' : 'var(--cta)',
                 color: gen.publishedUrl ? 'var(--success)' : 'var(--cta-fg)',
-                fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)',
                 whiteSpace: 'nowrap', cursor: 'pointer',
               }}
             >
-              <Icon name={gen.publishedUrl ? 'check' : 'upRight'} size={14} />
+              <Icon name={gen.publishedUrl ? 'check' : 'globe'} size={16} />
               {gen.publishedUrl ? '已发布' : '发布'}
-              <Icon name="chevDown" size={14} />
+              <Icon name="chevDown" size={15} style={{ opacity: 0.8 }} />
             </button>
             {pubOpen && (
               <PublishMenu
                 published={gen.publishedUrl !== null}
                 url={url}
-                title={gen.title}
                 vis={vis}
                 setVis={setVis}
                 canPublish={gen.confirmToken !== null}
@@ -1213,32 +1118,46 @@ function Generating({
 
         {tab === 'design' && (
           <DesignGallery
-            dirs={fan.dirs}
+            batches={fan.batches}
             previewUrl={preview.url}
-            picked={pick?.index ?? null}
+            pickedId={pick?.id ?? null}
+            favs={favs}
+            dev={dev}
+            onDev={setDev}
             onPick={usePick}
-            onMore={() => {
-              if (!pick) return;
-              void fan.start({
-                text: `${gen.text}（再出几个和「${pick.name}」相近的方向）`,
-                device: 'both', model: gen.choice.model, effort: gen.choice.effort,
-              });
-            }}
-            onStart={() => {
-              void fan.start({
-                text: gen.text, device: 'both',
-                model: gen.choice.model, effort: gen.choice.effort,
-              });
-            }}
-            busy={fan.running || gen.busy}
+            onVary={(d) => variant(d, 'vary')}
+            onFav={toggleFav}
+            onDownload={(d) => void download(d)}
+            onStart={startFan}
+            genBusy={gen.busy}
+            fanBusy={fan.running}
           />
         )}
 
         {tab === 'code' && <CodePane rev={fsRev} />}
 
         {tab === 'preview' && (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'center', padding: '0 20px 8px' }}>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-sidebar)' }}>
+            <div
+              style={{
+                height: 52, flex: 'none', display: 'flex', alignItems: 'center',
+                justifyContent: 'space-between', gap: 12, padding: '0 20px',
+              }}
+            >
+              <span
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, fontSize: 'var(--text-base)',
+                  color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden',
+                }}
+              >
+                <Icon
+                  name={gen.publishedUrl ? 'check' : working ? 'rotate' : 'info'}
+                  size={15}
+                  color={gen.publishedUrl ? 'var(--success)' : 'var(--tabby-orange)'}
+                  style={working && !gen.publishedUrl ? { animation: 'ispace-spin 1s linear infinite' } : undefined}
+                />
+                {status}
+              </span>
               <Segment
                 options={[
                   { k: 'phone', label: '手机', icon: 'phone' },
@@ -1246,9 +1165,10 @@ function Generating({
                 ]}
                 value={dev}
                 onPick={(k) => setDev(k as Device)}
+                pad={11}
               />
             </div>
-            <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 24px 24px' }}>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px 24px 24px' }}>
               {dev === 'phone' ? (
                 <div
                   style={{
@@ -1373,7 +1293,7 @@ function Generating({
                 )}
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
     </div>
@@ -1643,14 +1563,6 @@ function toStep(name: string, args: Record<string, unknown>): Step {
 function titleOf(text: string): string {
   const m = text.replace(/^(请|帮我)?(做|写|搭)(一个|个)?/, '').split(/[：:，,。；;\s]/)[0];
   return (m || '新页面').slice(0, 14);
-}
-
-async function toAgentImage(f: File): Promise<AgentImage> {
-  const buf = await f.arrayBuffer();
-  let bin = '';
-  const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]!);
-  return { name: f.name, mimeType: f.type || 'image/png', dataBase64: btoa(bin) };
 }
 
 // ── 建议清单 ────────────────────────────────────────────────────────────

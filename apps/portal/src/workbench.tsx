@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Icon, copyText } from '@ispace/ui';
+import { Icon, copyText, type IconName } from '@ispace/ui';
 import { api } from './api';
 import { Segment } from './detail';
 
@@ -40,99 +40,109 @@ export interface Ask {
   options: AskOption[];
 }
 
+/**
+ * 问题卡片。贴在左栏底部、输入框上面（新稿的位置）——它是"在等你回答"，
+ * 和输入框是同一件事的两种答法：点一项，或者直接打字。
+ *
+ * 悬停的那一项编号变成主色块，提示"点它就是选它"；数字键不接，避免和输入
+ * 框里打的字抢。
+ */
 export function AskCard({ ask, step, onPick, disabled }: {
   ask: Ask;
   step?: string;
   onPick: (o: AskOption, index: number) => void;
   disabled?: boolean;
 }) {
+  const [hover, setHover] = useState(0);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {ask.lead && (
-        <div style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)' }}>
-          {ask.lead}
-        </div>
-      )}
-      <div
-        style={{
-          display: 'flex', flexDirection: 'column', gap: 10, padding: 16, borderRadius: 18,
-          background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <span style={{ flex: 1, fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-            {ask.question}
+    <div
+      style={{
+        display: 'flex', flexDirection: 'column', padding: 8, borderRadius: 18,
+        background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
+        boxShadow: '0 12px 32px -18px rgba(24,23,21,.28)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 10px 10px' }}>
+        <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-bold)', color: 'var(--text-heading)' }}>
+          {ask.question}
+        </span>
+        {step && (
+          <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+            {step}
           </span>
-          {step && (
-            <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
-              {step}
-            </span>
-          )}
-        </div>
+        )}
+      </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {ask.options.map((o, i) => (
-            <button
-              key={o.key ?? o.label}
-              onClick={() => !disabled && onPick(o, i)}
-              disabled={disabled}
+      {ask.options.map((o, i) => {
+        const on = hover === i && !disabled;
+        return (
+          <button
+            key={o.key ?? o.label}
+            onClick={() => !disabled && onPick(o, i)}
+            onMouseEnter={() => setHover(i)}
+            disabled={disabled}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '11px 10px',
+              border: 0, borderRadius: 12, background: on ? 'var(--surface-2)' : 'transparent',
+              cursor: disabled ? 'default' : 'pointer', textAlign: 'left', opacity: disabled ? 0.6 : 1,
+            }}
+          >
+            <span
+              className="mono"
               style={{
-                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
-                border: '1px solid var(--border-subtle)', borderRadius: 12,
-                background: 'var(--surface-canvas)', cursor: disabled ? 'default' : 'pointer',
-                textAlign: 'left', opacity: disabled ? 0.6 : 1,
+                width: 26, height: 26, flex: 'none', borderRadius: 8,
+                background: on ? 'var(--cta)' : 'var(--surface-2)',
+                color: on ? 'var(--cta-fg)' : 'var(--text-secondary)',
+                fontSize: 'var(--text-base)', fontWeight: 'var(--weight-bold)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
+              {i + 1}
+            </span>
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
               <span
-                className="mono"
                 style={{
-                  width: 22, height: 22, flex: 'none', borderRadius: 'var(--radius-pill)',
-                  background: 'var(--surface-2)', color: 'var(--text-tertiary)',
-                  fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center',
-                  justifyContent: 'center',
+                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-md)',
+                  fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)',
                 }}
               >
-                {i + 1}
-              </span>
-              <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-                    {o.label}
-                  </span>
-                  {o.recommended && (
-                    <span
-                      style={{
-                        height: 20, padding: '0 7px', borderRadius: 'var(--radius-pill)',
-                        background: 'var(--brand-wash)', color: 'var(--tabby-orange)',
-                        fontSize: 'var(--text-sm)', fontWeight: 'var(--weight-semibold)',
-                        display: 'flex', alignItems: 'center',
-                      }}
-                    >
-                      推荐
-                    </span>
-                  )}
-                </span>
-                {o.hint && (
-                  <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
-                    {o.hint}
+                {o.label}
+                {o.recommended && (
+                  <span
+                    style={{
+                      height: 20, padding: '0 7px', borderRadius: 'var(--radius-pill)',
+                      background: 'var(--brand-wash)', color: 'var(--brand-ink)',
+                      fontSize: 'var(--text-base)', fontWeight: 'var(--weight-bold)',
+                      display: 'flex', alignItems: 'center',
+                    }}
+                  >
+                    推荐
                   </span>
                 )}
               </span>
-              <Icon name="chevRight" size={15} color="var(--text-tertiary)" />
-            </button>
-          ))}
-        </div>
+              {o.hint && (
+                <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+                  {o.hint}
+                </span>
+              )}
+            </span>
+            <Icon name="chevRight" size={16} color="var(--text-tertiary)" />
+          </button>
+        );
+      })}
 
-        <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
-          都不合适？直接在下面输入你的想法
-        </span>
-      </div>
+      <span style={{ padding: '8px 10px 4px', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+        都不合适？直接在下面输入你的想法
+      </span>
     </div>
   );
 }
 
 // ── 扇出 ───────────────────────────────────────────────────────────────
 export interface FanDir {
+  /** `${runId}:${key}`。不同批次里的 key 可能一样，挑中、收藏都认它。 */
+  id: string;
+  runId: string;
   index: number;
   key: string;
   name: string;
@@ -146,14 +156,29 @@ export interface FanDir {
   message?: string;
 }
 
+/** 「基于这一版再出」的几种。纲领在服务端（fanout.ts 的 VARIANT_KINDS），这里只要名字。 */
+export type VariantKind = 'vary' | 'like' | 'bold' | 'warm' | 'simple' | 'night';
+
+/** 一次扇出出来的那一批。头一批是六个方向，后面的是基于某一版再出的。 */
+export interface FanBatch {
+  runId: string;
+  kind: VariantKind | null;
+  /** 基于哪一版出的。头一批为空。 */
+  base: string | null;
+  dirs: FanDir[];
+}
+
 /**
- * 跑一次设计扇出。
+ * 跑设计扇出。
  *
  * 和 streamAsk 同一套读法（fetch + ReadableStream 读 SSE），但这条流不进对话
  * 历史——它是 N 个一次性任务的进度，不是一轮会话。
+ *
+ * 每跑一次**往后加一批**，不覆盖前面的：新稿里「基于它再出一版」「更多类似」
+ * 出来的是"第二批"，摆在头一批下面——人要的是对比，不是替换。
  */
 export function useFanout() {
-  const [dirs, setDirs] = useState<FanDir[]>([]);
+  const [batches, setBatches] = useState<FanBatch[]>([]);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -162,10 +187,16 @@ export function useFanout() {
     device: 'phone' | 'pc' | 'both';
     model: string;
     effort: string | null;
+    variant?: { kind: VariantKind; base: FanDir };
   }) => {
     setRunning(true);
     setErr(null);
-    setDirs([]);
+    const v = opts.variant;
+    /* 这一次的 runId。事件是按顺序到的，'run' 一定在别的前面 */
+    let cur = '';
+    const patch = (index: number, fn: (d: FanDir) => FanDir) => setBatches((bs) => bs.map((b) => (
+      b.runId === cur ? { ...b, dirs: b.dirs.map((d) => (d.index === index ? fn(d) : d)) } : b
+    )));
     try {
       const res = await fetch('/deploy/api/agent/fanout', {
         method: 'POST',
@@ -176,6 +207,12 @@ export function useFanout() {
           device: opts.device,
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
+          ...(v ? {
+            variant: {
+              kind: v.kind,
+              base: { path: v.base.path, key: v.base.key, name: v.base.name, bg: v.base.bg, dot: v.base.dot },
+            },
+          } : {}),
         }),
       });
       if (!res.ok || !res.body) {
@@ -190,22 +227,18 @@ export function useFanout() {
       }
       await readSse(res.body, (e) => {
         if (e.type === 'run') {
-          setDirs((e.dirs as Omit<FanDir, 'state'>[]).map((d) => ({ ...d, state: 'queued' })));
+          cur = String(e.runId);
+          const dirs = (e.dirs as Omit<FanDir, 'state' | 'id' | 'runId'>[]).map((d) => ({
+            ...d, id: `${cur}:${d.key}`, runId: cur, state: 'queued' as const,
+          }));
+          setBatches((bs) => [...bs, { runId: cur, kind: v?.kind ?? null, base: v?.base.name ?? null, dirs }]);
         } else if (e.type === 'dir_start') {
-          setDirs((xs) => xs.map((d) => (d.index === e.index ? { ...d, state: 'running' } : d)));
+          patch(e.index as number, (d) => ({ ...d, state: 'running' }));
         } else if (e.type === 'dir_done') {
-          setDirs((xs) => xs.map((d) => (
-            d.index === e.index
-              ? { ...d, state: 'done', turns: e.turns as number, ms: e.ms as number }
-              : d
-          )));
+          patch(e.index as number, (d) => ({ ...d, state: 'done', turns: e.turns as number, ms: e.ms as number }));
         } else if (e.type === 'dir_error') {
-          setDirs((xs) => xs.map((d) => (
-            d.index === e.index
-              ? { ...d, state: 'failed', message: String(e.message ?? '') }
-              : d
-          )));
           if (e.index === -1) setErr(String(e.message ?? '扇出失败'));
+          else patch(e.index as number, (d) => ({ ...d, state: 'failed', message: String(e.message ?? '') }));
         }
       });
     } catch (e) {
@@ -215,7 +248,7 @@ export function useFanout() {
     }
   };
 
-  return { dirs, running, err, start };
+  return { batches, dirs: batches.flatMap((b) => b.dirs), running, err, start };
 }
 
 /** 逐条读 SSE。两条流（对话与扇出）共用。 */
@@ -242,6 +275,9 @@ export async function readSse(
   }
 }
 
+/** 第几批。头一批叫「首批」，后面「第二批」「第三批」…… */
+const batchSub = (i: number) => (i === 0 ? '首批' : `第${'一二三四五六七八九十'[i] ?? i + 1}批`);
+
 /**
  * 设计画廊（右栏「设计」页）。
  *
@@ -250,156 +286,168 @@ export async function readSse(
  *
  * iframe 一律 `pointer-events: none`：这是一张给人看的缩略图，不是能点的
  * 页面。真要点，挑中它、做出来再点。
+ *
+ * 卡片底下那排四颗（新稿）：
+ *   +   用这一版——让模型照它做真正的页面
+ *   ✦   基于它再出一版——跑一次只有一个方向的扇出，出来的摆在下一批
+ *   ♡   收藏——只在这一屏里记着，配合顶上的「收藏」筛选；不进服务端
+ *   ↓   下载设计稿——就是那一版写出来的那个 HTML 文件，原样存下来
  */
-export function DesignGallery({ dirs, previewUrl, picked, onPick, onMore, onStart, busy }: {
-  dirs: FanDir[];
+export function DesignGallery({
+  batches, previewUrl, pickedId, favs, dev, onDev, onPick, onVary, onFav, onDownload, onStart,
+  genBusy, fanBusy,
+}: {
+  batches: FanBatch[];
   /** 预览会话的根地址（末尾带斜杠）。为空时卡片只画底色。 */
   previewUrl: string | null;
-  picked: number | null;
+  pickedId: string | null;
+  favs: Set<string>;
+  dev: 'phone' | 'pc';
+  onDev: (d: 'phone' | 'pc') => void;
   onPick: (d: FanDir) => void;
-  onMore: () => void;
+  onVary: (d: FanDir) => void;
+  onFav: (d: FanDir) => void;
+  onDownload: (d: FanDir) => void;
   /** 还一版都没有时，点一下出几版。 */
   onStart: () => void;
-  busy: boolean;
+  /** 模型正在改页面：这时不能再「用这一版」，不然两轮叠在一起。 */
+  genBusy: boolean;
+  /** 一次扇出还没跑完：这时不再起新的一批。 */
+  fanBusy: boolean;
 }) {
-  const done = dirs.filter((d) => d.state === 'done').length;
+  const [filter, setFilter] = useState<'all' | 'fav'>('all');
+  const pc = dev === 'pc';
+  const total = batches.reduce((n, b) => n + b.dirs.length, 0);
+  const shown = batches
+    .map((b, i) => ({ b, i, dirs: filter === 'fav' ? b.dirs.filter((d) => favs.has(d.id)) : b.dirs }))
+    .filter((x) => x.dirs.length > 0);
 
-  if (!dirs.length) {
-    return (
-      <div style={{ flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', padding: 24 }}>
-        <div style={{ maxWidth: 340, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
-          <Icon name="sparkles" size={22} color="var(--text-tertiary)" />
-          <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-            想先看几个方向再定？
-          </span>
-          <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
-            按你那句话并排出几版视觉草案，挑一版再照着做。
-            每一版都是一次单独的模型调用，比直接做要慢、也更费。
-          </span>
-          <button
-            onClick={onStart}
-            disabled={busy}
-            style={{
-              marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, height: 36,
-              padding: '0 14px', border: 0, borderRadius: 'var(--radius-pill)',
-              background: busy ? 'var(--surface-3)' : 'var(--cta)',
-              color: busy ? 'var(--text-tertiary)' : 'var(--cta-fg)',
-              fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
-              cursor: busy ? 'default' : 'pointer',
-            }}
-          >
-            <Icon name="sparkles" size={14} />出几版设计看看
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const empty = !batches.length
+    ? {
+      t: '这次没有出多个方向',
+      d: '按你那句话并排出几版视觉草案，挑一版再照着做。每一版都是一次单独的模型调用，比直接做要慢、也更费。',
+    }
+    : !shown.length ? { t: '还没有收藏的方案', d: '在方案下面点 ♡，收藏的会出现在这里。' } : null;
 
   return (
-    <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 20px 20px' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-canvas)' }}>
       <div
         style={{
-          display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 14px',
-          borderRadius: 12, background: 'var(--surface-2)', marginBottom: 16,
+          height: 60, flex: 'none', display: 'grid', gridTemplateColumns: '1fr auto 1fr',
+          alignItems: 'center', gap: 12, padding: '0 20px',
         }}
       >
-        <Icon name="sparkles" size={15} color="var(--tabby-orange)" />
-        <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-          {done < dirs.length ? `${done} / ${dirs.length} 个方向好了` : `${dirs.length} 个方向`}
-        </span>
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={onMore}
-          disabled={busy || picked === null}
-          title={picked === null ? '先挑一个方向' : '照这一版再出几个相近的'}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px',
-            border: 0, borderRadius: 9, background: 'transparent',
-            color: busy || picked === null ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-            fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
-            cursor: busy || picked === null ? 'default' : 'pointer',
-          }}
-        >
-          <Icon name="rotate" size={14} />更多类似
-        </button>
+        <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>{total} 个方案</span>
+        <Segment
+          options={[{ k: 'all', label: '风格', icon: 'palette' }, { k: 'fav', label: '收藏', icon: 'heart' }]}
+          value={filter}
+          onPick={(k) => setFilter(k as 'all' | 'fav')}
+          pad={14}
+        />
+        <Segment
+          options={[{ k: 'phone', label: '手机', icon: 'phone' }, { k: 'pc', label: '电脑', icon: 'monitor' }]}
+          value={dev}
+          onPick={(k) => onDev(k as 'phone' | 'pc')}
+          pad={11}
+          style={{ justifySelf: 'end' }}
+        />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 18 }}>
-        {dirs.map((d) => {
-          const on = picked === d.index;
-          const ready = d.state === 'done';
-          return (
-            <div key={d.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div
-                onClick={() => ready && onPick(d)}
+      <div
+        style={{
+          flex: 1, minHeight: 0, overflow: 'auto', padding: '0 20px 32px',
+          display: 'flex', flexDirection: 'column', gap: 28,
+        }}
+      >
+        {empty && (
+          <div
+            style={{
+              flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+              justifyContent: 'center', gap: 12, padding: '60px 24px', textAlign: 'center',
+            }}
+          >
+            <span
+              style={{
+                width: 52, height: 52, borderRadius: 16, background: 'var(--surface-1)',
+                border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Icon name="sparkles" size={24} color="var(--tabby-orange)" />
+            </span>
+            <span style={{ fontSize: 'var(--text-card-title)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
+              {empty.t}
+            </span>
+            <span style={{ maxWidth: 340, fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
+              {empty.d}
+            </span>
+            {!batches.length && (
+              <button
+                onClick={onStart}
+                disabled={fanBusy}
                 style={{
-                  position: 'relative', aspectRatio: '3 / 4', borderRadius: 16, overflow: 'hidden',
-                  background: d.bg, cursor: ready ? 'pointer' : 'default',
-                  boxShadow: on
-                    ? '0 0 0 3px var(--tabby-orange), 0 24px 48px -28px rgba(24,23,21,.45)'
-                    : '0 18px 36px -24px rgba(24,23,21,.35), 0 0 0 1px var(--border-subtle)',
+                  marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, height: 36,
+                  padding: '0 14px', border: 0, borderRadius: 'var(--radius-pill)',
+                  background: fanBusy ? 'var(--surface-3)' : 'var(--cta)',
+                  color: fanBusy ? 'var(--text-tertiary)' : 'var(--cta-fg)',
+                  fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
+                  cursor: fanBusy ? 'default' : 'pointer',
                 }}
               >
-                {ready && previewUrl && (
-                  <iframe
-                    src={`${previewUrl}${d.path}`}
-                    title={d.name}
-                    sandbox="allow-scripts"
-                    style={{
-                      position: 'absolute', top: 0, left: 0, width: '250%', height: '250%',
-                      transform: 'scale(.4)', transformOrigin: 'top left',
-                      border: 0, pointerEvents: 'none', background: d.bg,
-                    }}
-                  />
-                )}
-                {!ready && (
-                  <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}>
-                    <span
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
-                        borderRadius: 'var(--radius-pill)', background: 'rgba(255,255,255,.82)',
-                        fontSize: 'var(--text-base)', color: '#181715',
-                      }}
-                    >
-                      {d.state === 'failed'
-                        ? <>没出来</>
-                        : <><Icon name="rotate" size={13} />{d.state === 'running' ? '生成中…' : '排队'}</>}
-                    </span>
-                  </div>
-                )}
-                {on && (
-                  <span
-                    style={{
-                      position: 'absolute', top: 10, left: 10, display: 'flex', alignItems: 'center',
-                      gap: 5, height: 24, padding: '0 9px', borderRadius: 'var(--radius-pill)',
-                      background: 'var(--tabby-orange)', color: '#fff',
-                      fontSize: 'var(--text-sm)', fontWeight: 'var(--weight-semibold)',
-                    }}
-                  >
-                    <Icon name="check" size={12} />已选
-                  </span>
-                )}
+                <Icon name="sparkles" size={14} />出几版设计看看
+              </button>
+            )}
+          </div>
+        )}
+
+        {shown.map(({ b, i, dirs }) => {
+          const done = b.dirs.filter((d) => d.state === 'done' || d.state === 'failed').length;
+          const hint = done < b.dirs.length
+            ? `生成中 · ${done}/${b.dirs.length}`
+            : i === 0
+              ? (pickedId ? '点 + 换成这一版，✦ 基于它再出一版' : `点一${pc ? '张方案' : '台手机'}，或点 + 用这一版`)
+              : b.base ? `基于「${b.base.split(' · ')[0]}」` : '';
+          return (
+            <div key={b.runId} style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 14px',
+                  borderRadius: 12, background: 'var(--surface-2)', fontSize: 'var(--text-base)',
+                }}
+              >
+                <Icon name="sparkles" size={15} color="var(--tabby-orange)" />
+                <span style={{ fontWeight: 'var(--weight-bold)', color: 'var(--text-heading)' }}>
+                  {b.kind ? `${b.dirs.length} 个新版本` : `${b.dirs.length} 个方向`}
+                </span>
+                <span style={{ color: 'var(--text-tertiary)' }}>· {batchSub(i)}</span>
+                <div style={{ flex: 1 }} />
+                <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {hint}
+                </span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 10, height: 10, flex: 'none', borderRadius: 'var(--radius-pill)', background: d.dot }} />
-                <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-                  {d.name}
-                </span>
-                {ready && (
-                  <button
-                    onClick={() => onPick(d)}
-                    style={{
-                      height: 26, padding: '0 10px', border: '1px solid var(--border-hover)',
-                      borderRadius: 8, background: on ? 'var(--brand-wash)' : 'var(--surface-1)',
-                      color: on ? 'var(--tabby-orange)' : 'var(--text-secondary)',
-                      fontSize: 'var(--text-sm)', fontWeight: 'var(--weight-semibold)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {on ? '正在用' : '用这一版'}
-                  </button>
-                )}
+              <div
+                style={{
+                  display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${pc ? 300 : 200}px, 1fr))`,
+                  gap: '30px 22px',
+                }}
+              >
+                {dirs.map((d) => (
+                  <DirCard
+                    key={d.id}
+                    d={d}
+                    pc={pc}
+                    on={pickedId === d.id}
+                    fav={favs.has(d.id)}
+                    previewUrl={previewUrl}
+                    genBusy={genBusy}
+                    fanBusy={fanBusy}
+                    onPick={onPick}
+                    onVary={onVary}
+                    onFav={onFav}
+                    onDownload={onDownload}
+                  />
+                ))}
               </div>
             </div>
           );
@@ -408,6 +456,187 @@ export function DesignGallery({ dirs, previewUrl, picked, onPick, onMore, onStar
     </div>
   );
 }
+
+function DirCard({ d, pc, on, fav, previewUrl, genBusy, fanBusy, onPick, onVary, onFav, onDownload }: {
+  d: FanDir;
+  pc: boolean;
+  on: boolean;
+  fav: boolean;
+  previewUrl: string | null;
+  genBusy: boolean;
+  fanBusy: boolean;
+  onPick: (d: FanDir) => void;
+  onVary: (d: FanDir) => void;
+  onFav: (d: FanDir) => void;
+  onDownload: (d: FanDir) => void;
+}) {
+  const ready = d.state === 'done';
+  const busy = d.state === 'queued' || d.state === 'running';
+  /*
+    缩略图的视口宽度：手机版按 ~400px 排，电脑版按 ~1200px 排，再缩回卡片大小。
+    直接按卡片宽度渲染的话，手机卡片 200px 宽，页面会以为自己在一块手表上。
+  */
+  const zoom = pc ? 0.25 : 0.5;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, minWidth: 0 }}>
+      <div
+        onClick={() => ready && !genBusy && onPick(d)}
+        style={{
+          position: 'relative', width: '100%', aspectRatio: pc ? '16 / 10' : '9 / 18',
+          boxSizing: 'border-box', padding: pc ? 0 : 7, borderRadius: pc ? 14 : 30,
+          background: pc ? 'var(--surface-1)' : '#0d0d10',
+          boxShadow: on
+            ? '0 0 0 3px var(--tabby-orange), 0 24px 48px -28px rgba(24,23,21,.45)'
+            : ready ? '0 24px 48px -28px rgba(24,23,21,.45)' : '0 0 0 1px var(--border-subtle)',
+          cursor: ready && !genBusy ? 'pointer' : 'default',
+        }}
+      >
+        {on && (
+          <span
+            style={{
+              position: 'absolute', top: -10, right: -6, zIndex: 2, height: 26, padding: '0 10px',
+              borderRadius: 'var(--radius-pill)', background: 'var(--cta)', color: 'var(--cta-fg)',
+              fontSize: 'var(--text-base)', fontWeight: 'var(--weight-bold)', display: 'flex',
+              alignItems: 'center', gap: 4, boxShadow: '0 6px 14px -6px rgba(238,92,42,.8)',
+            }}
+          >
+            <Icon name="check" size={13} />已选
+          </span>
+        )}
+        <div
+          style={{
+            position: 'relative', width: '100%', height: '100%', borderRadius: pc ? 14 : 24,
+            overflow: 'hidden', background: d.bg,
+          }}
+        >
+          {ready && previewUrl && (
+            <iframe
+              src={`${previewUrl}${d.path}`}
+              title={d.name}
+              sandbox="allow-scripts"
+              style={{
+                position: 'absolute', top: 0, left: 0, width: `${100 / zoom}%`, height: `${100 / zoom}%`,
+                transform: `scale(${zoom})`, transformOrigin: 'top left',
+                border: 0, pointerEvents: 'none', background: d.bg,
+              }}
+            />
+          )}
+          {busy && (
+            <div
+              style={{
+                position: 'absolute', inset: 0, padding: '36px 14px 16px', display: 'flex',
+                flexDirection: 'column', gap: 10, background: 'var(--surface-1)',
+              }}
+            >
+              <div style={{ width: '50%', height: 16, borderRadius: 5, background: 'var(--surface-3)' }} />
+              <div style={{ height: '38%', borderRadius: 14, background: 'var(--surface-2)' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div style={{ height: 44, borderRadius: 10, background: 'var(--surface-2)' }} />
+                <div style={{ height: 44, borderRadius: 10, background: 'var(--surface-2)' }} />
+              </div>
+              <div style={{ flex: 1 }} />
+              <div
+                style={{
+                  height: 3, borderRadius: 3,
+                  background: `linear-gradient(90deg, var(--tabby-orange) ${d.state === 'running' ? 40 : 8}%, var(--surface-2) 0)`,
+                }}
+              />
+            </div>
+          )}
+          {d.state === 'failed' && (
+            <div
+              style={{
+                position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 16,
+                textAlign: 'center', fontSize: 'var(--text-base)', color: 'rgba(24,23,21,.6)',
+              }}
+            >
+              这一版没出来
+            </div>
+          )}
+        </div>
+      </div>
+
+      <span
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%', fontSize: 'var(--text-card-title)',
+          fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)',
+        }}
+      >
+        <span style={{ width: 10, height: 10, flex: 'none', borderRadius: 'var(--radius-pill)', background: d.dot }} />
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+      </span>
+
+      {ready && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', padding: 3, borderRadius: 'var(--radius-pill)',
+            background: 'var(--surface-1)',
+            boxShadow: '0 0 0 1px var(--border-subtle), 0 4px 10px -6px rgba(24,23,21,.2)',
+          }}
+        >
+          <PillBtn
+            icon="plus"
+            title={genBusy ? '等这一轮做完再换' : on ? '正在用这一版' : '用这一版'}
+            disabled={genBusy}
+            onClick={() => onPick(d)}
+          />
+          <PillSep />
+          <PillBtn
+            icon="sparkles"
+            title={fanBusy ? '上一批还没出完' : '基于它再出一版'}
+            disabled={fanBusy}
+            onClick={() => onVary(d)}
+          />
+          <PillSep />
+          <PillBtn icon="heart" title={fav ? '取消收藏' : '收藏'} filled={fav} onClick={() => onFav(d)} />
+          <PillSep />
+          <PillBtn icon="download" title="下载设计稿" onClick={() => onDownload(d)} />
+        </div>
+      )}
+      {busy && (
+        <span style={{ height: 36, display: 'flex', alignItems: 'center', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
+          {d.state === 'running' ? '生成中…' : '排队中…'}
+        </span>
+      )}
+      {d.state === 'failed' && (
+        <span
+          title={d.message}
+          style={{ height: 36, display: 'flex', alignItems: 'center', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}
+        >
+          没出来，换一个看看
+        </span>
+      )}
+    </div>
+  );
+}
+
+function PillBtn({ icon, title, onClick, disabled, filled }: {
+  icon: IconName;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  filled?: boolean;
+}) {
+  return (
+    <button
+      onClick={() => !disabled && onClick()}
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      style={{
+        width: 36, height: 30, border: 0, borderRadius: 'var(--radius-pill)', background: 'transparent',
+        color: filled ? 'var(--tabby-orange)' : disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: disabled ? 'default' : 'pointer',
+      }}
+    >
+      <Icon name={icon} size={16} filled={filled} />
+    </button>
+  );
+}
+
+const PillSep = () => <span style={{ width: 1, height: 14, flex: 'none', background: 'var(--border-tabby)' }} />;
 
 /**
  * 「处理中… · 已完成 N 步」那一块。
@@ -482,7 +711,7 @@ export function ProcessBlock({ steps, agents, busy, skill }: {
               {agentsOpen && (
                 <div style={{ display: 'flex', flexDirection: 'column', paddingBottom: 6 }}>
                   {agents.map((a) => (
-                    <div key={a.key} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 30, paddingLeft: 24 }}>
+                    <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 30, paddingLeft: 24 }}>
                       <Icon
                         name={a.state === 'done' ? 'check' : a.state === 'running' ? 'rotate' : a.state === 'failed' ? 'close' : 'info'}
                         size={13}
@@ -490,10 +719,18 @@ export function ProcessBlock({ steps, agents, busy, skill }: {
                           : a.state === 'running' ? 'var(--tabby-orange)'
                             : a.state === 'failed' ? 'var(--error)' : 'var(--text-tertiary)'}
                       />
-                      <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>
+                      {/* 左栏窄（新稿 32% 宽）：名字一长就折行、和下一行叠在一起，所以一律单行截断 */}
+                      <span
+                        className="mono"
+                        title={`isp-design · ${a.name}`}
+                        style={{
+                          flex: 1, minWidth: 0, fontSize: 'var(--text-base)', color: 'var(--text-secondary)',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}
+                      >
                         isp-design · {a.name}
                       </span>
-                      <span className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+                      <span className="mono" style={{ flex: 'none', whiteSpace: 'nowrap', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
                         {a.state === 'done' ? `${a.turns} 轮 · ${fmtMs(a.ms ?? 0)}`
                           : a.state === 'running' ? '运行中'
                             : a.state === 'failed' ? '没出来' : '排队'}
@@ -534,45 +771,70 @@ const fmtMs = (ms: number) => {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 };
 
-/** 挑中一版之后那条微调条。每个按钮就是一句写好的追问。 */
-export const REFINES: { key: string; label: string; icon: 'minus' | 'moon' | 'sparkles'; text: string }[] = [
-  { key: 'simple', label: '简化', icon: 'minus', text: '这一版再简化一点：去掉次要的装饰和信息，留下最该看的那几样。' },
-  { key: 'night', label: '夜间版', icon: 'moon', text: '按同样的结构做一个夜间配色的版本，对比别太生硬。' },
+/**
+ * 挑中一版之后，输入框上面那一排（新稿）。
+ *
+ * 「新版本」那四颗和「更多类似」都是**基于挑中的那一版再出设计**——出来的
+ * 进「设计」页的下一批，挑中了再换过去。它们不直接改正在做的页面：改页面
+ * 是输入框的事，说一句「哪里要改」就行。
+ */
+export const REFINES: { kind: VariantKind; label: string; icon: IconName }[] = [
+  { kind: 'bold', label: '更大胆', icon: 'bold' },
+  { kind: 'warm', label: '更温暖', icon: 'sun' },
+  { kind: 'simple', label: '简化', icon: 'minus' },
+  { kind: 'night', label: '夜间版', icon: 'moon' },
 ];
 
-export function RefineBar({ pickName, onRefine, onFresh, busy }: {
-  pickName: string;
-  onRefine: (text: string) => void;
-  onFresh: () => void;
+/** 发给左栏对话里的那句"我说的话"。和按钮上的字对得上。 */
+export function variantAsk(kind: VariantKind, baseName: string): string {
+  const short = baseName.split(' · ')[0] ?? baseName;
+  if (kind === 'like') return `再来两个和「${short}」类似的设计`;
+  if (kind === 'vary') return `基于「${baseName}」再出一版`;
+  const r = REFINES.find((x) => x.kind === kind);
+  return `对「${short}」出一个新版本：${r?.label ?? kind}`;
+}
+
+export function RefineBar({ pick, onVariant, busy }: {
+  pick: FanDir;
+  onVariant: (kind: VariantKind) => void;
+  /** 上一批还没出完。 */
   busy: boolean;
 }) {
-  const chip = (on: boolean): React.CSSProperties => ({
-    display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 11px',
-    border: '1px solid var(--border-subtle)', borderRadius: 10,
-    background: 'var(--surface-1)', color: on ? 'var(--text-heading)' : 'var(--text-tertiary)',
+  const pill: React.CSSProperties = {
+    flex: 'none', display: 'flex', alignItems: 'center', gap: 5, height: 32, padding: '0 12px',
+    border: 0, borderRadius: 'var(--radius-pill)', background: 'var(--surface-1)',
+    boxShadow: '0 0 0 1px var(--border-subtle)',
+    color: busy ? 'var(--text-tertiary)' : 'var(--text-primary)',
     fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)',
-    cursor: on ? 'pointer' : 'default',
-  });
+    cursor: busy ? 'default' : 'pointer',
+  };
+  const tip = busy ? '上一批还没出完' : undefined;
 
   return (
+    /* 左栏放不下一整排时横着划；滚动条不画——它会在输入框上面压一道灰杠 */
     <div
       style={{
-        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '12px 14px',
-        borderRadius: 16, background: 'var(--surface-2)',
+        display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto', padding: '1px 1px 2px',
+        whiteSpace: 'nowrap', scrollbarWidth: 'none',
       }}
     >
-      <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>
-        对「{pickName}」
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 'none', fontSize: 'var(--text-base)', color: 'var(--text-secondary)' }}>
+        <span style={{ width: 7, height: 7, borderRadius: 'var(--radius-pill)', background: pick.dot }} />
+        对「{pick.name.split(' · ')[0]}」
       </span>
+      <span style={{ flex: 'none', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>新版本</span>
       {REFINES.map((r) => (
-        <button key={r.key} onClick={() => !busy && onRefine(r.text)} disabled={busy} style={chip(!busy)}>
-          <Icon name={r.icon === 'minus' ? 'close' : r.icon === 'moon' ? 'bulb' : 'sparkles'} size={13} />
+        <button key={r.kind} onClick={() => !busy && onVariant(r.kind)} disabled={busy} title={tip} style={pill}>
+          <Icon name={r.icon} size={14} color="var(--tabby-orange)" />
           {r.label}
         </button>
       ))}
-      <div style={{ flex: 1 }} />
-      <button onClick={() => !busy && onFresh()} disabled={busy} style={chip(!busy)}>
-        <Icon name="sparkles" size={13} />新设计
+      <span style={{ flex: 'none', width: 1, height: 16, margin: '0 4px', background: 'var(--border-tabby)' }} />
+      <span style={{ flex: 'none', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>新设计</span>
+      <button onClick={() => !busy && onVariant('like')} disabled={busy} title={tip} style={pill}>
+        <Icon name="rotate" size={14} color="var(--tabby-orange)" />
+        更多类似
+        <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--brand-ink)' }}>+2</span>
       </button>
     </div>
   );
@@ -613,7 +875,7 @@ export function CodePane({ rev }: { rev: number }) {
   const files = entries.filter((e) => !e.dir && (!q.trim() || e.path.includes(q.trim())));
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', borderTop: '1px solid var(--border-tabby)' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
       <div
         style={{
           width: 230, flex: 'none', display: 'flex', flexDirection: 'column',
@@ -758,11 +1020,10 @@ function kindIcon(path: string): 'fileUp' | 'image' | 'shapes' {
  * 间来回切时会跟着内容挪，而发布是与当前看哪一页无关的事。
  */
 export function PublishMenu({
-  published, url, title, vis, setVis, canPublish, publishing, onPublish, onMine, onToast, onClose,
+  published, url, vis, setVis, canPublish, publishing, onPublish, onMine, onToast, onClose,
 }: {
   published: boolean;
   url: string;
-  title: string;
   vis: 'private' | 'shared' | 'public';
   setVis: (v: 'private' | 'shared' | 'public') => void;
   canPublish: boolean;
@@ -775,28 +1036,32 @@ export function PublishMenu({
   return (
     <div
       style={{
-        position: 'absolute', right: 0, top: 'calc(100% + 8px)', zIndex: 31, width: 320,
-        boxSizing: 'border-box', padding: '14px 16px 16px', borderRadius: 18,
+        position: 'absolute', right: 0, top: 'calc(100% + 8px)', zIndex: 31, width: 340,
+        boxSizing: 'border-box', padding: 18, borderRadius: 20,
         background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
-        boxShadow: '0 24px 48px -16px rgba(24,23,21,.22), 0 2px 6px rgba(24,23,21,.05)',
-        display: 'flex', flexDirection: 'column', gap: 12,
+        boxShadow: '0 24px 48px -16px rgba(24,23,21,.22)',
+        display: 'flex', flexDirection: 'column', gap: 14,
       }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
-          {published ? '已经上线了' : title}
-        </span>
-        <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>
-          {url || '发布之后才有地址'}
-        </span>
-      </div>
+      <span style={{ fontSize: 'var(--text-card-title)', fontWeight: 'var(--weight-bold)', color: 'var(--text-heading)' }}>
+        {published ? '已发布到你的空间' : '发布到你的空间'}
+      </span>
+      <span
+        className="mono"
+        style={{
+          padding: '10px 12px', borderRadius: 12, background: 'var(--surface-2)',
+          fontSize: 'var(--text-base)', color: 'var(--text-secondary)', wordBreak: 'break-all',
+        }}
+      >
+        {url || '模型请求发布之后才知道地址'}
+      </span>
 
       {published ? (
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             onClick={() => void copyText(url).then((ok) => onToast(ok ? '地址已复制' : url))}
             style={{
-              flex: 1, height: 38, border: '1px solid var(--border-hover)', borderRadius: 11,
+              flex: 1, height: 40, border: '1px solid var(--border-hover)', borderRadius: 12,
               background: 'var(--surface-1)', color: 'var(--text-heading)',
               fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
             }}
@@ -806,7 +1071,7 @@ export function PublishMenu({
           <button
             onClick={() => { onClose(); onMine(); }}
             style={{
-              flex: 1, height: 38, border: 0, borderRadius: 11, background: 'var(--accent)',
+              flex: 1, height: 40, border: 0, borderRadius: 12, background: 'var(--accent)',
               color: 'var(--accent-fg)', fontSize: 'var(--text-base)',
               fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
             }}
@@ -816,7 +1081,7 @@ export function PublishMenu({
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>谁能看</span>
             <Segment
               options={[
@@ -833,16 +1098,16 @@ export function PublishMenu({
             onClick={onPublish}
             disabled={!canPublish || publishing}
             style={{
-              height: 40, border: 0, borderRadius: 11,
+              height: 42, border: 0, borderRadius: 12,
               background: canPublish && !publishing ? 'var(--cta)' : 'var(--surface-3)',
               color: canPublish && !publishing ? 'var(--cta-fg)' : 'var(--text-tertiary)',
               fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)',
               cursor: canPublish && !publishing ? 'pointer' : 'default',
             }}
           >
-            {publishing ? '正在发布…' : canPublish ? '发布到我的空间' : '还没准备好发布'}
+            {publishing ? '正在发布…' : canPublish ? '发布' : '还没准备好发布'}
           </button>
-          <span style={{ fontSize: 'var(--text-base)', lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
+          <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
             发布前会自动扫一遍密钥和 XSS 规则。
           </span>
         </>
@@ -852,38 +1117,72 @@ export function PublishMenu({
 }
 
 /** 右栏那三页。顺序照新稿：预览在前，代码其次，设计最后。 */
-export const TABS: { k: 'preview' | 'code' | 'design'; label: string; icon: 'monitor' | 'shapes' | 'layers' }[] = [
-  { k: 'preview', label: '预览', icon: 'monitor' },
-  { k: 'code', label: '代码', icon: 'shapes' },
+export const TABS: { k: 'preview' | 'code' | 'design'; label: string; icon: IconName }[] = [
+  { k: 'preview', label: '预览', icon: 'globe' },
+  { k: 'code', label: '代码', icon: 'code' },
   { k: 'design', label: '设计', icon: 'layers' },
 ];
 
-export function TabBar({ cur, onPick }: {
+/**
+ * 三页的切换。
+ *
+ * 字只在放得下时显示（新稿：视口 ≥ 1180，或者左栏收起来了）——窄的时候只剩
+ * 图标，title 里留着名字。
+ */
+export function TabBar({ cur, onPick, labels }: {
   cur: 'preview' | 'code' | 'design';
   onPick: (k: 'preview' | 'code' | 'design') => void;
+  labels: boolean;
 }) {
   return (
-    <div style={{ display: 'flex', gap: 2, padding: 3, borderRadius: 12, background: 'var(--seg-bg)' }}>
+    <div style={{ display: 'flex', gap: 2, flex: 'none' }}>
       {TABS.map((t) => {
         const on = t.k === cur;
         return (
           <button
             key={t.k}
             onClick={() => onPick(t.k)}
+            title={t.label}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px',
-              border: 0, borderRadius: 9,
-              background: on ? 'var(--surface-1)' : 'transparent',
+              display: 'flex', alignItems: 'center', gap: 7, height: 34,
+              padding: `0 ${labels ? 14 : 10}px`, border: 0, borderRadius: 10, whiteSpace: 'nowrap',
+              flex: 'none', background: on ? 'var(--surface-1)' : 'transparent',
               boxShadow: on ? '0 1px 2px rgba(24,23,21,.08), 0 0 0 1px var(--border-subtle)' : 'none',
               color: on ? 'var(--text-heading)' : 'var(--text-tertiary)',
-              fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
+              fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
             }}
           >
-            <Icon name={t.icon} size={14} />
-            {t.label}
+            <Icon name={t.icon} size={16} />
+            {labels && t.label}
           </button>
         );
       })}
     </div>
+  );
+}
+
+/** 两栏顶上那一排 34×34 的图标按钮。 */
+export function IconBtn({ icon, title, onClick, disabled }: {
+  icon: IconName;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={() => !disabled && onClick()}
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      style={{
+        width: 34, height: 34, flex: 'none', border: 0, borderRadius: 10, background: 'transparent',
+        color: disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', cursor: disabled ? 'default' : 'pointer',
+      }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--surface-2)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+    >
+      <Icon name={icon} size={17} />
+    </button>
   );
 }

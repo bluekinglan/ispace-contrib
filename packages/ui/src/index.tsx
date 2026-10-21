@@ -973,6 +973,7 @@ export function GlobalKeyframes() {
   return (
     <style>{`
       @keyframes ispace-pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+      @keyframes ispace-spin { to { transform: rotate(360deg) } }
       @keyframes ispace-dialog-fade { from { opacity: 0 } to { opacity: 1 } }
       @keyframes ispace-dialog-scale {
         from { opacity: 0; transform: scale(.96) translateY(6px) }

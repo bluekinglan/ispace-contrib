@@ -114,6 +114,26 @@ describe('确认并发布的闸门', () => {
     expect(res.json().items).toEqual([]);
   });
 
+  /*
+    原稿会被整份读出来塞进系统提示，所以路径只认扇出自己写出来的那种形状
+    ——不能让它指向工作区里别的文件，更不能带 .. 爬出去。
+  */
+  it('「基于这一版再出」的原稿只认扇出草稿的路径', async () => {
+    const base = { key: 'paper', name: '暖色纸感', bg: '#fbf3e0', dot: '#ee5c2a' };
+    for (const path of [
+      '../other-user/index.html',
+      '_fanout/ab12/../../x/index.html',
+      'index.html',
+      '_fanout/ab12/paper/app.js',
+      '/etc/passwd',
+    ]) {
+      const res = await post('/agent/fanout', {
+        text: '做个排班表', variant: { kind: 'vary', base: { ...base, path } },
+      });
+      expect(res.statusCode, path).toBe(422);
+    }
+  });
+
   it('状态接口在没有模型通道时也答得出来（创建页据此决定显不显示模型名）', async () => {
     const res = await app.inject({ method: 'GET', url: '/deploy/api/agent/status' });
     expect(res.statusCode).toBe(200);

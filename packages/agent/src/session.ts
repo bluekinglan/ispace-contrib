@@ -251,6 +251,17 @@ export class AgentSession {
     ];
   }
 
+  /**
+   * 换一个引擎，下一轮起生效。
+   *
+   * 工作台的输入框里能换模型：同一段对话里先用便宜的出第一版，卡住了换个强
+   * 的接着改。对话历史是 OpenAI 兼容的通用格式，不绑定哪个模型，所以换引擎
+   * 不用重放、也不丢上下文。正在跑的那一轮不受影响——它已经拿到了旧引擎。
+   */
+  useEngine(engine: Engine): void {
+    this.opts.engine = engine;
+  }
+
   /** 追加一条用户消息（可带截图）并跑到收敛。 */
   async send(
     text: string,

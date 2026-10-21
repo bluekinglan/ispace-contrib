@@ -60,6 +60,82 @@ export const DESIGN_DIRECTIONS: DesignDirection[] = [
   },
 ];
 
+/**
+ * 「基于这一版再出」的几种（新稿方案卡片底部的 ✦、微调条的四颗和「更多类似」）。
+ *
+ * 方向纲领放在服务端，前端只说要哪一种：brief 是要进系统提示的，让前端传一段
+ * 自由文本进来，等于每个按钮都能被改成任意提示词——没有必要开这个口子。
+ *
+ * 颜色只是卡片还没出来时的占位底色；「近似」「变体」沿用原稿那一版的。
+ */
+export type VariantKind = 'vary' | 'like' | 'bold' | 'warm' | 'simple' | 'night';
+
+export const VARIANT_KINDS: Record<VariantKind, {
+  label: string; brief: string; count: number; bg?: string; dot?: string;
+}> = {
+  vary: {
+    label: '变体', count: 1,
+    brief: '保留原稿的配色、字体和整体气质，换一种版式或信息编排，让人看到同一种感觉的另一种排法。',
+  },
+  like: {
+    label: '近似', count: 2,
+    brief: '和原稿非常接近：同一套配色与字体，只在布局细节和组件形态上做不同的取舍。',
+  },
+  bold: {
+    label: '更大胆', count: 1, dot: '#cd2f3a',
+    brief: '在原稿基础上更大胆：更强的对比、更大的标题、更有冲击力的用色，但结构别散。',
+  },
+  warm: {
+    label: '更温暖', count: 1, bg: '#ffede0', dot: '#ee5c2a',
+    brief: '在原稿基础上更温暖：偏暖的底色与主色，形状圆润一点，读起来更有亲和力。',
+  },
+  simple: {
+    label: '简化', count: 1, bg: '#efece6', dot: '#72706a',
+    brief: '在原稿基础上做减法：去掉次要的装饰和信息，留下最该看的那几样，留白更多。',
+  },
+  night: {
+    label: '夜间版', count: 1, bg: '#282522', dot: '#a26000',
+    brief: '同样的结构做一个深色版本：深底、暖色高亮，对比清楚但别生硬。',
+  },
+};
+
+/** 原稿那一版。key / bg / dot 来自它那张卡片，html 是它写出来的那份文件。 */
+export interface VariantBase {
+  key: string;
+  name: string;
+  bg: string;
+  dot: string;
+}
+
+/**
+ * 某一种「再出」要跑哪几个方向。
+ *
+ * key 只取原稿 key 的第一段再接上种类：变体的变体一路叠下去，key 会越来越
+ * 长（paper-bold-like-a-vary…）。每次扇出都写进自己的 runId 目录，同一次里
+ * 不撞名就够了。名字同理只留第一段：「暖色纸感 · 近似 A」，而不是
+ * 「暖色纸感 · 更大胆 · 近似 A」。
+ */
+export function variantDirections(base: VariantBase, kind: VariantKind): DesignDirection[] {
+  const k = VARIANT_KINDS[kind];
+  const root = base.key.split('-')[0] || 'base';
+  const short = base.name.split(' · ')[0] || base.name;
+  const one = (suffix: string, tag: string): DesignDirection => ({
+    key: `${root}-${kind}${suffix}`,
+    name: `${short} · ${k.label}${tag}`,
+    bg: k.bg ?? base.bg,
+    dot: k.dot ?? base.dot,
+    brief: k.brief,
+  });
+  if (k.count === 1) return [one('', '')];
+  return Array.from({ length: k.count }, (_, i) => {
+    const letter = String.fromCharCode(65 + i);
+    return one(`-${letter.toLowerCase()}`, ` ${letter}`);
+  });
+}
+
+/** 原稿进系统提示的上限。一版草案一般十几 KB；再大就截，别把上下文撑爆。 */
+const BASE_HTML_MAX = 40_000;
+
 /** 每个方向最多跑几轮。出一个单文件页面用不了几轮，跑飞了也就到此为止。 */
 const DIR_MAX_TURNS = 4;
 
@@ -94,6 +170,11 @@ export interface FanoutOptions {
   /** 手机为主 / 电脑为主 / 两边都要。影响每一版的布局基调。 */
   device: 'phone' | 'pc' | 'both';
   dirs: DesignDirection[];
+  /**
+   * 基于哪一版再出。给了就把原稿整份放进每个方向的系统提示——比让它自己
+   * read_file 省一轮，也不用为此多给一个读文件的工具。
+   */
+  base?: { name: string; html: string };
   onEvent?: (e: FanoutEvent) => void;
   signal?: AbortSignal;
 }
@@ -104,13 +185,29 @@ const DEVICE_LINE = {
   both: '手机和电脑都要能看：用能自然塌成一列的布局。',
 };
 
-function systemPromptFor(d: DesignDirection, device: FanoutOptions['device'], outPath: string): string {
+function systemPromptFor(
+  d: DesignDirection,
+  device: FanoutOptions['device'],
+  outPath: string,
+  base?: FanoutOptions['base'],
+): string {
+  const html = base && base.html.length > BASE_HTML_MAX
+    ? `${base.html.slice(0, BASE_HTML_MAX)}\n<!-- 后面截掉了 -->`
+    : base?.html;
+  const from = base
+    ? `
+这一版是在「${base.name}」那一版的基础上改的。保留它的内容和大的骨架，按上面的方向调整视觉。原稿：
+<原稿>
+${html}
+</原稿>
+`
+    : '';
   return `你是 iSpace 平台的视觉方向设计师。用户描述了他想要的页面，你只负责出**一个方向的视觉草案**。
 
 这一版的方向是「${d.name}」：${d.brief}
 基调色：底 ${d.bg}，主色 ${d.dot}。
 ${DEVICE_LINE[device]}
-
+${from}
 硬性要求：
 - **只写一个文件**：\`${outPath}\`。用 write_file 写，写完就结束，不要再调别的工具。
 - 这个文件必须自包含：样式写在 <style> 里，不引外部 CSS/JS/字体/图片，不发任何网络请求。
@@ -151,7 +248,7 @@ export async function runFanout(opts: FanoutOptions): Promise<{ ok: number; fail
             requestDeploy: async () => { throw new Error('设计方向不发布'); },
           },
         },
-        systemPrompt: systemPromptFor(d, opts.device, rel),
+        systemPrompt: systemPromptFor(d, opts.device, rel, opts.base),
         /* 只给写文件：这一步不需要读、不需要删，更不需要发布 */
         tools: [WRITE_ONLY],
         maxTurns: DIR_MAX_TURNS,

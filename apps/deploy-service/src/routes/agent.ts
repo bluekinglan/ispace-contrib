@@ -10,7 +10,7 @@ import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
   AgentSession, ALL_TOOLS, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION, TOOLS_WITH_IMAGE,
   configuredImageModels, configuredModels, createEngine, createImageGenerator, effortEnabled,
-  fanoutCount, runFanout,
+  fanoutCount, runFanout, variantDirections,
   type AvailableConnector, type FanoutEvent, type ImageGenerator, type ReasoningEffort,
   type SessionEvent,
   safePath,
@@ -83,6 +83,22 @@ const fanoutSchema = z.object({
   device: z.enum(['phone', 'pc', 'both']).default('both'),
   model: z.string().max(64).optional(),
   effort: z.enum(['low', 'medium', 'high']).optional(),
+  /**
+   * 基于某一版再出（方案卡片的 ✦、微调条、更多类似）。不给就是从头出那六个方向。
+   *
+   * path 只认扇出自己写出来的那种形状——它会被读出来塞进系统提示，不能让它
+   * 指向工作区里别的文件（更不能带 ..）。
+   */
+  variant: z.object({
+    kind: z.enum(['vary', 'like', 'bold', 'warm', 'simple', 'night']),
+    base: z.object({
+      path: z.string().regex(/^_fanout\/[A-Za-z0-9_-]{1,32}\/[a-z0-9-]{1,40}\/index\.html$/),
+      key: z.string().regex(/^[a-z0-9-]{1,40}$/),
+      name: z.string().min(1).max(40),
+      bg: z.string().regex(/^#[0-9a-fA-F]{3,8}$/),
+      dot: z.string().regex(/^#[0-9a-fA-F]{3,8}$/),
+    }),
+  }).optional(),
 });
 
 interface PendingDeploy {
@@ -311,6 +327,12 @@ export function registerAgentRoutes(
         touched: Date.now(),
       };
       sessions.set(sid, entry);
+    } else {
+      /*
+        已有的会话也换上这一次请求的引擎。原来只在建会话时选一次模型，之后
+        追问带来的 model 被悄悄丢掉——输入框里明明换了模型，跑的还是开场那个。
+      */
+      entry.session.useEngine(engine);
     }
     entry.touched = Date.now();
 
@@ -410,9 +432,22 @@ export function registerAgentRoutes(
     const wsRoot = join(workspaceRoot, user.username);
     await mkdir(wsRoot, { recursive: true });
 
+    /* 基于某一版再出：先把原稿读出来，读不到就当场说，别让几个会话对着空气改 */
+    const v = input.variant;
+    let base: { name: string; html: string } | undefined;
+    if (v) {
+      const html = await readFile(join(wsRoot, v.base.path), 'utf8').catch(() => null);
+      if (html === null) {
+        throw new IspaceError(ERROR_CODES.NOT_FOUND, `「${v.base.name}」那一版的文件已经不在工作区里了`);
+      }
+      base = { name: v.base.name, html };
+    }
+
     const runId = randomBytes(6).toString('base64url');
     const outRel = `${FANOUT_DIR}/${runId}`;
-    const dirs = DESIGN_DIRECTIONS.slice(0, fanoutCount());
+    const dirs = v
+      ? variantDirections(v.base, v.kind)
+      : DESIGN_DIRECTIONS.slice(0, fanoutCount());
 
     reply.raw.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -453,13 +488,14 @@ export function registerAgentRoutes(
         prompt: input.text,
         device: input.device,
         dirs,
+        ...(base ? { base } : {}),
         onEvent: send,
         signal: abort.signal,
       });
       await writeAudit(sql, {
         actorId: user.id, action: 'agent.fanout', targetType: 'app', targetId: null,
         source: 'agent', result: 'success',
-        metadata: { runId, count: dirs.length, device: input.device },
+        metadata: { runId, count: dirs.length, device: input.device, variant: v?.kind ?? null },
         ip: req.ip,
       });
     } catch (e) {

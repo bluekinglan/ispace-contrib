@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentSession, buildSystemPrompt, type AvailableConnector } from '../session.js';
 import { parseAsk, runTool, safePath, type ToolContext } from '../tools.js';
-import { DESIGN_DIRECTIONS, fanoutCount, runFanout } from '../fanout.js';
+import { DESIGN_DIRECTIONS, fanoutCount, runFanout, variantDirections } from '../fanout.js';
 import { configuredImageModels, createImageGenerator } from '../image.js';
 import {
   configuredModels, createEngine, effortEnabled, numEnv,
@@ -110,6 +110,23 @@ describe('会话循环', () => {
     const r = await s.send('你好');
     expect(r.stopReason).toBe('complete');
     expect(r.turns).toBe(1);
+  });
+
+  /*
+    工作台的输入框里能换模型。原来会话只在创建时拿一次引擎，之后追问带来的
+    model 被悄悄丢掉——界面上换了，跑的还是开场那个。
+  */
+  it('换了引擎，下一轮就用新的，对话历史接着用', async () => {
+    const s = new AgentSession({
+      engine: new ScriptedEngine([[{ type: 'text', delta: '甲说' }, { type: 'done' }]]),
+      toolCtx: { ws: ws(), platform },
+    });
+    await s.send('第一句');
+    s.useEngine(new ScriptedEngine([[{ type: 'text', delta: '乙说' }, { type: 'done' }]]));
+    await s.send('第二句');
+    const said = s.messages.filter((m) => m.role === 'assistant').map((m) => m.content);
+    expect(said).toEqual(['甲说', '乙说']);
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(2);
   });
 
   it('工具结果回灌后继续下一轮', async () => {
@@ -417,6 +434,38 @@ describe('设计扇出', () => {
     expect(r).toEqual({ ok: 1, failed: 1 });
     /* 失败的那个也留一页说明，不是 404 */
     expect(existsSync(join(root, 'out', dirs[0]!.key, 'index.html'))).toBe(true);
+  });
+
+  it('基于某一版再出：原稿进系统提示，key 不会越叠越长', async () => {
+    const base = { key: 'paper-bold', name: '暖色纸感 · 更大胆', bg: '#fbf3e0', dot: '#cd2f3a' };
+    const like = variantDirections(base, 'like');
+    expect(like.map((d) => d.key)).toEqual(['paper-like-a', 'paper-like-b']);
+    expect(like.map((d) => d.name)).toEqual(['暖色纸感 · 近似 A', '暖色纸感 · 近似 B']);
+    /* 「近似」沿用原稿的底色；「夜间版」有自己的 */
+    expect(like[0]!.bg).toBe('#fbf3e0');
+    expect(variantDirections(base, 'night')[0]!.bg).toBe('#282522');
+
+    const root = mkdtempSync(join(tmpdir(), 'ispace-fan-'));
+    const seen: string[] = [];
+    const [d] = variantDirections(base, 'vary');
+    const r = await runFanout({
+      engine: () => ({
+        name: 'spy', model: 'test',
+        async *run(o: { messages: { role: string; content: unknown }[] }) {
+          if (!seen.length) seen.push(String(o.messages[0]?.content ?? ''));
+          yield* writes(`out/${d!.key}/index.html`).run();
+        },
+      }) as unknown as Engine,
+      workspaceRoot: root,
+      outRel: 'out',
+      prompt: '做个排班表',
+      device: 'phone',
+      dirs: [d!],
+      base: { name: base.name, html: '<h1 class="原稿标记">排班</h1>' },
+    });
+    expect(r.ok).toBe(1);
+    expect(seen[0]).toContain('原稿标记');
+    expect(seen[0]).toContain('暖色纸感 · 更大胆');
   });
 
   it('条数由平台配，且不超过方向表', () => {

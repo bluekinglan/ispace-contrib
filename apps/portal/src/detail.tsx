@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Comment, CommentSort, User } from '@ispace/contracts';
-import { Icon, copyText } from '@ispace/ui';
+import { Icon, copyText, type IconName } from '@ispace/ui';
 import { api, type Listing } from './api';
 import { AuthorChip, Cover, appHref, deviceOf, fmt, initial, usePlayUrl, washOf, type Device } from './wall';
 
@@ -641,13 +641,15 @@ function Comments({ item, me, onToast }: { item: Listing; me: User; onToast: (t:
 // ── 小件 ────────────────────────────────────────────────────────────────
 /** 分段控件：手机/电脑、最新/热门都用它。 */
 export function Segment({
-  options, value, onPick, compact = false, dark = false, style,
+  options, value, onPick, compact = false, dark = false, pad, style,
 }: {
-  options: { k: string; label: string; icon?: 'phone' | 'monitor' }[];
+  options: { k: string; label: string; icon?: IconName }[];
   value: string;
   onPick: (k: string) => void;
   compact?: boolean;
   dark?: boolean;
+  /** 每一格左右留白。默认 12（compact 时 10）；工作台的「风格 / 收藏」是 14。 */
+  pad?: number;
   style?: React.CSSProperties;
 }) {
   return (
@@ -666,7 +668,7 @@ export function Segment({
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               height: compact ? 28 : 30,
-              padding: compact ? '0 10px' : '0 12px', border: 0, borderRadius: compact ? 8 : 9,
+              padding: `0 ${pad ?? (compact ? 10 : 12)}px`, border: 0, borderRadius: compact ? 8 : 9,
               background: on ? (dark ? 'rgba(255,255,255,.16)' : 'var(--surface-1)') : 'transparent',
               boxShadow: on && !dark ? '0 1px 2px rgba(24,23,21,.08)' : 'none',
               color: on
@@ -675,7 +677,7 @@ export function Segment({
               fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
             }}
           >
-            {o.icon && <Icon name={o.icon} size={15} />}
+            {o.icon && <Icon name={o.icon} size={o.icon === 'phone' || o.icon === 'monitor' ? 15 : 14} />}
             {o.label}
           </button>
         );
