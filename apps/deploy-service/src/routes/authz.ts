@@ -3,6 +3,7 @@ import { API_BASE } from '@ispace/contracts';
 import type { SessionClaims } from '@ispace/auth';
 import type { Sql } from '@ispace/db';
 import { readResourceSession } from '../services/resource-session.js';
+import { resolveAppAccess } from '../services/app-access.js';
 
 /**
  * 静态页面的访问鉴权（Caddy forward_auth 的落点）。
@@ -61,52 +62,24 @@ export function registerAuthzRoutes(
     }
     const [, owner, slug] = m as unknown as [string, string, string];
 
-    const [row] = await sql<
-      { app_id: string; owner_id: string; visibility: string; status: string }[]
-    >`
-      SELECT a.id AS app_id, a.owner_id, a.visibility, a.status
-        FROM ispace.apps a
-        JOIN ispace.users u ON u.id = a.owner_id
-       WHERE u.username = ${owner} AND a.slug = ${slug}
-         AND u.status <> 'archived'
-    `;
+    /*
+      判定本身在 services/app-access.ts —— 换令牌那条路（routes/play.ts）
+      用的是同一个函数。访问控制有两份实现，迟早有一份落后，而落后的那份
+      不会报错，它只是多放进来一些人。
+    */
+    const claims = await readResourceSession(req, sql, verifySession);
+    const access = await resolveAppAccess(sql, owner, slug, claims);
 
-    // 库里没有这个页面：可能是刚被回收、也可能是有人在猜路径。
-    // 一律 404，不区分——区分了就等于告诉对方"这个路径是存在的"。
-    if (!row || row.status === 'stopped') {
+    if (access.kind === 'ok') return reply.status(200).send();
+    if (access.kind === 'notfound') {
       return reply.status(404).type('text/html; charset=utf-8').send(page404());
     }
-
-    const claims = await readResourceSession(req, sql, verifySession);
-
-    // 没登录：跳登录页，带上 redirect 让人登完回到原地。
-    // 直接 401 会让同事点开分享链接时看到一片空白，不知道该干什么。
-    if (!claims) {
+    if (access.kind === 'login') {
+      // 跳登录页，带上 redirect 让人登完回到原地。直接 401 会让同事点开
+      // 分享链接时看到一片空白，不知道该干什么。
       const back = encodeURIComponent(uri || `/${owner}/${slug}/`);
       return reply.status(302).header('location', `${publicBase}/?redirect=${back}`).send();
     }
-
-    // 本人 / 管理员：直接放行
-    if (claims.uid === row.owner_id || claims.role === 'admin') {
-      return reply.status(200).send();
-    }
-
-    /*
-      全公司可见：任何登录用户都能看。
-      仍要求登录——平台是内网的，但"登录过"至少让访问可追溯到人。
-    */
-    if (row.visibility === 'public') return reply.status(200).send();
-
-    // 指定同事：得有一条已接受的分享
-    if (row.visibility === 'shared') {
-      const [share] = await sql`
-        SELECT 1 FROM ispace.shares
-         WHERE app_id = ${row.app_id} AND to_user_id = ${claims.uid} AND status = 'accepted'
-         LIMIT 1
-      `;
-      if (share) return reply.status(200).send();
-    }
-
     return reply.status(403).type('text/html; charset=utf-8').send(page403(owner));
   });
 

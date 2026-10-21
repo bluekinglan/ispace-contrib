@@ -3,7 +3,7 @@ import { exploreBucket, type Interest } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api, type Listing } from './api';
 import { Segment } from './detail';
-import { appHref, deviceOf, fmt, initial, washOf, type Device } from './wall';
+import { appHref, deviceOf, fmt, initial, usePlayUrl, washOf, type Device } from './wall';
 import { Cover } from './wall';
 
 /**
@@ -289,12 +289,17 @@ export function ForYou({
 }
 
 function Frame({ item, tint }: { item: Listing; tint: string }) {
+  /* 试玩走令牌地址，不是 /{owner}/{slug}/——见 wall.tsx 的 usePlayUrl */
+  const play = usePlayUrl(item);
   if (item.status === 'stopped') {
     return <Cover src={item.cover_path} label={`${item.name} · 已停用`} tint={tint} radius={0} />;
   }
+  if (!play) {
+    return <Cover src={item.cover_path} label={item.name} tint={tint} radius={0} />;
+  }
   return (
     <iframe
-      src={appHref(item)}
+      src={play}
       title={item.name}
       sandbox="allow-scripts allow-forms allow-popups"
       style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: tint }}

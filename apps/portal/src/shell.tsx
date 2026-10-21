@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { User } from '@ispace/contracts';
 import { Icon, Mark, Wordmark, type IconName } from '@ispace/ui';
 import { api, type PendingShare } from './api';
@@ -11,7 +11,7 @@ import { initial, washOf } from './wall';
  *
  * ┌─ 为什么整站共用一个外壳 ──────────────────────────────────────────┐
  * │ 改版前的门户是「我的页面 / 创意市场」两个 tab 顶在页面上方；新稿把   │
- * │ 导航挪到左侧，探索、为你推荐、创建、我的作品是四个平级的地方，侧栏  │
+ * │ 导航挪到左侧，探索、为你推荐、iDo、我的作品是四个平级的地方，侧栏  │
  * │ 在它们之间不重绘。所以外壳必须在路由之上，而不是每屏各画一条。      │
  * └──────────────────────────────────────────────────────────────────┘
  *
@@ -22,16 +22,23 @@ import { initial, washOf } from './wall';
 export type NavKey = 'explore' | 'foryou' | 'create' | 'mine';
 
 /**
- * 四个平级的地方。
+ * 「iDo」跟 Wordmark 用同一副字样：同一个 --font-sans、同样 700、同样
+ * -.02em 的字距。它和「探索」「我的作品」不是一类东西——那两个是地方的
+ * 名字，iDo 是这个产品让你做事的那个入口，稿上也是按字标画的。
  *
- * 「创建」叫 iDo，而且比另外三项**大一号也重一档**（16px/700 对 14px/500）：
- * 新稿把侧栏底下那颗「一句话做页面」的橙色大按钮删了，入口只剩这一行——
- * 它要自己顶住那个位置。两处是同一件事的两个做法，不是少了一个按钮。
+ * 不直接复用 Wordmark 组件：它写死了文案 iSPACE 和 color: var(--text-heading)，
+ * 而导航项选中与否要换色。这里只取它的字样。
  */
-const NAV: { key: NavKey; label: string; icon: IconName; href: string; big?: boolean }[] = [
+const BRAND_LABEL: CSSProperties = {
+  fontFamily: 'var(--font-sans)',
+  fontWeight: 700,
+  letterSpacing: '-.02em',
+};
+
+const NAV: { key: NavKey; label: string; icon: IconName; href: string }[] = [
   { key: 'explore', label: '探索', icon: 'compass', href: '/' },
   { key: 'foryou', label: '为你推荐', icon: 'sparkles', href: '/foryou' },
-  { key: 'create', label: 'iDo', icon: 'pen', href: '/create', big: true },
+  { key: 'create', label: 'iDo', icon: 'pen', href: '/create' },
   { key: 'mine', label: '我的作品', icon: 'grid', href: '/mine' },
 ];
 
@@ -75,32 +82,28 @@ export function Shell({
         {/*
           顶栏可有可无，**容器这一层不能变**。
 
-          原来 chrome=false 时是把 children 直接挂在 main 下面，和有顶栏时
-          的树形不一样——于是在同一屏里把 chrome 从 true 切到 false（创建屏
-          进工作台就是这样），React 认定这是两个位置，把里面的组件卸载重挂，
-          刚输入的那句话、刚开的会话全没了。实测就是这个状态。
+          原来 chrome=false 时是把 children 直接挂在 main 下面，和有顶栏时的
+          树形不一样——于是在同一屏里把 chrome 从 true 切到 false（创建屏进
+          工作台就是这样），React 认定这是两个位置，把里面的组件卸载重挂，
+          刚输入的那句话、刚开的会话全没了。实测踩过。
 
-          所以结构固定：顶栏按 chrome 决定出不出，滚动容器始终在，只换
-          overflow——自带版面的那两屏（为你推荐、创建工作台）自己管滚动。
+          ⚠️ 这一层对「为你推荐」和「创建工作台」必须是 **flex 列**：那两屏
+          的根元素用的是 `flex: 1`，父元素一换成 block 就当场失效，整屏塌成
+          内容高度（实测 637px / 900px）。普通屏仍旧是 block + overflow auto，
+          和改版前一模一样——滚动页改成 flex 列的话内容会被 flex-shrink 压扁。
         */}
         {chrome && <TopBar me={me} back={back} shares={shares} onShareDone={onShareDone} />}
         <div
           style={{
             flex: 1,
             minHeight: 0,
-            /*
-              ⚠️ 自带版面的那两屏（为你推荐、创建工作台）的根元素是 `flex: 1`
-              ——它们原先直接挂在 main 这个 flex 列下面。这一层若是 block，
-              `flex: 1` 当场失效，整屏塌成内容高度：为你推荐只占了上面大半截，
-              下面一片空白。实测踩过。
-
-              所以**只对这两屏**把这一层也变成 flex 列。普通屏仍旧是 block +
-              overflow auto，和改版前一模一样——在滚动页上改成 flex 列，内容
-              会被 flex-shrink 压扁，那是另一个坑。
-            */
             ...(chrome
               ? { overflow: 'auto' as const }
-              : { display: 'flex' as const, flexDirection: 'column' as const, overflow: 'hidden' as const }),
+              : {
+                display: 'flex' as const,
+                flexDirection: 'column' as const,
+                overflow: 'hidden' as const,
+              }),
           }}
         >
           {children}
@@ -219,56 +222,55 @@ function Sidebar({
             <NavRow
               key={n.key}
               href={n.href} label={n.label} icon={n.icon} iconSize={19}
-              on={nav === n.key} wide={wide.on} height={42} big={n.big ?? false}
+              on={nav === n.key} wide={wide.on} height={42}
+              /* iDo 是个名字，不是一句说明——跟字标同一副字样 */
+              labelStyle={n.key === 'create' ? BRAND_LABEL : undefined}
             />
           ))}
         </div>
       </div>
 
-      {wide.on && (
-        <>
-          {pinned.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '24px 12px 0' }}>
+      {/* 去掉「一句话做页面」那颗 CTA 之后，这里只剩常用列表，不必再包一层 fragment */}
+      {wide.on && pinned.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '24px 12px 0' }}>
+          <span
+            style={{
+              padding: '0 14px 6px', fontSize: 'var(--text-base)',
+              fontWeight: 'var(--weight-semibold)', letterSpacing: 'var(--tracking-label)',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            常用
+          </span>
+          {pinned.map((p) => (
+            <a
+              key={p.href}
+              href={p.href}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, width: '100%', height: 36,
+                padding: '0 14px', borderRadius: 10, background: 'transparent',
+                color: 'var(--text-secondary)', fontSize: 'var(--text-md)',
+                cursor: 'pointer', textDecoration: 'none',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-sidebar-hover)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
               <span
                 style={{
-                  padding: '0 14px 6px', fontSize: 'var(--text-base)',
-                  fontWeight: 'var(--weight-semibold)', letterSpacing: 'var(--tracking-label)',
-                  color: 'var(--text-tertiary)',
+                  width: 20, height: 20, flex: 'none', borderRadius: 6, background: washOf(p.href),
+                  color: 'var(--text-heading)', fontSize: 'var(--text-base)',
+                  fontWeight: 'var(--weight-bold)', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                常用
+                {p.letter}
               </span>
-              {pinned.map((p) => (
-                <a
-                  key={p.href}
-                  href={p.href}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10, width: '100%', height: 36,
-                    padding: '0 14px', borderRadius: 10, background: 'transparent',
-                    color: 'var(--text-secondary)', fontSize: 'var(--text-md)',
-                    cursor: 'pointer', textDecoration: 'none',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-sidebar-hover)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  <span
-                    style={{
-                      width: 20, height: 20, flex: 'none', borderRadius: 6, background: washOf(p.href),
-                      color: 'var(--text-heading)', fontSize: 'var(--text-base)',
-                      fontWeight: 'var(--weight-bold)', display: 'flex', alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    {p.letter}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {p.name}
-                  </span>
-                </a>
-              ))}
-            </div>
-          )}
-        </>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p.name}
+              </span>
+            </a>
+          ))}
+        </div>
       )}
 
       <div style={{ flex: 1, minHeight: 12 }} />
@@ -341,7 +343,7 @@ function Sidebar({
 }
 
 function NavRow({
-  href, label, icon, iconSize, on, wide, height, big = false,
+  href, label, icon, iconSize, on, wide, height, labelStyle,
 }: {
   href: string;
   label: string;
@@ -350,8 +352,8 @@ function NavRow({
   on: boolean;
   wide: boolean;
   height: number;
-  /** 大一号也重一档。眼下只有 iDo 这一项。 */
-  big?: boolean;
+  /** 个别项要自己的字样（iDo 跟字标走）。不给就用这一行默认的。 */
+  labelStyle?: CSSProperties;
 }) {
   return (
     <a
@@ -360,20 +362,24 @@ function NavRow({
       style={{
         display: 'flex', alignItems: 'center', gap: 12, width: '100%', height,
         padding: '0 14px', borderRadius: height > 38 ? 12 : 10,
-        background: on ? 'var(--nav-on-bg)' : 'transparent',
-        boxShadow: on ? 'var(--nav-on-sh)' : 'none',
-        color: on ? 'var(--nav-on-fg)' : 'var(--text-secondary)',
-        fontSize: big ? 16 : 'var(--text-md)',
-        fontWeight: big
-          ? 'var(--weight-bold)'
-          : on ? 'var(--weight-semibold)' : 'var(--weight-medium)',
+        /*
+          选中态走全站通用的那一对（--sel / --sel-fg），不再自带一套。
+          侧栏原先用的是另一对更浅的 --nav-on-*，于是同一个"当前选中"
+          在侧栏是浅橙底深橙字、在探索页的分类标签上是实心橙底白字——
+          同一件事两种长相，而 tokens.css 开头写的是"橙色承担号召性按钮
+          （--cta）和当前选中（--sel），仅此两类"。统一到 --sel。
+        */
+        background: on ? 'var(--sel)' : 'transparent',
+        color: on ? 'var(--sel-fg)' : 'var(--text-secondary)',
+        fontSize: 'var(--text-md)',
+        fontWeight: on ? 'var(--weight-semibold)' : 'var(--weight-medium)',
         cursor: 'pointer', textAlign: 'left', whiteSpace: 'nowrap', textDecoration: 'none',
       }}
       onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-sidebar-hover)'; }}
       onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
     >
       <Icon name={icon} size={iconSize} />
-      {wide && <span>{label}</span>}
+      {wide && <span style={labelStyle}>{label}</span>}
     </a>
   );
 }

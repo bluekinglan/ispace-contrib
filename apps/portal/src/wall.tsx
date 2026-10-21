@@ -1,6 +1,6 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Icon } from '@ispace/ui';
-import type { Listing } from './api';
+import { api, type Listing } from './api';
 
 /**
  * 探索墙与作者页共用的一面卡片墙（改版稿 §探索）。
@@ -48,6 +48,43 @@ export const fmt = (n: number | string): string => Number(n || 0).toLocaleString
 export type Device = 'phone' | 'pc';
 export const deviceOf = (type: string): Device => (type === 'h5' ? 'phone' : 'pc');
 export const ratioOf = (type: string): string => (deviceOf(type) === 'phone' ? '9 / 16' : '4 / 3');
+
+/**
+ * 试玩地址：换一张令牌，拿它的 url 塞 iframe。
+ *
+ * ┌─ 为什么不能直接用 appHref ──────────────────────────────────────────┐
+ * │ 预览 iframe 不给 allow-same-origin（给了等于没有沙箱），里面的文档  │
+ * │ 是 opaque origin。浏览器把它自己发出的子资源请求当作**跨站**，而会话 │
+ * │ cookie 是 SameSite=Lax —— 跨站不带。而 /{owner}/{slug}/ 下连 CSS 和 │
+ * │ 图片都要鉴权，于是 HTML 进得来、它引用的一切都被挡在登录门外。       │
+ * │ 线上实测就是一页裸 HTML：蓝色下划线链接、裂掉的图片。               │
+ * │                                                                      │
+ * │ 令牌放在路径里，相对路径的子资源天然继承它，一个 cookie 都不需要。   │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *
+ * 换令牌要一次往返，所以**没换到之前先不渲染 iframe**——返回 null，调用方
+ * 摆封面或底色。空着也比先闪一下错误页好。
+ */
+export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'> | null): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  /* 记住上一次换的是哪个作品：为你推荐是翻着看的，翻过去要换新的 */
+  const key = l ? `${l.owner_username}/${l.slug}` : '';
+  const last = useRef('');
+
+  useEffect(() => {
+    if (!l || l.status === 'stopped') { setUrl(null); return; }
+    if (last.current === key) return;
+    last.current = key;
+    setUrl(null);
+    let alive = true;
+    void api.playOpen(l.owner_username, l.slug)
+      .then((r) => { if (alive) setUrl(r.url); })
+      .catch(() => { /* 换不到就不渲染，调用方退回封面 */ });
+    return () => { alive = false; };
+  }, [key, l]);
+
+  return url;
+}
 
 export const appHref = (l: Pick<Listing, 'owner_username' | 'slug'>): string =>
   `/${l.owner_username}/${l.slug}/`;

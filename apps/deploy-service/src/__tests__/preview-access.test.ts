@@ -66,8 +66,33 @@ describe('预览的鉴权与路径边界', () => {
       ...(user ? { headers: { 'x-test-user': user } } : {}),
     });
 
-  it('没登录连门都进不去', async () => {
-    expect((await get(`/deploy/api/preview/${mine}/`)).statusCode).toBe(401);
+  /*
+    ⚠️ 判据变过一次，这三条记录的是**新**的模型，别照着旧直觉改回去。
+
+    原先文件路由上也有 requireAuth，看着更严，实际上把整个功能做死了：
+    预览 iframe 不给 allow-same-origin，里面是 opaque origin，浏览器把它
+    发出的子资源请求当跨站，SameSite=Lax 的 cookie 不带 —— 于是 HTML 进得
+    来、它引用的每个 CSS/JS/图片都 401。线上同形态的试玩屏实测就是一页
+    裸 HTML。
+
+    所以凭据改放进路径：previewId 是 24 字节随机数，相对路径的子资源天然
+    继承它。换来的代价写在明处——**拿到完整地址的人就能看**，对冲的是
+    192 位熵、60 分钟硬上限、15 分钟闲置回收，以及 no-referrer。
+  */
+  it('文件不要求登录——子资源根本带不上 cookie，要求它等于把功能做死', async () => {
+    const res = await get(`/deploy/api/preview/${mine}/`);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('嗨');
+  });
+
+  it('**子资源不带任何身份也要出得来**（这条红了就说明 requireAuth 被加回去了）', async () => {
+    const js = await get(`/deploy/api/preview/${mine}/sub/main.js`);
+    expect(js.statusCode).toBe(200);
+    expect(js.body).toBe('console.log(1)');
+  });
+
+  it('但 id 必须有效：猜一个不存在的仍然 404', async () => {
+    expect((await get('/deploy/api/preview/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/')).statusCode).toBe(404);
   });
 
   it('开预览：没登录 401；登录了给地址和令牌，且地址带末尾斜杠', async () => {
@@ -133,17 +158,24 @@ describe('预览的鉴权与路径边界', () => {
     expect(js.body).toBe('console.log(1)');
   });
 
-  it('别人的预览 id 看不到，而且和「不存在」是同一句话', async () => {
-    const notMine = await get(`/deploy/api/preview/${mine}/`, 'other');
-    const nothing = await get('/deploy/api/preview/aaaaaaaaaaaaaaaaaaaaaa/', 'other');
-    expect(notMine.statusCode).toBe(404);
-    expect(nothing.statusCode).toBe(404);
-    // 区分了就等于告诉对方这个 id 是真的
-    expect(notMine.body).toBe(nothing.body);
+  /*
+    「别人拿着 id 能不能看」这条**变了**：能。id 就是凭据，这是上面那段
+    权衡的另一面，不是漏判。真正守住边界的是：只有本人换得到 id
+    （/preview-session 要登录），而 id 猜不出来、很快过期。
+
+    下面两条钉住的是「换 id 这一步仍然只认本人」——那才是闸门所在。
+  */
+  it('换 id 那一步只认本人：kind 接口问不到别人的', async () => {
+    const his = sessions.open(other.id, 'wangkai');
+    expect((await get(`/deploy/api/preview-session/${his.id}/kind`, 'me')).statusCode).toBe(404);
   });
 
-  it('管理员也不放行——预览是没成形的草稿，不是已发布内容', async () => {
-    expect((await get(`/deploy/api/preview/${mine}/`, 'admin')).statusCode).toBe(404);
+  it('过期之后谁拿着 id 都看不了', async () => {
+    let clock = 0;
+    const s2 = new PreviewSessions(() => clock);
+    const dead = s2.open(me.id, me.username);
+    clock = 61 * 60 * 1000;
+    expect(s2.get(dead.id)).toBeNull();
   });
 
   it('过期的预览当作不存在', async () => {

@@ -343,9 +343,9 @@ function Sidebar({
                   style={{
                     display: 'flex', alignItems: 'center', gap: 12, width: '100%', height: 42,
                     padding: '0 14px', border: 0, borderRadius: 12,
-                    background: on ? 'var(--nav-on-bg)' : 'transparent',
-                    boxShadow: on ? 'var(--nav-on-sh)' : 'none',
-                    color: on ? 'var(--nav-on-fg)' : 'var(--text-secondary)',
+                    /* 与门户侧栏同一副样子，选中态一起走通用的 --sel */
+                    background: on ? 'var(--sel)' : 'transparent',
+                    color: on ? 'var(--sel-fg)' : 'var(--text-secondary)',
                     fontSize: 'var(--text-md)',
                     fontWeight: on ? 'var(--weight-semibold)' : 'var(--weight-medium)',
                     cursor: 'pointer', textAlign: 'left', whiteSpace: 'nowrap',
