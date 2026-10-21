@@ -644,23 +644,109 @@ function PillBtn({ icon, title, onClick, disabled, filled }: {
 const PillSep = () => <span style={{ width: 1, height: 14, flex: 'none', background: 'var(--border-tabby)' }} />;
 
 /**
+ * 稿上那四步：理解需求 / 设计数据表 / 写页面 / 发布前检查。
+ *
+ * ┌─ 它们在这里是**分组标签**，不是一条固定进度条 ────────────────────┐
+ * │ 稿里这四步是写死的 todo：`step > i` 就打勾，`step === i` 就转圈，   │
+ * │ 跟模型实际在做什么没有关系。照搬等于把"正在发生什么"换成一段动画， │
+ * │ 这正是上一版刻意不做它的理由。                                     │
+ * │                                                                    │
+ * │ 现在的做法是取中间那条路：**四步照画，但每一步的状态和内容都来自   │
+ * │ 真实的工具调用**。模型读了三个文件，「理解需求」下面就是那三行；    │
+ * │ 它一次都没读，这一步根本不出现——而不是摆一个永远不会亮的灰点。    │
+ * └────────────────────────────────────────────────────────────────────┘
+ *
+ * 「设计数据表」今天不会出现：平台没有建表的工具，页面是直接走 PostgREST
+ * 读写每个人自己的 schema 的。将来真有了那样的工具，把它的名字加进 tools
+ * 这一行，这一步自己就会亮起来——不需要改别的地方。
+ */
+export const STAGES: { key: string; label: string; tools: string[] }[] = [
+  {
+    key: 'understand',
+    label: '理解需求',
+    tools: ['ask_user', 'list_files', 'read_file', 'search_files', 'list_apps', 'get_quota'],
+  },
+  { key: 'data', label: '设计数据表', tools: [] },
+  {
+    key: 'write',
+    label: '写页面',
+    tools: ['write_file', 'edit_file', 'copy_file', 'delete_file', 'generate_image'],
+  },
+  {
+    key: 'check',
+    label: '发布前检查',
+    tools: ['check_publishable', 'screenshot_preview', 'request_deploy'],
+  },
+];
+
+/** 工具归到哪一步。认不出来的归「写页面」——那是干活的那一档。 */
+export function stageOf(tool: string): string {
+  return STAGES.find((st) => st.tools.includes(tool))?.key ?? 'write';
+}
+
+/**
+ * 每一步底下那行小字，由**真实调用次数**拼出来。
+ *
+ * 稿上这行写的是「拆成 3 个视图、2 张表」「6 个文件 · 手机和电脑都能用」
+ * 这类话——那是设计稿的示例文案，平台并不知道页面拆成了几个视图。能数得
+ * 准的只有工具调了几次，就只说这个。
+ */
+export function stageDetail(steps: Step[]): string {
+  const n = (...keys: string[]) => steps.filter((x) => keys.includes(x.key)).length;
+  const parts: string[] = [];
+  const push = (count: number, word: string) => { if (count) parts.push(`${word} ${count}`); };
+  push(n('read_file'), '读文件');
+  push(n('search_files'), '搜索');
+  push(n('ask_user'), '问你');
+  push(n('write_file'), '新文件');
+  push(n('edit_file'), '改动');
+  push(n('generate_image'), '配图');
+  push(n('check_publishable'), '自检');
+  push(n('screenshot_preview'), '截图');
+  return parts.join(' · ');
+}
+
+export interface Step { key: string; title: string; detail: string; done: boolean }
+
+/**
  * 「处理中… · 已完成 N 步」那一块。
  *
  * 新稿把工具调用摞进一个可收起的块里，默认展开。收起来之后只剩一行标题
  * ——这一步是对的：一次生成会调十几次工具，全摊开会把模型说的话挤没。
  */
-export function ProcessBlock({ steps, agents, busy, skill }: {
-  steps: { key: string; title: string; detail: string; done: boolean }[];
+export function ProcessBlock({ steps, agents, busy, skill, waiting }: {
+  steps: Step[];
   /** 扇出那几个 Agent。没扇出就是空的，那一段整段不画。 */
   agents: FanDir[];
   busy: boolean;
   /** 用到的技能名。眼下只有扇出会用。 */
   skill: string | null;
+  /**
+   * 正卡在一个问题上等用户回答。
+   *
+   * 稿上每一步有三态：打勾、转圈、警示。前两个我们有，第三个原本没有对应
+   * 物——而 ask_user 正好就是它：模型问了一句，在等人。这时候转圈是误导，
+   * 它并没有在算，是在等你。
+   */
+  waiting?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const [agentsOpen, setAgentsOpen] = useState(true);
+  const [shut, setShut] = useState<Record<string, true>>({});
   const n = steps.filter((s) => s.done).length + (agents.filter((a) => a.state === 'done').length ? 1 : 0);
   if (!steps.length && !agents.length) return null;
+
+  /*
+    按四步归组。只保留真有事件的那几步——没发生的事不画一个灰点占位，
+    那样又变回一条和模型无关的进度条了。
+  */
+  const groups = STAGES
+    .map((st) => ({ ...st, items: steps.filter((x) => stageOf(x.key) === st.key) }))
+    .filter((g) => g.items.length > 0);
+  const liveAt = groups.findIndex((g) => g.items.some((x) => !x.done));
+  /* 全做完但还在跑 = 模型在想下一步，算在最后一组头上，不要四步全打勾 */
+  const cur = liveAt >= 0 ? liveAt : (busy ? groups.length - 1 : -1);
+  const doneCount = groups.filter((_, i) => cur < 0 || i < cur).length;
 
   return (
     <div
@@ -683,6 +769,13 @@ export function ProcessBlock({ steps, agents, busy, skill }: {
         </span>
         <Icon name={open ? 'chevUp' : 'chevDown'} size={15} color="var(--text-tertiary)" />
       </button>
+
+      {/* 稿上那行计数。分母是**真发生过的**几步，不是写死的 4 */}
+      {groups.length > 0 && (
+        <span style={{ paddingTop: 4, fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+          {doneCount} 已完成 · {cur >= 0 ? 1 : 0} 进行中 · {Math.max(0, groups.length - doneCount - (cur >= 0 ? 1 : 0))} 待处理
+        </span>
+      )}
 
       {open && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 10 }}>
@@ -747,24 +840,76 @@ export function ProcessBlock({ steps, agents, busy, skill }: {
             </>
           )}
 
-          {steps.map((s, i) => (
-            <div key={`${s.key}-${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '5px 0' }}>
-              <Icon
-                name={s.done ? 'check' : 'rotate'}
-                size={14}
-                color={s.done ? 'var(--success)' : 'var(--tabby-orange)'}
-                style={{ marginTop: 3 }}
-              />
-              <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
-                <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-heading)' }}>{s.title}</span>
-                {s.detail && (
-                  <span className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>
-                    {s.detail}
+          {groups.map((g, gi) => {
+            const live = gi === cur;
+            const ok = cur < 0 || gi < cur;
+            const hold = live && !!waiting;
+            const sum = stageDetail(g.items);
+            const openHere = !shut[g.key];
+            return (
+              <div key={g.key} style={{ display: 'flex', flexDirection: 'column' }}>
+                <button
+                  onClick={() => setShut((m) => {
+                    const next = { ...m };
+                    if (next[g.key]) delete next[g.key]; else next[g.key] = true;
+                    return next;
+                  })}
+                  style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10, padding: '6px 0',
+                    border: 0, background: 'transparent', cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <Icon
+                    name={ok ? 'check' : hold ? 'info' : 'rotate'}
+                    size={14}
+                    color={ok ? 'var(--success)' : hold ? 'var(--warning)' : 'var(--tabby-orange)'}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span
+                      style={{
+                        fontSize: 'var(--text-base)', color: 'var(--text-heading)',
+                        fontWeight: live ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                      }}
+                    >
+                      {g.label}
+                      {hold && <span style={{ color: 'var(--text-tertiary)' }}> · 在等你</span>}
+                    </span>
+                    {sum && (
+                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>{sum}</span>
+                    )}
                   </span>
-                )}
+                  <Icon name={openHere ? 'chevUp' : 'chevDown'} size={14} color="var(--text-tertiary)" />
+                </button>
+
+                {/* 展开才是真正发生的那几行——这一步下面具体调了什么 */}
+                {openHere && g.items.map((x, i) => (
+                  <div
+                    key={`${x.key}-${i}`}
+                    style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '3px 0 3px 24px' }}
+                  >
+                    <Icon
+                      name={x.done ? 'check' : 'rotate'}
+                      size={12}
+                      color={x.done ? 'var(--success)' : 'var(--tabby-orange)'}
+                      style={{ marginTop: 3 }}
+                    />
+                    <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>{x.title}</span>
+                      {x.detail && (
+                        <span
+                          className="mono"
+                          style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}
+                        >
+                          {x.detail}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
