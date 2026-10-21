@@ -70,6 +70,17 @@ const askSchema = z.object({
    */
   model: z.string().max(64).optional(),
   effort: z.enum(['low', 'medium', 'high']).optional(),
+  /**
+   * 计划模式（改版稿「先出计划，你确认后再动手」）。
+   *
+   *   off    不开，照常做事（不传也是这个）
+   *   await  要先出计划：挂上 propose_plan，并且**真的拦住**写文件那几个工具
+   *   go     用户点头了：闸门撤掉，照着计划做
+   *
+   * 由前端传，因为这是用户自己给自己定的规矩、开关也在他手里——它要防的是
+   * 模型抢跑，不是防人，所以不需要服务端替他记住状态。
+   */
+  plan: z.enum(['off', 'await', 'go']).optional(),
   images: z
     .array(z.object({ mimeType: z.string(), dataBase64: z.string() }))
     .max(4)
@@ -304,9 +315,10 @@ export function registerAgentRoutes(
     user: User,
     clientIp: string,
     drawer: ImageGenerator | null,
-    at: { sessionId: string; workspace: string; dir: string },
+    at: { sessionId: string; workspace: string; dir: string; planGate?: boolean },
   ): ToolContext => ({
     ws: { root: at.dir, username: user.username },
+    ...(at.planGate ? { planGate: true } : {}),
     platform: {
       async getQuota() {
         const q = await getQuota(sql, user.id);
@@ -423,14 +435,22 @@ export function registerAgentRoutes(
     /* 附件存在了哪儿。前端据此把气泡里的附件换成工作区路径，刷新之后还点得开 */
     if (att) send({ type: 'attachments', files: att.saved });
 
+    /*
+      计划模式：await 时既挂上 propose_plan，也真的拦住写文件那几个工具。
+      只挂工具不拦，模型照样会先写两个文件再说——那时用户点「确认」，
+      东西已经改完了，「你确认后再动手」这句承诺就是假的。
+    */
+    const planning = input.plan === 'await';
     const session = new AgentSession({
       engine,
-      toolCtx: makeToolCtx(user, req.ip, drawer, { sessionId: sid, workspace: record.workspace, dir }),
+      toolCtx: makeToolCtx(user, req.ip, drawer, {
+        sessionId: sid, workspace: record.workspace, dir, planGate: planning,
+      }),
       connectors: await availableConnectors(user.id),
       livePreview: hasLivePreview(user.id, dir),
       canDraw,
       canSee,
-      tools: toolsFor({ canDraw, canSee }),
+      tools: toolsFor({ canDraw, canSee, canPlan: planning }),
       compact: { budgetChars: numEnv(process.env.AGENT_CONTEXT_CHARS, DEFAULT_CONTEXT_CHARS) },
       onEvent: send,
     });

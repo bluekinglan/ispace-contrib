@@ -10,7 +10,7 @@ import {
 import { Segment, ago } from './detail';
 import { usePlayUrl, type Device } from './wall';
 import {
-  AskCard, CodePane, DesignGallery, IconBtn, ProcessBlock, PublishMenu, RefineBar, TabBar,
+  AskCard, CodePane, DesignGallery, IconBtn, PlanCard, ProcessBlock, PublishMenu, RefineBar, TabBar,
   useFanout, variantAsk, type Ask, type AskOption, type FanDir, type VariantKind,
 } from './workbench';
 import { MoreMenu, SessionsMenu, VersionsMenu } from './workbench-menus';
@@ -467,7 +467,14 @@ interface Step { key: string; title: string; detail: string; done: boolean }
  * 退到哪儿。设计扇出的那几句（「基于它再出一版」）也是用户说的，但它们不开
  * 会话轮次、服务端也不为它们拍快照，撤回时不能把它们当成"上一步"。
  */
-interface Say { me: boolean; text: string; files?: ChatFile[]; ask?: true }
+interface Say {
+  me: boolean;
+  text: string;
+  files?: ChatFile[];
+  ask?: true;
+  /** 平台自己说的一句（目前只有压缩提示）。不是模型的话，样式也不一样。 */
+  sys?: true;
+}
 
 /** 最近一句真正开了一轮的用户发言。-1 表示只剩开场那句。 */
 const lastAsk = (says: Say[]) => {
@@ -819,6 +826,16 @@ function Generating({
   */
   /** 模型自己用 ask_user 问的那种。回答之后清掉。 */
   const [modelAsk, setModelAsk] = useState<Ask | null>(null);
+  /**
+   * 计划模式（改版稿「先出计划，你确认后再动手」）。
+   *
+   * planOn 是用户的开关；plan 是模型提上来、正等着他点头的那一份。
+   * 点头之后 approved 置真，这一会话后面几轮就不再拦——不然每说一句都
+   * 要重新出一次计划，那不是「先出计划」，是每句话都卡一下。
+   */
+  const [planOn, setPlanOn] = useState(false);
+  const [plan, setPlan] = useState<{ steps: string[]; note?: string } | null>(null);
+  const [planOk, setPlanOk] = useState(false);
   const fan = useFanout();
   const [pick, setPick] = useState<FanDir | null>(null);
   /* 收藏只记在这一屏里：它是"挑方向时先标一下"，不是一个要留档的东西 */
@@ -847,6 +864,8 @@ function Generating({
         text,
         images,
         choice: gen.choice,
+        /* 开着计划模式、而且这一会话还没点过头：这一轮要先出计划，并真的拦住写文件 */
+        plan: planOn ? (planOk ? 'go' : 'await') : 'off',
         sessionId: gen.sessionId,
         onSession: (id) => setGen((g) => ({ ...g, sessionId: id })),
         /* 附件存进工作区了：把 path 补到气泡里的那几张卡片上，刷新之后还点得开 */
@@ -877,11 +896,40 @@ function Generating({
             if (a) setModelAsk(a);
             return;
           }
+          /*
+            和 ask_user 同一个道理：计划不是一步工作，是一份等人看的东西。
+            摆进「处理中」那一摞会显得它还在做，而它已经停下了。
+          */
+          if (name === 'propose_plan') {
+            const steps = (Array.isArray(args.steps) ? args.steps : [])
+              .map((x) => (typeof x === 'string' ? x.trim() : ''))
+              .filter(Boolean)
+              .slice(0, 8);
+            const note = typeof args.note === 'string' && args.note.trim() ? args.note.trim() : undefined;
+            if (steps.length) setPlan(note === undefined ? { steps } : { steps, note });
+            return;
+          }
           setGen((g) => ({
             ...g,
             /* 前一步到此为止——工具是顺序调的，新的一步开始就说明上一步做完了 */
             steps: [...g.steps.map((s) => ({ ...s, done: true })), toStep(name, args)],
             site: name === 'request_deploy' && typeof args.site === 'string' ? args.site : g.site,
+          }));
+        },
+        /*
+          压缩发生了就在对话里说一句。
+          不弹 toast：它会自己消失，而这件事影响的是"它还记得多少"——
+          人回头翻对话时应该还能看见这一行。
+        */
+        onCompacted: (before, after) => {
+          const pct = before > 0 ? Math.max(1, Math.round((after / before) * 100)) : 0;
+          setGen((g) => ({
+            ...g,
+            says: [...g.says, {
+              me: false,
+              sys: true,
+              text: `已压缩以上对话内容 · 上下文 100% → ${pct}%`,
+            }],
           }));
         },
         /* 文件落盘了，右栏跟着换一版 */
@@ -1310,9 +1358,20 @@ function Generating({
             <UserBubble text={gen.text} files={gen.files} sessionId={gen.sessionId} />
 
             {gen.says.map((m, i) => (
-              m.me
-                ? <UserBubble key={i} text={m.text} files={m.files} sessionId={gen.sessionId} />
-                : <AiBubble key={i} text={m.text} files={m.files} sessionId={gen.sessionId} />
+              m.sys
+                /* 平台自己说的一句（压缩提示）：一条细线加一行小字，不占气泡 */
+                ? (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
+                    <span style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
+                    <span style={{ flex: 'none', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+                      {m.text}
+                    </span>
+                    <span style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
+                  </div>
+                )
+                : m.me
+                  ? <UserBubble key={i} text={m.text} files={m.files} sessionId={gen.sessionId} />
+                  : <AiBubble key={i} text={m.text} files={m.files} sessionId={gen.sessionId} />
             ))}
 
             {canUndo && (
@@ -1359,6 +1418,28 @@ function Generating({
           {/* 底部：问题卡片、微调条、输入框——都是"接下来你说什么" */}
           <div style={{ flex: 'none', padding: '8px 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
             {modelAsk && <AskCard ask={modelAsk} onPick={answerModel} disabled={gen.busy} />}
+
+            {plan && !gen.busy && (
+              <PlanCard
+                plan={plan}
+                onGo={() => {
+                  /*
+                    点头：闸门撤掉，并且这一会话之后几轮都不再拦。
+                    不然每说一句都要重新出一份计划，那不是「先出计划」，
+                    是每句话都卡一下。
+                  */
+                  setPlanOk(true);
+                  setPlan(null);
+                  setGen((g) => ({ ...g, says: [...g.says, { me: true, text: '按这份计划开始做' }] }));
+                  void run('按这份计划开始做', []);
+                }}
+                onEdit={() => {
+                  /* 只收起卡片，把话筒交回输入框——改意见是一句话的事 */
+                  setPlan(null);
+                  onToast('说说计划哪里要改，我让它改完再给你看一眼');
+                }}
+              />
+            )}
 
             {pick && !modelAsk && (
               <RefineBar pick={pick} busy={fan.running} onVariant={(k) => variant(pick, k)} />
@@ -1408,6 +1489,35 @@ function Generating({
                   onModel={setModel}
                   onEffort={setEffort}
                 />
+                {/*
+                  计划模式开关（改版稿「先出计划，你确认后再动手」）。
+
+                  点亮之后，服务端会真的拦住写、改、删、发布那几个工具，直到
+                  这一会话里有一份计划被点过头——不是只在提示词里说一句。
+                */}
+                <button
+                  onClick={() => {
+                    setPlanOn((v) => {
+                      const on = !v;
+                      /* 关掉再打开，就是想重新过一遍计划：之前点过的头不再算数 */
+                      if (on) { setPlanOk(false); setPlan(null); }
+                      onToast(on ? '计划模式：它会先列几步给你看，确认后才动手' : '已关掉计划模式');
+                      return on;
+                    });
+                  }}
+                  title={planOn ? '退出计划模式' : '进入计划模式：先出计划，你确认后再动手'}
+                  style={{
+                    height: 34, padding: '0 10px', flex: 'none', borderRadius: 'var(--radius-pill)',
+                    border: planOn ? 0 : '1px solid var(--border)',
+                    background: planOn ? 'var(--brand-wash)' : 'transparent',
+                    color: planOn ? 'var(--tabby-orange)' : 'var(--text-tertiary)',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    fontSize: 'var(--text-base)', cursor: 'pointer',
+                  }}
+                >
+                  <Icon name="scroll" size={15} />
+                  {planOn ? '先出计划' : '计划'}
+                </button>
                 <div style={{ flex: 1 }} />
                 <button
                   onClick={() => void sendFollow()}
@@ -1849,6 +1959,16 @@ async function streamAsk(opts: {
    * 刷新看到的仍是上一版，人会以为"改了没生效"。
    */
   onToolDone: (name: string, result: string) => void;
+  /**
+   * 上下文压过一次（compact.ts 的三档）。
+   *
+   * 服务端一直在发这个事件，前端却没接——于是长会话里悄悄发生的压缩，
+   * 用户完全看不见：他只会觉得"它好像忘了前面说过的话"。稿上那行
+   * 「已压缩以上对话内容」就是说这件事的。
+   */
+  onCompacted: (before: number, after: number) => void;
+  /** 计划模式这一轮处在哪一档。见服务端 askSchema 的 plan。 */
+  plan: 'off' | 'await' | 'go';
   /** 附件存进工作区了，给出各自的路径（与发出去的顺序一致）。 */
   onAttachments: (files: ChatFile[]) => void;
   /**
@@ -1872,6 +1992,7 @@ async function streamAsk(opts: {
       /* 空的就别传：服务端按它自己的默认来，比传一个空串让它去校验干净 */
       ...(opts.choice.model ? { model: opts.choice.model } : {}),
       ...(opts.choice.effort ? { effort: opts.choice.effort } : {}),
+      ...(opts.plan === 'off' ? {} : { plan: opts.plan }),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     }),
   });
@@ -1917,6 +2038,9 @@ async function streamAsk(opts: {
         else if (e.type === 'attachments') {
           opts.onAttachments((e.files as { name: string; mimeType: string; size: number; path: string }[])
             .map((f) => ({ name: f.name, mimeType: f.mimeType, size: f.size, path: f.path })));
+        }
+        else if (e.type === 'compacted') {
+          opts.onCompacted(Number(e.before ?? 0), Number(e.after ?? 0));
         }
         else if (e.type === 'done') opts.onDone(String(e.stopReason), Number(e.turns ?? 0));
         else if (e.type === 'error') opts.onError(String(e.message));

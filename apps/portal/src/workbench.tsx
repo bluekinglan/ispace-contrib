@@ -1471,3 +1471,84 @@ export function IconBtn({ icon, title, onClick, disabled }: {
     </button>
   );
 }
+
+/**
+ * 模型提上来、等人点头的那份计划（改版稿「先出计划，你确认后再动手」）。
+ *
+ * ┌─ 这张卡为什么是真的 ────────────────────────────────────────────────┐
+ * │ 它不只是把模型说的话排了个版。计划模式下，服务端**真的拦住**了写、  │
+ * │ 改、删、发布那几个工具（packages/agent 的 planGate）——所以你看到   │
+ * │ 这张卡的时候，工作区里一个字节都还没动。点「开始做」闸门才撤掉。     │
+ * │                                                                      │
+ * │ 只靠提示词约定的话，模型兴致一来照样先写两个文件再说，而人点「确认」 │
+ * │ 的时候东西已经改完了——那这句承诺就是假的。                          │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+export function PlanCard({ plan, onGo, onEdit }: {
+  plan: { steps: string[]; note?: string };
+  onGo: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 16px',
+        borderRadius: 16, background: 'var(--surface-1)', border: '1px solid var(--border-subtle)',
+      }}
+    >
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', color: 'var(--text-heading)' }}>
+        <Icon name="scroll" size={15} color="var(--tabby-orange)" />
+        实施计划 · 还没动手
+      </span>
+
+      <ol style={{ display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' }}>
+        {plan.steps.map((t, i) => (
+          <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span
+              className="num"
+              style={{
+                width: 20, height: 20, flex: 'none', borderRadius: 'var(--radius-pill)',
+                background: 'var(--brand-wash)', color: 'var(--tabby-orange)',
+                fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {i + 1}
+            </span>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-base)', lineHeight: 1.7, color: 'var(--text-primary)' }}>
+              {t}
+            </span>
+          </li>
+        ))}
+      </ol>
+
+      {plan.note && (
+        <span style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-tertiary)' }}>
+          {plan.note}
+        </span>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          onClick={onGo}
+          style={{
+            height: 34, padding: '0 14px', border: 0, borderRadius: 10,
+            background: 'var(--cta)', color: 'var(--cta-fg)',
+            fontSize: 'var(--text-base)', fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
+          }}
+        >
+          按这个做
+        </button>
+        <button
+          onClick={onEdit}
+          style={{
+            height: 34, padding: '0 12px', border: '1px solid var(--border)', borderRadius: 10,
+            background: 'var(--surface-1)', color: 'var(--text-secondary)',
+            fontSize: 'var(--text-base)', cursor: 'pointer',
+          }}
+        >
+          哪里要改
+        </button>
+      </div>
+    </div>
+  );
+}

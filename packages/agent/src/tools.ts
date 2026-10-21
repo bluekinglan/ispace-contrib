@@ -301,6 +301,36 @@ export const SCREENSHOT_TOOL: ToolDef = {
   },
 };
 
+/**
+ * 计划模式用的工具（改版稿「先出计划，你确认后再动手」）。
+ *
+ * ┌─ 为什么是一个工具，而不是让模型"把计划说出来" ──────────────────────┐
+ * │ 说出来的计划只是一段文字，前端认不出哪几行是计划、也就没法让人逐条 │
+ * │ 改。走工具则拿到的是结构化的 steps[]，界面可以摆成一张卡、可以回灌 │
+ * │ 修改意见，而模型这一轮也会在这里停住——它调完这个就没别的可做了。   │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+export const PLAN_TOOL: ToolDef = {
+  name: 'propose_plan',
+  description:
+    '先把要做的事列成几步给用户看，等他点头再动手。计划模式下**必须先调它**：'
+    + '没有被确认的计划之前，写文件、改文件、删文件都会被拒绝。'
+    + '列 3–6 步，每步一句话，说清楚要做什么而不是怎么写代码。'
+    + '调完就停下，不要在同一轮里接着改文件——用户要先看一眼。',
+  parameters: {
+    type: 'object',
+    properties: {
+      steps: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '按顺序的几步，每步一句话',
+      },
+      note: { type: 'string', description: '可选：一句补充说明，比如哪里还不确定' },
+    },
+    required: ['steps'],
+  },
+};
+
 export const ALL_TOOLS: ToolDef[] = [...FILE_TOOLS, ...PLATFORM_TOOLS, ASK_TOOL];
 
 /** 平台开了生图时用这一套。由服务端按配置决定传哪个（见 routes/agent.ts）。 */
@@ -312,12 +342,28 @@ export const TOOLS_WITH_IMAGE: ToolDef[] = [...ALL_TOOLS, IMAGE_TOOL];
  * 生图、截图都是"有才挂"：工具挂上去了就得真能调，调不了就别让模型看见。
  * 两个开关各自独立，所以用拼的，而不是再穷举出四个常量。
  */
-export function toolsFor(opts: { canDraw?: boolean; canSee?: boolean } = {}): ToolDef[] {
+export function toolsFor(
+  opts: { canDraw?: boolean; canSee?: boolean; canPlan?: boolean } = {},
+): ToolDef[] {
   return [
     ...ALL_TOOLS,
     ...(opts.canDraw ? [IMAGE_TOOL] : []),
     ...(opts.canSee ? [SCREENSHOT_TOOL] : []),
+    /* 不在计划模式时不挂：挂了模型会在普通对话里也先来一份计划，白绕一圈 */
+    ...(opts.canPlan ? [PLAN_TOOL] : []),
   ];
+}
+
+/** 从 propose_plan 的参数里解出计划。不成形就返回 null，当普通工具结果处理。 */
+export function parsePlan(args: Record<string, unknown>): { steps: string[]; note?: string } | null {
+  const raw = Array.isArray(args.steps) ? args.steps : [];
+  const steps = raw
+    .map((x) => (typeof x === 'string' ? x.trim() : ''))
+    .filter((x) => x.length > 0)
+    .slice(0, 8);
+  if (!steps.length) return null;
+  const note = typeof args.note === 'string' && args.note.trim() ? args.note.trim() : undefined;
+  return note === undefined ? { steps } : { steps, note };
 }
 
 /** 一个待回答的问题。前端照它画选项卡片。 */
@@ -368,7 +414,28 @@ export interface ToolContext {
     /** 截图。机器上没有 chromium 时不注入，SCREENSHOT_TOOL 也就不挂。 */
     screenshot?: (opts: { path: string; device: 'phone' | 'pc' }) => Promise<ToolImage>;
   };
+  /**
+   * 计划模式的闸门：计划还没被用户确认之前，不许动文件。
+   *
+   * ┌─ 为什么要在这里真拦，而不是只写在提示词里 ──────────────────────┐
+   * │ 「先出计划，你确认后再动手」如果只靠提示词，模型兴致一来照样会先 │
+   * │ 写两个文件再说——而用户点「确认」的时候，东西已经改完了。那这句  │
+   * │ 承诺就是假的。                                                   │
+   * │                                                                  │
+   * │ 拦在工具执行这一层，它就是真的：写、改、删、发布一律被拒，拒的   │
+   * │ 时候把该干什么告诉模型（先调 propose_plan），它自己会走回正路。   │
+   * └──────────────────────────────────────────────────────────────────┘
+   *
+   * 这不是安全边界——计划模式是用户自己给自己定的规矩，开关也在他手里。
+   * 它要防的是"模型抢跑"，不是防人。
+   */
+  planGate?: boolean;
 }
+
+/** 计划没点头之前不许用的工具。读、搜、问都不拦——那些正是做计划要用的。 */
+const PLAN_BLOCKED = new Set([
+  'write_file', 'edit_file', 'copy_file', 'delete_file', 'request_deploy', 'generate_image',
+]);
 
 /** 一张交给模型看的图。 */
 export interface ToolImage { mimeType: string; dataBase64: string }
@@ -424,6 +491,14 @@ export async function runToolOutput(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolOutput> {
+  if (ctx.planGate && PLAN_BLOCKED.has(name)) {
+    return {
+      text:
+        `现在是计划模式，用户还没确认计划，${name} 先不能用。\n`
+        + '请先调 propose_plan 把要做的几步列出来，然后停下等他点头。'
+        + '需要先看看现在有什么，read_file、list_files、search_files 都可以照常用。',
+    };
+  }
   if (name === 'screenshot_preview') {
     const shoot = ctx.platform.screenshot;
     if (!shoot) return { text: '这个平台截不了图（没有无头浏览器）。靠预览回流的报错和读代码判断。' };
