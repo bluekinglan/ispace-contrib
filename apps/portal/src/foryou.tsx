@@ -3,7 +3,7 @@ import { exploreBucket, type Interest } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api, type Listing } from './api';
 import { Segment } from './detail';
-import { appHref, deviceOf, fmt, initial, usePlayUrl, warmPlayUrl, washOf, type Device } from './wall';
+import { PHONE_RATIO, appHref, deviceOf, fmt, initial, usePlayUrl, warmPlayUrl, washOf, type Device } from './wall';
 import { Cover } from './wall';
 
 /**
@@ -209,8 +209,8 @@ export function ForYou({
           {d === 'phone' ? (
             <div
               style={{
-                /* 纵向占满；9/17 与 34 的圆角都取自新版设计稿 */
-                height: '100%', aspectRatio: '9 / 17', boxSizing: 'border-box',
+                /* 纵向占满；比例按真手机屏（PHONE_RATIO），34 的圆角取自新版设计稿 */
+                height: '100%', aspectRatio: PHONE_RATIO, boxSizing: 'border-box',
                 borderRadius: 34, overflow: 'hidden', background: '#000',
                 boxShadow: '0 0 0 1px rgba(255,255,255,.12), 0 50px 100px -30px rgba(0,0,0,.8)',
               }}

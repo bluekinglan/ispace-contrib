@@ -55,7 +55,7 @@ describe('手机页还是网页', () => {
   });
 
   it('卡片比例跟着设备走——这正是那面墙错落的来源', () => {
-    expect(ratioOf('h5')).toBe('9 / 16');
+    expect(ratioOf('h5')).toBe('390 / 844');
     expect(ratioOf('static')).toBe('4 / 3');
   });
 });

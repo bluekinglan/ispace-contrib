@@ -8,7 +8,7 @@ import {
   type AgentChoice, type AgentImage, type Effort,
 } from './composer';
 import { Segment, ago } from './detail';
-import { usePlayUrl, type Device } from './wall';
+import { PHONE_RATIO, usePlayUrl, type Device } from './wall';
 import {
   AskCard, CodePane, DesignGallery, IconBtn, PlanCard, ProcessBlock, PublishMenu, RefineBar, TabBar,
   useFanout, variantAsk, type Ask, type AskOption, type FanDir, type VariantKind,
@@ -1690,8 +1690,11 @@ function Generating({
               {dev === 'phone' ? (
                 <div
                   style={{
-                    /* 与详情、为你推荐一致：手机版纵向吃满 */
-                    height: '100%', aspectRatio: '9 / 19.5', boxSizing: 'border-box',
+                    /*
+                      与详情、为你推荐一致：手机版纵向吃满。比例给屏幕不给黑边
+                      （content-box），所以高度先让出上下两圈 padding。
+                    */
+                    height: 'calc(100% - 18px)', aspectRatio: PHONE_RATIO, boxSizing: 'content-box',
                     padding: 9, borderRadius: 44, background: '#0d0d10',
                     boxShadow: '0 40px 80px -30px rgba(0,0,0,.35)',
                   }}

@@ -47,7 +47,16 @@ export const fmt = (n: number | string): string => Number(n || 0).toLocaleString
  */
 export type Device = 'phone' | 'pc';
 export const deviceOf = (type: string): Device => (type === 'h5' ? 'phone' : 'pc');
-export const ratioOf = (type: string): string => (deviceOf(type) === 'phone' ? '9 / 16' : '4 / 3');
+/**
+ * 手机屏的宽高比：390×844（iPhone 的逻辑像素，约 9:19.5），和手机封面的截图尺寸同一个数。
+ *
+ * 原来各处各写各的：墙上 9/16、为你推荐和详情 9/17、方案卡 9/18、工作台 9/19.5。
+ * 前几个都比真手机矮一截，手机页面摆进去底下被裁掉、或者看着像平板。都从这里取。
+ * 带黑边的框把比例给屏幕（box-sizing: content-box），不给外框——外框里多出
+ * 的那圈 padding 会把屏幕挤窄。
+ */
+export const PHONE_RATIO = '390 / 844';
+export const ratioOf = (type: string): string => (deviceOf(type) === 'phone' ? PHONE_RATIO : '4 / 3');
 
 /**
  * 试玩地址：换一张令牌，拿它的 url 塞 iframe。

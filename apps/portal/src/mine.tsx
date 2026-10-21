@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { App, User } from '@ispace/contracts';
 import { Icon } from '@ispace/ui';
 import { api, type InstalledApp, type PendingShare } from './api';
-import { Cover, initial, washOf } from './wall';
+import { Cover, PHONE_RATIO, initial, washOf } from './wall';
 
 /**
  * 我的作品（改版稿 §我的作品）。
@@ -324,7 +324,7 @@ function MineCard({
             <span
               style={{
                 position: 'absolute', top: '7%', bottom: '7%', left: '50%', transform: 'translateX(-50%)',
-                aspectRatio: '390 / 844', boxSizing: 'border-box', padding: 4, borderRadius: 18,
+                aspectRatio: PHONE_RATIO, boxSizing: 'content-box', padding: 4, borderRadius: 18,
                 background: '#111', boxShadow: '0 16px 32px -18px rgba(0,0,0,.5)', pointerEvents: 'none',
               }}
             >

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Comment, CommentSort, User } from '@ispace/contracts';
 import { Icon, copyText, type IconName } from '@ispace/ui';
 import { api, type Listing } from './api';
-import { AuthorChip, Cover, appHref, deviceOf, fmt, initial, usePlayUrl, washOf, type Device } from './wall';
+import { AuthorChip, Cover, PHONE_RATIO, appHref, deviceOf, fmt, initial, usePlayUrl, washOf, type Device } from './wall';
 
 /**
  * 应用详情（改版稿 §应用详情）。
@@ -165,8 +165,8 @@ export function Detail({
           {dev === 'phone' ? (
             <div
               style={{
-                /* 不封高：手机版纵向占满这一区，宽度由 9/17 自己算 */
-                position: 'relative', height: '100%', aspectRatio: '9 / 17',
+                /* 不封高：手机版纵向占满这一区，宽度按真手机屏的比例自己算 */
+                position: 'relative', height: '100%', aspectRatio: PHONE_RATIO,
                 borderRadius: 34, overflow: 'hidden',
                 boxShadow: '0 30px 60px -36px rgba(24,23,21,.45)',
               }}

@@ -4,6 +4,7 @@ import { api } from './api';
 import { Markdown, rawUrl } from './chat';
 import { CodeView, FileBadge, isImage, langOf } from './code-view';
 import { Segment } from './detail';
+import { PHONE_RATIO } from './wall';
 
 /**
  * 创建 · 工作台（新稿 §创建 · 工作台）的零件。
@@ -488,8 +489,10 @@ function DirCard({ d, pc, on, fav, previewUrl, genBusy, fanBusy, onPick, onVary,
       <div
         onClick={() => ready && !genBusy && onPick(d)}
         style={{
-          position: 'relative', width: '100%', aspectRatio: pc ? '16 / 10' : '9 / 18',
-          boxSizing: 'border-box', padding: pc ? 0 : 7, borderRadius: pc ? 14 : 30,
+          /* 手机：比例给屏幕不给黑边（content-box），见 PHONE_RATIO */
+          position: 'relative', width: pc ? '100%' : 'calc(100% - 14px)',
+          aspectRatio: pc ? '16 / 10' : PHONE_RATIO,
+          boxSizing: 'content-box', padding: pc ? 0 : 7, borderRadius: pc ? 14 : 30,
           background: pc ? 'var(--surface-1)' : '#0d0d10',
           boxShadow: on
             ? '0 0 0 3px var(--tabby-orange), 0 24px 48px -28px rgba(24,23,21,.45)'
