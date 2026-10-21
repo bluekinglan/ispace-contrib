@@ -64,6 +64,23 @@ export async function screenshotCover(
           '--hide-scrollbars',
           '--force-device-scale-factor=1',
           `--window-size=${SHOT_W},${SHOT_H}`,
+          /*
+            ⚠️ 这一行是封面好不好看的分水岭。
+
+            file:// 下每个文件都是**各自独立的 opaque origin**，于是
+            `<script type="module" src="./assets/index.js">` 会被当成跨源请求
+            挡掉——Vite / VitePress 这类构建产物的脚本一个都不跑，样式也多半
+            是脚本注进去的，截出来就是一页裸 HTML：蓝色下划线链接、左上角
+            堆着导航文字。线上好几个作品的封面就是这个样子，一直没人看出来
+            那是封面而不是页面本身。
+
+            加上它之后同一个产物截出来就是真实页面（实测 ximengkai/life：
+            340 KB 的裸 HTML → 377 KB 的完整首屏）。
+
+            安全上这一下只放开"这个一次性无头进程能读本地文件"，而它截的本来
+            就是平台自己刚写进磁盘的产物；进程截完即退，不碰网络。
+          */
+          '--allow-file-access-from-files',
           // 给 JS/字体/动画一点落定时间再截，又不至于让它无限等
           '--virtual-time-budget=2500',
           `--screenshot=${outPngPath}`,

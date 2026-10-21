@@ -67,21 +67,34 @@ export const ratioOf = (type: string): string => (deviceOf(type) === 'phone' ? '
  */
 export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'> | null): string | null {
   const [url, setUrl] = useState<string | null>(null);
-  /* 记住上一次换的是哪个作品：为你推荐是翻着看的，翻过去要换新的 */
   const key = l ? `${l.owner_username}/${l.slug}` : '';
-  const last = useRef('');
+  const status = l?.status ?? '';
 
+  /*
+    ⚠️ 依赖只能是 key 与 status 这两个**字符串**，不能有 l 这个对象。
+
+    原来写的是 `[key, l]` 再加一个 `last.current === key` 的守卫。那套组合有
+    一个必然的竞态：调用方几乎总会在这一次换令牌的往返里重渲染一次（列表
+    到了、喜欢数变了、翻页动画跑完），`l` 是每次渲染新造的对象，于是 effect
+    重跑 → 清理函数把 alive 置成 false → 而守卫又让它不再发第二次请求。
+    结果那个已经成功的响应被丢掉，url 永远停在 null，调用方一直摆封面。
+
+    线上表现就是"大部分作品的试玩框是空的"，而且时灵时不灵——取决于那一次
+    重渲染有没有赶在响应之前。实测如此。
+
+    依赖换成两个字符串之后，同一个作品不会重复换令牌（key 没变 effect 不
+    重跑），换了作品才重新换——守卫也就不需要了。
+  */
   useEffect(() => {
-    if (!l || l.status === 'stopped') { setUrl(null); return; }
-    if (last.current === key) return;
-    last.current = key;
-    setUrl(null);
+    if (!key || status === 'stopped') { setUrl(null); return; }
     let alive = true;
-    void api.playOpen(l.owner_username, l.slug)
+    setUrl(null);
+    const [owner, slug] = key.split('/');
+    void api.playOpen(owner!, slug!)
       .then((r) => { if (alive) setUrl(r.url); })
       .catch(() => { /* 换不到就不渲染，调用方退回封面 */ });
     return () => { alive = false; };
-  }, [key, l]);
+  }, [key, status]);
 
   return url;
 }
