@@ -139,10 +139,13 @@ export class Snapshots {
     return { written, removed };
   }
 
-  /** 删掉一张（撤回用过的那张就该删，下一次撤回才会再往前退一步）。 */
-  async drop(seq: number): Promise<void> {
-    await rm(this.manifestPath(seq), { force: true });
-    await this.gc();
+  /**
+   * 删掉几张（撤回用过的那张就该删，下一次撤回才会再往前退一步；退回到更早
+   * 的某一版时，它之后的那几张也一起作废）。
+   */
+  async drop(...seqs: number[]): Promise<void> {
+    for (const seq of seqs) await rm(this.manifestPath(seq), { force: true });
+    if (seqs.length) await this.gc();
   }
 
   // ── 内部 ────────────────────────────────────────────────────────────

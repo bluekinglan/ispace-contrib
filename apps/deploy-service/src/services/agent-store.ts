@@ -26,6 +26,16 @@ export interface AgentSessionRecord {
   updatedAt: number;
 }
 
+/** 会话列表里的一行（「历史版本」那个下拉）。不带整段消息——几十条会话的历史一起拉回来太重。 */
+export interface AgentSessionSummary {
+  id: string;
+  workspace: string;
+  slug: string | null;
+  updatedAt: number;
+  /** 第一条用户消息的原文，前端据此取标题。 */
+  first: string;
+}
+
 export interface AgentStore {
   get(id: string): Promise<AgentSessionRecord | null>;
   create(r: { id: string; userId: string; workspace: string; slug?: string | null }): Promise<AgentSessionRecord>;
@@ -36,6 +46,8 @@ export interface AgentStore {
   latestWorkspace(userId: string): Promise<string | null>;
   /** 清掉这么久没动过的会话。返回清了几条。 */
   prune(olderThanMs: number): Promise<number>;
+  /** 这个人最近的会话，新的在前。一句话都没说过的（开了创建屏就走了）不算。 */
+  listForUser(userId: string, limit: number): Promise<AgentSessionSummary[]>;
 }
 
 /** 会话保留多久。工作区文件本身不受影响，这里清的只是对话历史。 */
@@ -96,6 +108,17 @@ export class MemoryAgentStore implements AgentStore {
     let n = 0;
     for (const [k, r] of this.rows) if (r.updatedAt < cut) { this.rows.delete(k); n += 1; }
     return n;
+  }
+
+  async listForUser(userId: string, limit: number) {
+    return [...this.rows.values()]
+      .filter((r) => r.userId === userId && r.messages.length > 0)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id, workspace: r.workspace, slug: r.slug, updatedAt: r.updatedAt,
+        first: r.messages.find((m) => m.role === 'user')?.content ?? '',
+      }));
   }
 
   get size(): number { return this.rows.size; }
@@ -179,6 +202,20 @@ export class PgAgentStore implements AgentStore {
        ORDER BY updated_at DESC LIMIT 1
     `;
     return rows[0]?.workspace ?? null;
+  }
+
+  async listForUser(userId: string, limit: number) {
+    /* 只取第一条消息的 content，不把整段 jsonb 拉回来 */
+    const rows = await this.sql<{ id: string; workspace: string; slug: string | null; updated_at: Date; first: string | null }[]>`
+      SELECT id, workspace, slug, updated_at, messages->0->>'content' AS first
+        FROM ispace.agent_sessions
+       WHERE user_id = ${userId} AND jsonb_array_length(messages) > 0
+       ORDER BY updated_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: r.id, workspace: r.workspace, slug: r.slug, updatedAt: r.updated_at.getTime(), first: r.first ?? '',
+    }));
   }
 
   async prune(olderThanMs: number) {
