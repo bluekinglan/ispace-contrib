@@ -790,6 +790,11 @@ export function registerAgentRoutes(
       name: z.string().max(32).optional(),
       /** 地址已有别的页面时，确认要覆盖它。 */
       overwrite: z.boolean().optional(),
+      /**
+       * 主要在哪儿看。phone → apps.type = 'h5'：封面按手机截、卡片按手机摆、
+       * 在电脑上打开套手机框。不给就保持这个页面原来的类型。
+       */
+      device: z.enum(['phone', 'pc']).optional(),
     }).parse(req.body);
 
     const rec = await sw.owned(user, input.sessionId);
@@ -852,6 +857,7 @@ export function registerAgentRoutes(
       name: input.name,
       source: 'agent',
       clientIp: req.ip,
+      ...(input.device ? { type: input.device === 'phone' ? 'h5' as const : 'static' as const } : {}),
     });
 
     /* 这段对话 Agent 之前签过的令牌就作废了——发的就是它们要发的东西 */

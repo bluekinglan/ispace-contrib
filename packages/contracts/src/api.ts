@@ -57,7 +57,8 @@ export const deployRequestSchema = z.object({
   /** 首次部署时用于建应用；后续可省略，保持原值。 */
   name: z.string().min(1).max(32).optional(),
   description: z.string().max(200).optional(),
-  type: appTypeSchema.default('static'),
+  /** 不给就保持这个页面原来的类型（新建时是 static）。给了 default 的话，每次不带 type 的重发都会把手机页面冲回电脑。 */
+  type: appTypeSchema.optional(),
   source: z.enum(['mcp', 'cli', 'agent', 'console']),
 });
 export type DeployRequest = z.infer<typeof deployRequestSchema>;

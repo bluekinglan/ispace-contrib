@@ -90,7 +90,92 @@ const STYLES = `
 @media (max-width: 640px) { .path, .who { display: none; } }
 `;
 
+// ── 手机页面在电脑上打开：套手机框 ──────────────────────────────────
+/**
+ * 手机页面（发布时标成 h5 的）在电脑上打开，按手机尺寸套一个框显示。
+ *
+ * 原来在电脑上打开就是撑满整个窗口的"电脑版"——手机页面在这个宽度下要么
+ * 被拉成一条大横幅，要么一条窄栏两边大片空白，作者想给人看的那个手机上的
+ * 样子反而看不到。线上年会抽奖就是这样。
+ *
+ * 只在真电脑上套（够宽 + 有鼠标）；手机、平板、App 壳里原样显示。已经在
+ * 框里（这个手机框里、平台的预览框里）就不再套。地址后加 ?ispace_full=1
+ * 可以看电脑宽度的样子，框下面那颗按钮就是它。
+ */
+const FULL_PARAM = 'ispace_full';
+/** 框里那份页面的地址标记。浏览器不许 iframe 装和祖先一模一样的地址（防无限嵌套）。 */
+const IN_PHONE_PARAM = 'ispace_in_phone';
+
+function shouldFramePhone(): boolean {
+  if (window.self !== window.top) return false;
+  if (/ iSpaceApp\//.test(navigator.userAgent)) return false;
+  const q = new URLSearchParams(location.search);
+  if (q.has(FULL_PARAM) || q.has(IN_PHONE_PARAM)) return false;
+  return matchMedia('(min-width: 768px) and (hover: hover) and (pointer: fine)').matches;
+}
+
+const PHONE_STYLES = `
+:host { all: initial; position: fixed; inset: 0; z-index: 2147483646;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  background: #ecebe6; color: #545659;
+  font: 400 13px/1.4 -apple-system, "PingFang SC", "Noto Sans SC", system-ui, sans-serif; }
+.phone { height: min(844px, calc(100vh - 88px)); aspect-ratio: 390 / 844; box-sizing: border-box;
+  padding: 10px; border-radius: 46px; background: #111;
+  box-shadow: 0 40px 80px -30px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.2); }
+.screen { display: block; width: 100%; height: 100%; border: 0; border-radius: 36px; background: #fff; }
+.cap { display: flex; align-items: center; gap: 10px; }
+.cap a { color: #1c1f23; text-decoration: none; border: 1px solid rgba(0,0,0,.12);
+  border-radius: 8px; padding: 4px 10px; background: #fff; }
+.cap a:hover { border-color: rgba(0,0,0,.24); }
+`;
+
+function framePhone(app: string): void {
+  /*
+    先把外面这份页面自己的脚本拦下：shell.js 对手机页面是放在 <head> 最前面
+    同步加载的，此刻页面的脚本一个都还没跑。不拦的话外面藏着的这份和框里
+    那份会各跑一遍——音效、计时器、存储写两次。拦不住的浏览器（不认脚本插入
+    的 CSP meta）也只是多跑一遍、看不见，不影响框里那份。
+  */
+  const csp = document.createElement('meta');
+  csp.httpEquiv = 'Content-Security-Policy';
+  csp.content = "script-src 'none'";
+  const hide = document.createElement('style');
+  hide.textContent = 'html{overflow:hidden!important}body{display:none!important}';
+  (document.head ?? document.documentElement).prepend(csp, hide);
+
+  const host = document.createElement('ispace-phone');
+  const shadow = host.attachShadow({ mode: 'closed' });
+  const style = document.createElement('style');
+  style.textContent = PHONE_STYLES;
+
+  const phone = document.createElement('div');
+  phone.className = 'phone';
+  const screen = document.createElement('iframe');
+  screen.className = 'screen';
+  const inner = new URL(location.href);
+  inner.searchParams.set(IN_PHONE_PARAM, '1');
+  screen.src = inner.href;
+  screen.title = document.title || app;
+  screen.allow = 'autoplay; clipboard-write; fullscreen; microphone; camera; geolocation';
+  phone.append(screen);
+
+  const cap = document.createElement('div');
+  cap.className = 'cap';
+  const full = new URL(location.href);
+  full.searchParams.set(FULL_PARAM, '1');
+  const wide = document.createElement('a');
+  wide.href = full.href;
+  wide.textContent = '按电脑宽度打开';
+  cap.append(document.createTextNode('这是手机页面，按手机尺寸显示'), wide);
+
+  shadow.append(style, phone, cap);
+  document.documentElement.append(host);
+}
+
 (function ispaceChrome() {
+  /* 只有同步执行的这一刻拿得到。手机页面靠它上面的 data-device 认出来 */
+  const thisScript = document.currentScript as HTMLScriptElement | null;
+
   // 幂等：SPA 反复注入或用户手工引了两次也只渲染一个
   if ((window as unknown as Record<string, unknown>).__ispaceChrome) return;
   Object.defineProperty(window, '__ispaceChrome', { value: true, writable: false });
@@ -100,6 +185,12 @@ const STYLES = `
   const seg = location.pathname.split('/').filter(Boolean);
   if (seg.length < 2) return;
   const [owner, app] = seg as [string, string];
+
+  /* 手机页面在电脑上：外面这层只负责套框，访问量与 header 都交给框里那份 */
+  if (thisScript?.dataset.device === 'phone' && shouldFramePhone()) {
+    framePhone(app);
+    return;
+  }
 
   /*
     访问量：一次页面加载打一下，不分是不是在原生壳的 WebView 里——

@@ -1099,8 +1099,8 @@ const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 102
  * 间来回切时会跟着内容挪，而发布是与当前看哪一页无关的事。
  */
 export function PublishMenu({
-  published, url, username, site, onSite, siteOk, vis, setVis, canPublish, notReady, publishing,
-  onPublish, onMine, onToast, onClose,
+  published, url, username, site, onSite, siteOk, device, onDevice, vis, setVis, canPublish, notReady,
+  publishing, onPublish, onMine, onToast, onClose,
 }: {
   published: boolean;
   url: string;
@@ -1109,6 +1109,12 @@ export function PublishMenu({
   site: string;
   onSite: (s: string) => void;
   siteOk: boolean;
+  /**
+   * 主要在哪儿看。手机 → 封面按手机截、卡片按手机摆、在电脑上打开套手机框。
+   * 原来没有这一项，工作台发出去的一律当电脑页面——H5 也是。
+   */
+  device: 'phone' | 'pc';
+  onDevice: (d: 'phone' | 'pc') => void;
   vis: 'private' | 'shared' | 'public';
   setVis: (v: 'private' | 'shared' | 'public') => void;
   canPublish: boolean;
@@ -1203,6 +1209,18 @@ export function PublishMenu({
         </div>
       ) : (
         <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>主要在哪儿看</span>
+            <Segment
+              options={[
+                { k: 'phone', label: '手机', icon: 'phone' },
+                { k: 'pc', label: '电脑', icon: 'monitor' },
+              ]}
+              value={device}
+              onPick={(k) => onDevice(k as 'phone' | 'pc')}
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)' }}
+            />
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>谁能看</span>
             <Segment

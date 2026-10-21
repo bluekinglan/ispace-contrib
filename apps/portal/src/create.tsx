@@ -687,6 +687,11 @@ function Generating({
     先填上；人改过之后就以人的为准，模型再提也不覆盖。
   */
   const [siteDraft, setSiteDraft] = useState(gen.site ?? '');
+  /*
+    主要在哪儿看。没挑过就跟着预览的「手机 / 电脑」走——人一直在手机框里看的
+    页面，多半就是手机页面。挑过就以挑的为准。
+  */
+  const [pubDevice, setPubDevice] = useState<Device | null>(null);
   const siteTouched = useRef(false);
   useEffect(() => {
     if (!siteTouched.current && gen.site) setSiteDraft(gen.site);
@@ -996,7 +1001,7 @@ function Generating({
     let taken: string | null = null;
     try {
       const r = await api.agentPublishSession({
-        sessionId: gen.sessionId, site: siteDraft, name: gen.title,
+        sessionId: gen.sessionId, site: siteDraft, name: gen.title, device: pubDevice ?? dev,
         ...(overwrite ? { overwrite: true } : {}),
       });
       /*
@@ -1410,6 +1415,8 @@ function Generating({
               <PublishMenu
                 published={gen.publishedUrl !== null}
                 url={url}
+                device={pubDevice ?? dev}
+                onDevice={setPubDevice}
                 vis={vis}
                 setVis={setVis}
                 username={me.username}

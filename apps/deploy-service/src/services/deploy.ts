@@ -142,7 +142,7 @@ export class DeployService {
       name: input.name ?? slug,
       description: input.description ?? null,
       sourcePrompt: input.sourcePrompt ?? null,
-      type: input.type ?? 'static',
+      ...(input.type ? { type: input.type } : {}),
     });
 
     const version = await nextVersion(this.sql, app.id);
@@ -200,7 +200,7 @@ export class DeployService {
       }
 
       // ── 注入平台 chrome ─────────────────────────────────────────
-      await injectShellScript(indexPath);
+      await injectShellScript(indexPath, { device: app.type === 'h5' ? 'phone' : 'pc' });
 
       // ── 落地并切换 ──────────────────────────────────────────────
       const dest = releaseDir(this.storage, user.username, slug, stamp);
@@ -237,7 +237,7 @@ export class DeployService {
       // 刷新就有图；失败则维持 null，卡片回落字母块。
       if (!cover && coverShotAvailable()) {
         const outPng = join(dest, AUTO_COVER_FILE);
-        void screenshotCover(join(dest, 'index.html'), outPng)
+        void screenshotCover(join(dest, 'index.html'), outPng, app.type === 'h5' ? 'phone' : 'pc')
           .then(async (ok) => {
             if (!ok) return;
             // 回写前再确认没有新版本抢先声明了封面：并发发布时后完成的截图
@@ -342,9 +342,9 @@ export class DeployService {
   async backfillCovers(): Promise<{ scanned: number; filled: number }> {
     const { readdirSync } = await import('node:fs');
     const rows = await this.sql<
-      { id: string; slug: string; username: string; stamp: string }[]
+      { id: string; slug: string; username: string; stamp: string; type: string }[]
     >`
-      SELECT a.id, a.slug, u.username, r.path AS stamp
+      SELECT a.id, a.slug, u.username, r.path AS stamp, a.type
         FROM ispace.apps a
         JOIN ispace.users u    ON u.id = a.owner_id
         JOIN ispace.releases r ON r.id = a.current_release_id
@@ -361,7 +361,7 @@ export class DeployService {
         const base = `/${row.username}/${row.slug}/`;
         let cover = extractCover(html, readdirSync(dir), base);
         if (!cover && coverShotAvailable()) {
-          const ok = await screenshotCover(indexPath, join(dir, AUTO_COVER_FILE));
+          const ok = await screenshotCover(indexPath, join(dir, AUTO_COVER_FILE), row.type === 'h5' ? 'phone' : 'pc');
           if (ok) cover = `${base}${AUTO_COVER_FILE}`;
         }
         if (cover) {

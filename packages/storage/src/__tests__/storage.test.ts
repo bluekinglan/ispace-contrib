@@ -115,6 +115,31 @@ describe('shell.js 注入', () => {
   });
 });
 
+describe('shell.js 注入：手机页面', () => {
+  /*
+    手机页面在电脑上打开要套手机框，套框得赶在页面自己的脚本跑起来之前把它们
+    拦下——所以这一行放 <head> 最前面、不 defer，并带上 data-device="phone"。
+  */
+  it('放在 <head> 最前面、同步加载、带设备标记', async () => {
+    const f = join(tmp(), 'index.html');
+    writeFileSync(f, '<!doctype html><html><head><title>抽奖</title><script src="app.js"></script></head><body></body></html>');
+    expect(await injectShellScript(f, { device: 'phone' })).toBe(true);
+    const out = readFileSync(f, 'utf8');
+    const tag = '<script data-ispace-shell data-device="phone" src="/platform/shell.js"></script>';
+    expect(out).toContain(tag);
+    expect(out.indexOf(tag)).toBeLessThan(out.indexOf('<title>'));
+    expect(out.indexOf(tag)).toBeLessThan(out.indexOf('app.js'));
+    expect(out).not.toMatch(/data-device="phone"[^>]*defer/);
+  });
+
+  it('电脑页面照旧：defer，放在 </head> 前', async () => {
+    const f = join(tmp(), 'index.html');
+    writeFileSync(f, '<html><head><title>x</title></head><body></body></html>');
+    await injectShellScript(f, { device: 'pc' });
+    expect(readFileSync(f, 'utf8')).toContain('<script data-ispace-shell src="/platform/shell.js" defer></script>\n</head>');
+  });
+});
+
 describe('shell.js 摘除（从线上版本反推工作区用）', () => {
   // 三种注入位置 × </head>、<body> 前后有没有换行
   const originals = [
@@ -130,6 +155,14 @@ describe('shell.js 摘除（从线上版本反推工作区用）', () => {
     const f = join(tmp(), 'index.html');
     writeFileSync(f, orig);
     await injectShellScript(f);
+    expect(readFileSync(f, 'utf8')).not.toBe(orig);
+    expect(stripShellScript(readFileSync(f, 'utf8'))).toBe(orig);
+  });
+
+  it.each(originals)('手机页面那一行也摘得回逐字节相同：%j', async (orig) => {
+    const f = join(tmp(), 'index.html');
+    writeFileSync(f, orig);
+    await injectShellScript(f, { device: 'phone' });
     expect(readFileSync(f, 'utf8')).not.toBe(orig);
     expect(stripShellScript(readFileSync(f, 'utf8'))).toBe(orig);
   });

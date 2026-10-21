@@ -400,7 +400,9 @@ export const api = {
    * iDo 工作台的发布：发这段对话的工作区，不要令牌——人在界面前点这一下就是确认。
    * 地址被自己另一个页面占着时回 ALREADY_EXISTS，明说 overwrite 才覆盖。
    */
-  agentPublishSession: (body: { sessionId: string; site?: string; name?: string; overwrite?: boolean }) =>
+  agentPublishSession: (body: {
+    sessionId: string; site?: string; name?: string; overwrite?: boolean; device?: 'phone' | 'pc';
+  }) =>
     post<{ app: App; url: string }>('/agent/publish-session', body),
 
   /**

@@ -109,6 +109,21 @@ describe('工作台发布：点了就发，不要令牌', () => {
     expect(deployed[deployed.length - 1]!.slug).toBe('zhoubao');
   });
 
+  /*
+    原来工作台发出去的一律是电脑页面（type = static）——H5 也是，于是封面是一张
+    电脑版、在电脑上打开也是撑满的电脑版。现在发布时说一声在哪儿看。
+  */
+  it('选了手机就按手机页面发（h5）；选电脑是 static；不选保持原样', async () => {
+    const { sid } = await sessionWithPage();
+    await post('/agent/publish-session', { sessionId: sid, site: 'nianhui', device: 'phone' });
+    expect(deployed[deployed.length - 1]!.type).toBe('h5');
+    await post('/agent/publish-session', { sessionId: sid, device: 'pc' });
+    expect(deployed[deployed.length - 1]!.type).toBe('static');
+    await post('/agent/publish-session', { sessionId: sid });
+    expect(deployed[deployed.length - 1]!.type).toBeUndefined();
+    expect((await post('/agent/publish-session', { sessionId: sid, device: 'tablet' })).statusCode).toBe(422);
+  });
+
   it('没登录不行；别人的会话不行', async () => {
     const { sid } = await sessionWithPage();
     const n = deployed.length;

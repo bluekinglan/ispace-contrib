@@ -314,11 +314,30 @@ function MineCard({
         }}
       >
         <Cover
-          src={cover}
-          label={`${name} · ${type === 'h5' ? '手机截图' : '网页截图'}`}
+          /* 手机页面的封面是竖的（390×844），塞进 4:3 会被裁成中间一截——装进下面那台小手机 */
+          src={type === 'h5' ? null : cover}
+          label={type === 'h5' && cover ? '' : `${name} · ${type === 'h5' ? '手机截图' : '网页截图'}`}
           tint={washOf(tintKey)}
           radius={18}
         >
+          {type === 'h5' && cover && (
+            <span
+              style={{
+                position: 'absolute', top: '7%', bottom: '7%', left: '50%', transform: 'translateX(-50%)',
+                aspectRatio: '390 / 844', boxSizing: 'border-box', padding: 4, borderRadius: 18,
+                background: '#111', boxShadow: '0 16px 32px -18px rgba(0,0,0,.5)', pointerEvents: 'none',
+              }}
+            >
+              <img
+                src={cover}
+                alt=""
+                style={{
+                  display: 'block', width: '100%', height: '100%', objectFit: 'cover',
+                  objectPosition: 'top', borderRadius: 14,
+                }}
+              />
+            </span>
+          )}
           {type === 'h5' && (
             <span
               style={{

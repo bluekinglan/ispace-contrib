@@ -29,6 +29,18 @@ const CHROMIUM = process.env.ISPACE_CHROMIUM_PATH ?? '/usr/bin/chromium-browser'
 const SHOT_W = 1200;
 const SHOT_H = 675;
 
+/**
+ * 手机页面（apps.type = 'h5'）按手机的视口截：390×844 CSS 像素、2 倍图。
+ *
+ * 原来不分页面一律按 1200 宽截，手机页面在这个宽度下要么是撑满的电脑版，
+ * 要么是一条居中的窄栏两边大片留白——卡片上看不出它在手机上长什么样。
+ * 线上年会抽奖就是这样：明明是 H5，封面是一张电脑版。
+ */
+export type ShotDevice = 'pc' | 'phone';
+const sizeFlags = (device: ShotDevice): string[] => (device === 'phone'
+  ? ['--force-device-scale-factor=2', '--window-size=390,844']
+  : ['--force-device-scale-factor=1', `--window-size=${SHOT_W},${SHOT_H}`]);
+
 /** 同时最多两个 chromium。发版不频繁，这个上限只防"一串发布挤爆内存"。 */
 const MAX_CONCURRENT = 2;
 let running = 0;
@@ -48,6 +60,7 @@ export function coverShotAvailable(): boolean {
 export async function screenshotCover(
   indexHtmlPath: string,
   outPngPath: string,
+  device: ShotDevice = 'pc',
 ): Promise<boolean> {
   if (!coverShotAvailable()) return false;
   if (running >= MAX_CONCURRENT) return false;
@@ -65,12 +78,13 @@ export async function screenshotCover(
       去掉预算之后那四个 12 秒就截出来了，但也不能干脆不要它：没有它的话
       异步渲染的页面会被截成一片空白。所以是"先讲究，不行再将就"。
     */
-    const budgeted = [...SHOT_FLAGS, '--virtual-time-budget=2500'];
+    const flags = [...SHOT_FLAGS, ...sizeFlags(device)];
+    const budgeted = [...flags, '--virtual-time-budget=2500'];
     if (await runChromium(budgeted, indexHtmlPath, outPngPath, FAST_MS)) {
       await chmod(outPngPath, 0o644);
       return true;
     }
-    if (await runChromium(SHOT_FLAGS, indexHtmlPath, outPngPath, PATIENT_MS)) {
+    if (await runChromium(flags, indexHtmlPath, outPngPath, PATIENT_MS)) {
       await chmod(outPngPath, 0o644);
       return true;
     }
@@ -89,8 +103,7 @@ const SHOT_FLAGS = [
   '--disable-gpu',
   '--disable-dev-shm-usage', // 容器 /dev/shm 很小，不加会因共享内存不足崩
   '--hide-scrollbars',
-  '--force-device-scale-factor=1',
-  `--window-size=${SHOT_W},${SHOT_H}`,
+  /* 视口与倍率按页面是手机还是电脑定，见 sizeFlags */
   /*
     ⚠️ 这一行是封面好不好看的分水岭。
 

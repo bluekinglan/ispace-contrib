@@ -227,6 +227,12 @@ export async function upsertApp(
             ${input.sourcePrompt ?? null})
     ON CONFLICT (owner_id, slug) DO UPDATE SET
       name          = EXCLUDED.name,
+      /*
+        给了类型才改。原来重新发布根本不碰 type，于是一个页面第一次按电脑发了，
+        之后怎么重发都还是电脑——想改成手机页面（h5）没有路。没给的调用方
+        （CLI、MCP 的老写法）保持原样，不会被默认的 'static' 冲掉。
+      */
+      type          = COALESCE(${input.type ?? null}, ispace.apps.type),
       description   = COALESCE(EXCLUDED.description, ispace.apps.description),
       source_prompt = COALESCE(EXCLUDED.source_prompt, ispace.apps.source_prompt),
       status        = 'building',

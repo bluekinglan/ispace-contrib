@@ -310,12 +310,28 @@ const SHELL_MARKER = 'data-ispace-shell';
 /** 注入的就是这一行，一个字都不变——stripShellScript 靠它逐字摘回去。改它就得同时改下面三种写法。 */
 const SHELL_TAG = `<script ${SHELL_MARKER} src="${SHELL_SCRIPT_SRC}" defer></script>`;
 
-export async function injectShellScript(indexHtmlPath: string): Promise<boolean> {
+/**
+ * 手机页面（apps.type = 'h5'）注入的那一行。
+ *
+ * 和普通页面差在两处：带 data-device="phone"，并且**不 defer、放在 <head>
+ * 最前面**。shell.js 据此在电脑上把页面套进手机框（见 apps/shell-js 的
+ * framePhone）；要放最前面，是因为套框时得赶在页面自己的脚本跑起来之前
+ * 把它们拦下——否则外面这份页面和框里那份会各跑一遍（音效、计时器、
+ * 存储写两次）。stripShellScript 的正则按 data-ispace-shell 认，这一行也摘得掉。
+ */
+const PHONE_SHELL_TAG = `<script ${SHELL_MARKER} data-device="phone" src="${SHELL_SCRIPT_SRC}"></script>`;
+
+export async function injectShellScript(
+  indexHtmlPath: string,
+  opts: { device?: 'phone' | 'pc' } = {},
+): Promise<boolean> {
   const html = await readFile(indexHtmlPath, 'utf8');
   if (html.includes(SHELL_MARKER)) return false;
 
   let out: string;
-  if (/<\/head>/i.test(html)) {
+  if (opts.device === 'phone') {
+    out = injectFirst(html, PHONE_SHELL_TAG);
+  } else if (/<\/head>/i.test(html)) {
     out = html.replace(/<\/head>/i, `  ${SHELL_TAG}\n</head>`);
   } else if (/<body[^>]*>/i.test(html)) {
     out = html.replace(/(<body[^>]*>)/i, `$1\n  ${SHELL_TAG}`);
@@ -325,6 +341,18 @@ export async function injectShellScript(indexHtmlPath: string): Promise<boolean>
   }
   await writeFile(indexHtmlPath, out, 'utf8');
   return true;
+}
+
+/** 插在页面最前面的脚本位：head → html → doctype 之后。插到 doctype 前面会进怪异模式。 */
+function injectFirst(html: string, tag: string): string {
+  for (const re of [/<head[^>]*>/i, /<html[^>]*>/i, /<!doctype[^>]*>/i]) {
+    const m = re.exec(html);
+    if (m) {
+      const at = m.index + m[0].length;
+      return `${html.slice(0, at)}\n  ${tag}${html.slice(at)}`;
+    }
+  }
+  return `${tag}\n${html}`;
 }
 
 /**
@@ -345,7 +373,11 @@ export async function injectShellScript(indexHtmlPath: string): Promise<boolean>
  */
 export function stripShellScript(html: string): string {
   let out = html;
-  for (const form of [`  ${SHELL_TAG}\n`, `\n  ${SHELL_TAG}`, `${SHELL_TAG}\n`, SHELL_TAG]) {
+  for (const form of [
+    `  ${SHELL_TAG}\n`, `\n  ${SHELL_TAG}`, `${SHELL_TAG}\n`, SHELL_TAG,
+    /* 手机页面那一行（injectFirst 的两种写法） */
+    `\n  ${PHONE_SHELL_TAG}`, `${PHONE_SHELL_TAG}\n`,
+  ]) {
     if (out.includes(form)) {
       out = out.replace(form, '');
       break;
