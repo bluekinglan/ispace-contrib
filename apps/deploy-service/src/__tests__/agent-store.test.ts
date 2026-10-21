@@ -68,6 +68,20 @@ function contract(name: string, make: () => Promise<AgentStore>, tick: () => Pro
       expect(await s.workspaceForSlug(U1, 'zhoubao')).toBe('w-old');
       expect(await s.latestWorkspace(U1)).toBe('w-old');
     });
+
+    it('会话列表：只列本人、说过话的，新的在前，带第一句话', async () => {
+      const s = await make();
+      await s.create({ id: sid(30), userId: U2, workspace: 'empty' }); // 一句话没说
+      await tick();
+      await s.create({ id: sid(31), userId: U2, workspace: 'a' });
+      await s.save(sid(31), { messages: [{ role: 'user', content: '做个排班表' }, { role: 'assistant', content: '好' }] });
+      await tick();
+      await s.create({ id: sid(32), userId: U2, workspace: 'b' });
+      await s.save(sid(32), { messages: [{ role: 'user', content: '午饭吃什么' }] });
+      const list = await s.listForUser(U2, 10);
+      expect(list.map((r) => [r.id, r.first])).toEqual([[sid(32), '午饭吃什么'], [sid(31), '做个排班表']]);
+      expect(await s.listForUser(U2, 1)).toHaveLength(1);
+    });
   });
 }
 

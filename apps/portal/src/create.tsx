@@ -13,6 +13,7 @@ import {
   AskCard, CodePane, DesignGallery, IconBtn, ProcessBlock, PublishMenu, RefineBar, TabBar,
   useFanout, variantAsk, type Ask, type AskOption, type FanDir, type VariantKind,
 } from './workbench';
+import { MoreMenu, SessionsMenu, VersionsMenu } from './workbench-menus';
 
 /**
  * 创建（改版稿 §创建 / §创建 · 生成）。
@@ -58,6 +59,45 @@ export function Create({
   const [gen, setGen] = useState<Gen | null>(() => (initialDraft ? null : loadGen(me.username)));
 
   /*
+    换了一条会话就整个重挂工作台：预览会话、设计扇出、问答卡片这些都绑在
+    「这一个页面」上，留着上一个的会把两个页面混在一起。不拿 sessionId 当
+    key——新开的会话 id 是第一句话之后才到的，那一下重挂会让第一句话再发一遍。
+  */
+  const [genKey, setGenKey] = useState(0);
+
+  /**
+   * 切到一条已有的会话（「历史版本」里点的、「复制为新页面」刚建的）：对话流
+   * 从服务端拿回来，文件本来就在它的工作区里。
+   */
+  const openSession = async (id: string, opts: { forkOf?: string } = {}) => {
+    try {
+      const v = await api.agentSessionView(id);
+      const [first, ...rest] = v.says;
+      setGen((cur) => ({
+        text: first?.me ? first.text : '',
+        images: [],
+        title: opts.forkOf ? `${opts.forkOf}（副本）`.slice(0, 20) : v.title,
+        /* 发布过的就沿用那个 slug，再发布是覆盖它而不是新建 */
+        site: v.slug,
+        confirmToken: null,
+        sessionId: v.id,
+        choice: cur?.choice ?? { model: '', effort: null },
+        files: first?.me ? first.files : undefined,
+        steps: [],
+        says: (first?.me ? rest : v.says).map((m) => (m.me ? { ...m, ask: true as const } : m)),
+        busy: false,
+        /* 打开来是为了接着改：右边摆实时预览，不摆线上地址 */
+        publishedUrl: null,
+        /* 第一句话早就说过了，挂上去不要再发 */
+        restored: true,
+      }));
+      setGenKey((k) => k + 1);
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : '没能打开这个页面');
+    }
+  };
+
+  /*
     又带进来一句话（探索页的输入框、「做同款」）：回到开场那一屏，把这句话
     摆进输入框——和原来整页进来时一样。正在做的那一个例外：模型还在跑，
     这时候换掉就是把它半路扔下，先留着它，说一声。
@@ -70,6 +110,7 @@ export function Create({
     if (!initialDraft || !gen) return;
     if (gen.busy) { onToast('这一个还在做，做完点「新对话」再开新的——那句话已经放进输入框了'); return; }
     setGen(null);
+    setGenKey((k) => k + 1);
   }, [draftSeq, initialDraft, gen, onToast]);
   useEffect(() => { onWorkbench(gen !== null); }, [gen, onWorkbench]);
 
@@ -87,13 +128,15 @@ export function Create({
   return gen
     ? (
       <Generating
+        key={genKey}
         me={me}
         gen={gen}
         /* 收窄成「拿着当前的 Gen 算一个新的」：Generating 里不存在 gen 为空的情形 */
         setGen={(fn) => setGen((g) => (g ? fn(g) : g))}
         onMine={onMine}
         onToast={onToast}
-        onFresh={() => { saveGen(me.username, null); setGen(null); }}
+        onFresh={() => { saveGen(me.username, null); setGen(null); setGenKey((k) => k + 1); }}
+        onOpen={(id, opts) => void openSession(id, opts)}
       />
     )
     : (
@@ -608,19 +651,8 @@ function useViewportWidth(): number {
   return w;
 }
 
-/**
- * 还没接上的那几颗（新稿顶栏的「历史版本 / 版本记录」「更多」）。
- *
- * 按钮照稿摆着，点了说清楚它将来是什么、现在为什么还不行——和「添加内容」
- * 里那四项同一个处理。
- */
-const NOT_YET = {
-  history: '版本记录还没接上。要退回上一步，用左上角的「撤回这一步」',
-  more: '「更多」里的复制项目、导出代码、删除还没接上',
-};
-
 function Generating({
-  me, gen, setGen, onMine, onToast, onFresh,
+  me, gen, setGen, onMine, onToast, onFresh, onOpen,
 }: {
   me: User;
   gen: Gen;
@@ -629,6 +661,8 @@ function Generating({
   onToast: (t: string) => void;
   /** 放下这一个，回到「今天想做个什么页面？」。工作区里的文件不动。 */
   onFresh: () => void;
+  /** 切到另一条会话（历史版本、复制为新页面）。 */
+  onOpen: (id: string, opts?: { forkOf?: string }) => void;
 }) {
   const [dev, setDev] = useState<Device>('phone');
   const [vis, setVis] = useState<'private' | 'shared' | 'public'>('private');
@@ -1024,9 +1058,12 @@ function Generating({
     onFresh();
   };
 
-  /* 分享的是正式地址。没发布之前没有别人打得开的地址，不复制一个会 404 的出去 */
+  /*
+    分享的是正式地址。没发布之前没有别人打得开的地址——不复制一个会 404 的出去，
+    而是直接把发布菜单打开：想分享，下一步就是发布。
+  */
   const share = () => {
-    if (!gen.publishedUrl) { onToast('还没发布：发布之后才有能分享的地址'); return; }
+    if (!gen.publishedUrl) { setPubOpen(true); onToast('还没发布：发布之后这里一点就复制地址'); return; }
     void copyText(gen.publishedUrl).then((ok) => onToast(ok ? '地址已复制，发给同事就能打开' : gen.publishedUrl!));
   };
 
@@ -1037,9 +1074,17 @@ function Generating({
     allow-same-origin。拿到顶层窗口去开就没有这层沙箱了——一段还没过发布前
     扫描的、模型刚写的脚本，会以门户的身份跑起来。
   */
+  const stage = useRef<HTMLDivElement | null>(null);
   const openFull = () => {
-    if (!gen.publishedUrl) { onToast('发布之后才能在新窗口打开——预览里的代码还没过发布前的安全扫描'); return; }
-    window.open(gen.publishedUrl, '_blank', 'noopener');
+    if (gen.publishedUrl) { window.open(gen.publishedUrl, '_blank', 'noopener'); return; }
+    /*
+      没发布之前全屏这一栏：预览还在原来那个沙箱 iframe 里，只是占满屏幕，Esc
+      退出。不开新窗口的理由见上面那段——顶层窗口里没有这层沙箱。
+    */
+    const el = stage.current;
+    if (!el?.requestFullscreen) { onToast('这个浏览器不支持全屏'); return; }
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void el.requestFullscreen().catch(() => onToast('没能进入全屏'));
   };
 
   const waiting = modelAsk !== null;
@@ -1087,12 +1132,7 @@ function Generating({
             </span>
             <IconBtn icon="plus" title={gen.busy ? '等这一轮做完' : '新对话'} onClick={newChat} disabled={gen.busy} />
             <div style={{ flex: 1 }} />
-            <IconBtn
-              icon="history"
-              title={gen.busy ? '等这一轮做完再撤回' : '撤回这一步'}
-              onClick={() => void undo()}
-              disabled={!canUndo}
-            />
+            <SessionsMenu currentId={gen.sessionId} busy={gen.busy} onOpen={(id) => onOpen(id)} />
             <IconBtn icon="forward" title="分享" onClick={share} />
           </div>
 
@@ -1224,7 +1264,7 @@ function Generating({
       )}
 
       {/* ── 右：预览 / 代码 / 设计 ───────────────────────────────── */}
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-1)' }}>
+      <div ref={stage} style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-1)' }}>
         <div
           style={{
             height: 56, flex: 'none', display: 'flex', alignItems: 'center', gap: 6, padding: '0 14px',
@@ -1236,12 +1276,28 @@ function Generating({
             title={chatShown ? '收起对话' : '显示对话'}
             onClick={() => setChatShown((v) => !v)}
           />
-          <IconBtn icon="expand" title="新窗口打开" onClick={openFull} />
+          <IconBtn icon="expand" title={gen.publishedUrl ? '新窗口打开' : '全屏预览（Esc 退出）'} onClick={openFull} />
           <span style={{ width: 1, height: 18, margin: '0 6px', flex: 'none', background: 'var(--border-tabby)' }} />
           <TabBar cur={tab} onPick={setTab} labels={vw >= 1180 || !chatShown} />
           <div style={{ flex: 1, minWidth: 0 }} />
-          <IconBtn icon="history" title="版本记录" onClick={() => onToast(NOT_YET.history)} />
-          <IconBtn icon="more" title="更多" onClick={() => onToast(NOT_YET.more)} />
+          <VersionsMenu
+            sessionId={gen.sessionId}
+            busy={gen.busy}
+            onToast={onToast}
+            onRestored={(r) => {
+              const short = r.label.length > 16 ? `${r.label.slice(0, 16)}…` : r.label;
+              onToast(`退回到「${short}」之前了${r.left ? `，前面还有 ${r.left} 步` : ''}`);
+              /* 对话截回了服务端那一刻，照服务端重新摆一遍，免得和文件对不上 */
+              if (gen.sessionId) onOpen(gen.sessionId);
+            }}
+          />
+          <MoreMenu
+            sessionId={gen.sessionId}
+            title={gen.title}
+            busy={gen.busy}
+            onToast={onToast}
+            onFork={(id) => { onToast('复制好了，这是新的一份'); onOpen(id, { forkOf: gen.title }); }}
+          />
 
           <div style={{ position: 'relative', flex: 'none' }}>
             {pubOpen && (

@@ -1,17 +1,25 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { cp, stat } from 'node:fs/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
 import { safePath, Snapshots } from '@ispace/agent';
 import { z } from 'zod';
+import type { AgentSessionRecord } from '../services/agent-store.js';
 import type { SessionWorkspaces } from '../services/session-workspace.js';
+import { sessionTitle, toView } from '../services/session-view.js';
+import { zipDir } from '../services/zip.js';
 
 /**
  * 创建屏 harness 的几条周边接口（docs/specs/2026-10-21-agent-harness.md）：
  *
- *   POST /agent/session          开一条会话、一个工作区
- *   POST /agent/undo             撤回这一步
- *   GET  /agent/workspace/raw    工作区里一个文件的原始字节（附件预览、生成的图）
+ *   POST /agent/session            开一条会话、一个工作区
+ *   GET  /agent/sessions           我最近的会话（左上角「历史版本」）
+ *   GET  /agent/session/:id        一条会话的对话流，点开历史会话时摆回来
+ *   POST /agent/session/:id/fork   复制成一个新页面（「更多 → 复制为新页面」）
+ *   GET  /agent/versions           这条会话的每一步快照（右上角「版本记录」）
+ *   POST /agent/restore            退回到某一步之前；POST /agent/undo 是退一步的特例
+ *   GET  /agent/workspace/raw      工作区里一个文件的原始字节（附件预览、生成的图）
+ *   GET  /agent/workspace/zip      整个工作区打成 zip（「更多 → 导出代码」）
  *
  * 和对话本身（routes/agent.ts 的 /agent/ask）分开放，是因为它们都不碰模型：
  * 只是会话、工作区、快照三样东西的增删查。
@@ -43,40 +51,142 @@ export function registerAgentHarnessRoutes(
 ): void {
   const { requireAuth, sessionWorkspaces: sw, isBusy } = deps;
 
+  /** 这条会话必须存在、必须是本人的。 */
+  async function mine(user: User, sessionId: string): Promise<AgentSessionRecord> {
+    const r = await sw.owned(user, sessionId);
+    if (!r) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个会话。');
+    return r;
+  }
+
+  /** 正在跑一轮的会话不许动它的工作区——快照、复制都会和正在写的文件打架。 */
+  function notBusy(sessionId: string, message: string): void {
+    /* 契约里没有"冲突"这个码；这确实是一次此刻不能做的请求 */
+    if (isBusy(sessionId)) throw new IspaceError(ERROR_CODES.INVALID_INPUT, message);
+  }
+
   app.post(`${API_BASE}/agent/session`, async (req) => {
     const user = await requireAuth(req);
     const r = await sw.begin(user);
     return { sessionId: r.id };
   });
 
+  /** 历史会话最多列这么多条。再往前的，人多半也不记得是什么了。 */
+  const MAX_SESSIONS = 30;
+
   /**
-   * 撤回这一步。
+   * 我最近的会话（左上角「历史版本」）。
    *
-   * 退到这条会话最近拍的那张快照（每一轮开工前拍，见 routes/agent.ts），文件
-   * 和对话一起退：只退文件的话，模型还记得自己"已经把标题改成红色了"，下一
-   * 句话它会接着一个不存在的改动往下说。
-   *
-   * 用过的快照随即删掉，所以连点几次就是一步步往前退。
+   * 会话落库之前这个下拉没法做——会话活在内存里，一次部署就没了。现在每条会话
+   * 带着自己的工作区和完整对话，点开就能接着做。
    */
+  app.get(`${API_BASE}/agent/sessions`, async (req) => {
+    const user = await requireAuth(req);
+    const rows = await sw.store.listForUser(user.id, MAX_SESSIONS);
+    return {
+      items: rows.map((r) => ({ id: r.id, title: sessionTitle(r.first), slug: r.slug, updatedAt: r.updatedAt })),
+    };
+  });
+
+  /** 一条会话的对话流（给人看的那份，见 services/session-view.ts）。 */
+  app.get(`${API_BASE}/agent/session/:id`, async (req) => {
+    const user = await requireAuth(req);
+    const r = await mine(user, (req.params as { id: string }).id);
+    return {
+      id: r.id, slug: r.slug, updatedAt: r.updatedAt,
+      title: sessionTitle(r.messages.find((m) => m.role === 'user')?.content ?? ''),
+      says: toView(r.messages),
+    };
+  });
+
+  /**
+   * 复制成一个新页面：文件原样拷进一个新工作区，对话从头开始。
+   *
+   * 对话不跟着拷：新页面要往哪儿改是一件新的事，把旧页面的十几轮来回带过去，
+   * 模型会以为还在改原来那个。文件都在，它 list_files 一下就知道现在有什么。
+   * 快照也不拷——它们记的是另一条会话的步骤，撤回不该退到别人的历史里去。
+   */
+  app.post(`${API_BASE}/agent/session/:id/fork`, async (req) => {
+    const user = await requireAuth(req);
+    const src = await mine(user, (req.params as { id: string }).id);
+    notBusy(src.id, '这一轮还在做，等它停下来再复制。');
+    const next = await sw.begin(user);
+    await cp(sw.ws.dir(user.username, src.workspace), sw.ws.dir(user.username, next.workspace), {
+      recursive: true,
+      filter: (p) => !/[\\/](node_modules|\.git)([\\/]|$)/.test(p),
+    }).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; });
+    return { sessionId: next.id };
+  });
+
+  /** 这条会话的每一步（右上角「版本记录」），新的在前。 */
+  app.get(`${API_BASE}/agent/versions`, async (req) => {
+    const user = await requireAuth(req);
+    const { sessionId } = z.object({ sessionId: z.string().min(1).max(64) }).parse(req.query);
+    const r = await mine(user, sessionId);
+    const items = (await snapshotsFor(sw, user.username, r.workspace).list())
+      .filter((m) => m.sessionId === sessionId)
+      .reverse()
+      .map((m) => ({ seq: m.seq, label: m.label, at: m.at }));
+    return { items };
+  });
+
+  /**
+   * 退回到第 seq 步之前：文件回到那一步开工前的样子，对话截回那一刻，那一步和
+   * 它之后的快照全部作废（它们记的是已经不存在的未来）。
+   *
+   * 文件和对话一起退：只退文件的话，模型还记得自己"已经把标题改成红色了"，下一
+   * 句话它会接着一个不存在的改动往下说。
+   */
+  async function restoreTo(user: User, record: AgentSessionRecord, seq: number | 'last') {
+    notBusy(record.id, '这一轮还在做，等它停下来再撤回。');
+    const snaps = snapshotsFor(sw, user.username, record.workspace);
+    const own = (await snaps.list()).filter((m) => m.sessionId === record.id);
+    const target = seq === 'last' ? own.at(-1) : own.find((m) => m.seq === seq);
+    if (!target) {
+      throw new IspaceError(ERROR_CODES.NOT_FOUND, seq === 'last' ? '没有可以撤回的步骤了。' : '没有这一步的记录了。');
+    }
+    const r = await snaps.restore(target.seq);
+    await sw.store.save(record.id, { messages: record.messages.slice(0, target.messageCount) });
+    await snaps.drop(...own.filter((m) => m.seq >= target.seq).map((m) => m.seq));
+    const left = own.filter((m) => m.seq < target.seq).length;
+    return { label: target.label, written: r.written, removed: r.removed, left };
+  }
+
+  app.post(`${API_BASE}/agent/restore`, async (req) => {
+    const user = await requireAuth(req);
+    const { sessionId, seq } = z.object({
+      sessionId: z.string().min(1).max(64), seq: z.number().int().positive(),
+    }).parse(req.body);
+    return restoreTo(user, await mine(user, sessionId), seq);
+  });
+
+  /** 撤回这一步：退回到最近那一步之前。连点就一步步往前退。 */
   app.post(`${API_BASE}/agent/undo`, async (req) => {
     const user = await requireAuth(req);
     const { sessionId } = z.object({ sessionId: z.string().min(1).max(64) }).parse(req.body);
-    const record = await sw.owned(user, sessionId);
-    if (!record) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个会话。');
-    if (isBusy(sessionId)) {
-      /* 契约里没有"冲突"这个码；这确实是一次此刻不能做的请求 */
-      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '这一轮还在做，等它停下来再撤回。');
-    }
+    return restoreTo(user, await mine(user, sessionId), 'last');
+  });
 
-    const snaps = snapshotsFor(sw, user.username, record.workspace);
-    const last = await snaps.lastFor(sessionId);
-    if (!last) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有可以撤回的步骤了。');
-
-    const r = await snaps.restore(last.seq);
-    await sw.store.save(sessionId, { messages: record.messages.slice(0, last.messageCount) });
-    await snaps.drop(last.seq);
-    const left = (await snaps.list()).filter((m) => m.sessionId === sessionId).length;
-    return { label: last.label, written: r.written, removed: r.removed, left };
+  /**
+   * 整个工作区打成 zip（「更多 → 导出代码」）。
+   *
+   * 不打平台草稿与附件（顶层 _ 开头）、node_modules、.git——和发布链路认的"页面产物"
+   * 是同一条线：导出来的就是发布出去的那些东西，人拿回去能原样跑。
+   */
+  app.get(`${API_BASE}/agent/workspace/zip`, async (req, reply) => {
+    const user = await requireAuth(req);
+    const q = z.object({ sessionId: z.string().min(1).max(64), name: z.string().max(60).optional() }).parse(req.query);
+    const r = await mine(user, q.sessionId);
+    const buf = await zipDir(sw.ws.dir(user.username, r.workspace), (rel) => {
+      const first = rel.split('/')[0] ?? '';
+      return !first.startsWith('_') && !/(^|\/)(node_modules|\.git)(\/|$)/.test(rel);
+    });
+    if (!buf) throw new IspaceError(ERROR_CODES.NOT_FOUND, '工作区还是空的，没有可导出的文件。');
+    const base = (q.name || r.slug || 'ispace-page').replace(/[\\/:*?"<>|]/g, '_');
+    return reply
+      .header('content-type', 'application/zip')
+      .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(base)}.zip`)
+      .header('cache-control', 'private, no-store')
+      .send(buf);
   });
 
   /**
