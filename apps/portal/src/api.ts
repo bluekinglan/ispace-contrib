@@ -359,6 +359,27 @@ export const api = {
    */
   agentUndo: (sessionId: string) =>
     post<{ label: string; written: number; removed: number; left: number }>('/agent/undo', { sessionId }),
+  /** 我最近的会话（左上角「历史版本」）。一句话都没说过的不列。 */
+  agentSessions: () => get<{
+    items: { id: string; title: string; slug: string | null; updatedAt: number }[];
+  }>('/agent/sessions'),
+  /** 一条会话的对话流（给人看的那份），点开历史会话时摆回工作台。 */
+  agentSessionView: (id: string) => get<{
+    id: string; slug: string | null; title: string; updatedAt: number;
+    says: { me: boolean; text: string; files?: { name: string; mimeType: string; size: number; path: string }[] }[];
+  }>(`/agent/session/${encodeURIComponent(id)}`),
+  /** 复制为新页面：文件拷进新工作区，对话从头开始。 */
+  agentFork: (id: string) => post<{ sessionId: string }>(`/agent/session/${encodeURIComponent(id)}/fork`, {}),
+  /** 这条会话的每一步快照（右上角「版本记录」），新的在前。 */
+  agentVersions: (sessionId: string) => get<{ items: { seq: number; label: string; at: number }[] }>(
+    `/agent/versions?sessionId=${encodeURIComponent(sessionId)}`,
+  ),
+  /** 退回到第 seq 步之前：文件与对话一起退，之后的步骤作废。 */
+  agentRestore: (sessionId: string, seq: number) =>
+    post<{ label: string; written: number; removed: number; left: number }>('/agent/restore', { sessionId, seq }),
+  /** 「更多 → 导出代码」的下载地址。同源、带登录态，直接给 <a download>。 */
+  workspaceZipUrl: (sessionId: string, name: string) =>
+    `${BASE}/agent/workspace/zip?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(name)}`,
   /** 工作区文件树（工作台「代码」页）。扁平路径表，前端自己摞成树。 */
   workspaceTree: (sessionId?: string | null) => get<{ entries: { path: string; dir: boolean; size: number }[] }>(
     `/agent/workspace${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,

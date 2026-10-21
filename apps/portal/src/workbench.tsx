@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, copyText, type IconName } from '@ispace/ui';
 import { api } from './api';
+import { Markdown, rawUrl } from './chat';
+import { CodeView, FileBadge, isImage, langOf } from './code-view';
 import { Segment } from './detail';
 
 /**
@@ -849,12 +851,43 @@ export function RefineBar({ pick, onVariant, busy }: {
  *
  * 只读。改文件是模型的事——摆一个能编辑的编辑器，等于让人和模型同时改同
  * 一份东西，而谁都不知道对方改了什么。想改哪里，在左边说一句。
+ *
+ * 读码体验（code-view.tsx）：左边按目录摞成树、每个文件带类型角标；右边语法
+ * 高亮加行号，长行可以切换换不换行；图片直接显示，md 能切到排版后的样子。
+ * 原来是一列一样的图标加一整块等宽字，模型写的几百行 HTML 读起来全是一个颜色。
  */
+type Entry = { path: string; dir: boolean; size: number };
+
+/** 扁平路径表 → 按目录摞好的显示顺序（目录在前、各层按名字排），收起的目录跳过它的子孙。 */
+export function treeRows(entries: Entry[], closed: Set<string>): (Entry & { depth: number; name: string })[] {
+  const kids = new Map<string, Entry[]>();
+  for (const e of entries) {
+    const parent = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '';
+    kids.set(parent, [...(kids.get(parent) ?? []), e]);
+  }
+  const out: (Entry & { depth: number; name: string })[] = [];
+  const walk = (dir: string, depth: number) => {
+    const list = (kids.get(dir) ?? []).slice().sort((a, b) => (
+      a.dir === b.dir ? a.path.localeCompare(b.path) : a.dir ? -1 : 1
+    ));
+    for (const e of list) {
+      out.push({ ...e, depth, name: e.path.slice(e.path.lastIndexOf('/') + 1) });
+      if (e.dir && !closed.has(e.path)) walk(e.path, depth + 1);
+    }
+  };
+  walk('', 0);
+  return out;
+}
+
 export function CodePane({ rev, sessionId }: { rev: number; sessionId: string | null }) {
-  const [entries, setEntries] = useState<{ path: string; dir: boolean; size: number }[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [file, setFile] = useState<{ text: string; binary?: boolean; tooBig?: boolean; size: number } | null>(null);
   const [q, setQ] = useState('');
+  /* 收起的目录。平台草稿（_fanout、_uploads）默认收起——它们不是页面本身 */
+  const [closed, setClosed] = useState<Set<string>>(() => new Set(['_fanout', '_uploads']));
+  const [wrap, setWrap] = useState(true);
+  const [mdView, setMdView] = useState(true);
 
   useEffect(() => {
     void api.workspaceTree(sessionId)
@@ -875,13 +908,28 @@ export function CodePane({ rev, sessionId }: { rev: number; sessionId: string | 
     return () => { alive = false; };
   }, [sel, rev, sessionId]);
 
-  const files = entries.filter((e) => !e.dir && (!q.trim() || e.path.includes(q.trim())));
+  const query = q.trim().toLowerCase();
+  /* 筛选时不摞树：直接列出路径里带这几个字的文件，完整路径一眼看全 */
+  const rows = query
+    ? entries.filter((e) => !e.dir && e.path.toLowerCase().includes(query))
+      .map((e) => ({ ...e, depth: 0, name: e.path }))
+    : treeRows(entries, closed);
+  const fileCount = entries.filter((e) => !e.dir).length;
+  const toggle = (path: string) => setClosed((c) => {
+    const n = new Set(c);
+    if (n.has(path)) n.delete(path); else n.add(path);
+    return n;
+  });
+
+  const showText = file && !file.binary && !file.tooBig;
+  const lineCount = showText ? file.text.split('\n').length : 0;
+  const isMd = sel !== null && langOf(sel) === 'md';
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
       <div
         style={{
-          width: 230, flex: 'none', display: 'flex', flexDirection: 'column',
+          width: 240, flex: 'none', display: 'flex', flexDirection: 'column',
           borderRight: '1px solid var(--border-tabby)', background: 'var(--surface-1)',
         }}
       >
@@ -890,7 +938,7 @@ export function CodePane({ rev, sessionId }: { rev: number; sessionId: string | 
             文件
           </span>
           <span className="mono" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-            {files.length}
+            {fileCount}
           </span>
         </div>
         <div style={{ padding: '0 10px 8px' }}>
@@ -913,33 +961,45 @@ export function CodePane({ rev, sessionId }: { rev: number; sessionId: string | 
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 8px 10px' }}>
-          {files.length === 0 && (
+          {fileCount === 0 && (
             <span style={{ display: 'block', padding: '8px 10px', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
               工作区还是空的
             </span>
           )}
-          {files.map((e) => {
+          {rows.map((e) => {
             const on = e.path === sel;
-            const depth = e.path.split('/').length - 1;
+            const open = e.dir && !closed.has(e.path);
             return (
               <button
                 key={e.path}
-                onClick={() => setSel(e.path)}
+                onClick={() => (e.dir ? toggle(e.path) : setSel(e.path))}
+                title={e.path}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 7, width: '100%', height: 30,
-                  padding: `0 8px 0 ${8 + depth * 12}px`, border: 0, borderRadius: 8,
+                  display: 'flex', alignItems: 'center', gap: 7, width: '100%', height: 28,
+                  padding: `0 8px 0 ${6 + e.depth * 14}px`, border: 0, borderRadius: 8,
                   background: on ? 'var(--surface-3)' : 'transparent',
-                  color: on ? 'var(--text-heading)' : 'var(--text-secondary)',
+                  color: on ? 'var(--text-heading)' : e.dir ? 'var(--text-primary)' : 'var(--text-secondary)',
                   fontSize: 'var(--text-base)', cursor: 'pointer', textAlign: 'left',
+                  fontWeight: on ? 'var(--weight-semibold)' : 'normal',
                 }}
               >
-                <Icon name={kindIcon(e.path)} size={13} color="var(--text-tertiary)" />
-                <span
-                  title={e.path}
-                  style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                >
-                  {shortPath(e.path)}
+                {e.dir ? (
+                  <>
+                    <Icon name={open ? 'chevDown' : 'chevRight'} size={12} color="var(--text-tertiary)" />
+                    <FolderGlyph open={open} />
+                  </>
+                ) : (
+                  <>
+                    <span style={{ width: 12, flex: 'none' }} />
+                    <FileBadge path={e.path} />
+                  </>
+                )}
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {e.name}
                 </span>
+                {e.dir && e.name.startsWith('_') && (
+                  <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-tertiary)' }}>草稿</span>
+                )}
               </button>
             );
           })}
@@ -948,72 +1008,88 @@ export function CodePane({ rev, sessionId }: { rev: number; sessionId: string | 
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-canvas)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, height: 42, padding: '0 14px', borderBottom: '1px solid var(--border-tabby)' }}>
-          <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-base)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {sel && <FileBadge path={sel} size={20} />}
+          <span className="mono" style={{ minWidth: 0, fontSize: 'var(--text-base)', color: 'var(--text-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {sel ?? '没有选中文件'}
           </span>
-          {file && !file.binary && !file.tooBig && (
-            <button
-              onClick={() => void copyText(file.text)}
-              style={{
-                height: 26, padding: '0 9px', border: '1px solid var(--border-subtle)',
-                borderRadius: 8, background: 'var(--surface-1)', color: 'var(--text-secondary)',
-                fontSize: 'var(--text-sm)', cursor: 'pointer',
-              }}
-            >
-              复制
-            </button>
+          {file && (
+            <span className="mono" style={{ flex: 'none', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
+              {showText ? `${lineCount} 行 · ` : ''}{fmtBytes(file.size)}
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          {showText && isMd && (
+            <ToolChip on={mdView} onClick={() => setMdView((v) => !v)}>{mdView ? '看源码' : '看排版'}</ToolChip>
+          )}
+          {showText && !(isMd && mdView) && (
+            <ToolChip on={wrap} onClick={() => setWrap((v) => !v)}>{wrap ? '自动换行：开' : '自动换行：关'}</ToolChip>
+          )}
+          {showText && (
+            <ToolChip onClick={() => void copyText(file.text)}>复制</ToolChip>
           )}
         </div>
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
-          {!file && (
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 14px 24px 6px' }}>
+          {!file && !sel && (
             <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
               左边挑一个文件。
             </span>
           )}
-          {file?.binary && (
+          {file?.binary && sel && isImage(sel) && sessionId && (
+            <div style={{ padding: 16, display: 'flex', justifyContent: 'center' }}>
+              <img
+                src={rawUrl(sessionId, sel)}
+                alt={sel}
+                style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: 10, boxShadow: '0 0 0 1px var(--border-subtle)', background: 'repeating-conic-gradient(var(--surface-2) 0% 25%, transparent 0% 50%) 50% / 16px 16px' }}
+              />
+            </div>
+          )}
+          {file?.binary && !(sel && isImage(sel) && sessionId) && (
             <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
-              这是个二进制文件（{Math.max(1, Math.round(file.size / 1024))} KB），在「预览」里看它的效果。
+              这是个二进制文件（{fmtBytes(file.size)}），在「预览」里看它的效果。
             </span>
           )}
           {file?.tooBig && (
             <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
-              文件太大（{Math.round(file.size / 1024)} KB），这里不展开。
+              文件太大（{fmtBytes(file.size)}），这里不展开。
             </span>
           )}
-          {file && !file.binary && !file.tooBig && (
-            <pre
-              className="mono"
-              style={{
-                margin: 0, fontSize: 'var(--text-base)', lineHeight: 1.7,
-                color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-              }}
-            >
-              {file.text}
-            </pre>
-          )}
+          {showText && sel && (isMd && mdView
+            ? <div style={{ maxWidth: 760, padding: '4px 12px', fontSize: 'var(--text-md)', lineHeight: 1.75 }}><Markdown text={file.text} /></div>
+            : <CodeView text={file.text} path={sel} wrap={wrap} />)}
         </div>
       </div>
     </div>
   );
 }
 
-/**
- * 列表里显示成什么。
- *
- * 只取文件名不行：扇出那六版都叫 index.html，列出来是六行一模一样的东西。
- * 取最后两段（`paper/index.html`），既短又能分得开；完整路径在 title 里。
- */
-function shortPath(path: string): string {
-  const parts = path.split('/');
-  return parts.length <= 1 ? path : parts.slice(-2).join('/');
+function ToolChip({ on, onClick, children }: { on?: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 'none', height: 26, padding: '0 9px', border: '1px solid var(--border-subtle)', borderRadius: 8,
+        background: on ? 'var(--surface-2)' : 'var(--surface-1)', color: 'var(--text-secondary)',
+        fontSize: 'var(--text-sm)', cursor: 'pointer',
+      }}
+    >
+      {children}
+    </button>
+  );
 }
 
-function kindIcon(path: string): 'fileUp' | 'image' | 'shapes' {
-  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'avif'].includes(ext)) return 'image';
-  if (['html', 'css', 'js', 'mjs', 'ts', 'tsx', 'json'].includes(ext)) return 'shapes';
-  return 'fileUp';
+/** 文件夹的小图形。图标集里没有文件夹，画一个——比借一个意思不对的图标好认。 */
+function FolderGlyph({ open }: { open: boolean }) {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden style={{ flex: 'none' }}>
+      <path
+        d={open ? 'M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h8A1.5 1.5 0 0 1 20 9.5V10H7.2a1.5 1.5 0 0 0-1.4 1L3 18.5Z M5.8 11h16l-2.6 7.6a1 1 0 0 1-.9.7H3.4Z' : 'M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z'}
+        fill="#e5b75e"
+      />
+    </svg>
+  );
 }
+
+const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 // ── 右栏：发布下拉 ──────────────────────────────────────────────────────
 /**
