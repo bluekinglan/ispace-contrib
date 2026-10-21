@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, type User } from '@ispace/contracts';
 import { z } from 'zod';
 import { injectPreviewShim } from '../services/preview-shim.js';
+import { injectStorageShim } from '../services/sandbox-storage-shim.js';
 import { PREVIEW_IDLE_MS, type PreviewSession, type PreviewSessions } from '../services/preview-session.js';
 import { detectKind } from '../services/preview-kind.js';
 import { escapeHtml, noticePage, SANDBOX_CSP, serveFile } from '../services/static-serve.js';
@@ -145,7 +146,11 @@ export function registerPreviewRoutes(
       }
     }
 
-    const r = await serveFile(reply, { root, rel, transformHtml: injectPreviewShim });
+    const r = await serveFile(reply, {
+      root,
+      rel,
+      transformHtml: (html) => injectPreviewShim(injectStorageShim(html)),
+    });
     if (!r.ok) {
       return reply
         .status(404).type('text/html; charset=utf-8')

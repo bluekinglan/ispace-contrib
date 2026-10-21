@@ -5,6 +5,7 @@ import type { Sql } from '@ispace/db';
 import { z } from 'zod';
 import { resolveAppAccess } from '../services/app-access.js';
 import { PLAY_IDLE_MS, type PlaySessions } from '../services/play-session.js';
+import { injectStorageShim } from '../services/sandbox-storage-shim.js';
 import { dropSelfBase, escapeHtml, noticePage, serveFile } from '../services/static-serve.js';
 
 /**
@@ -99,7 +100,7 @@ export function registerPlayRoutes(
     const r = await serveFile(reply, {
       root,
       rel,
-      transformHtml: (html) => dropSelfBase(stripPlatformChrome(html), s.owner, s.slug),
+      transformHtml: (html) => injectStorageShim(dropSelfBase(stripPlatformChrome(html), s.owner, s.slug)),
     });
     if (!r.ok) {
       return reply
