@@ -3,7 +3,7 @@ import { exploreBucket, type Interest } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api, type Listing } from './api';
 import { Segment } from './detail';
-import { appHref, deviceOf, fmt, initial, usePlayUrl, washOf, type Device } from './wall';
+import { appHref, deviceOf, fmt, initial, usePlayUrl, warmPlayUrl, washOf, type Device } from './wall';
 import { Cover } from './wall';
 
 /**
@@ -47,6 +47,15 @@ export function ForYou({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  /* 上下两个邻居的试玩地址提前换好，翻过去就不用等换令牌那一来回 */
+  useEffect(() => {
+    if (!n) return;
+    const idx = ((i % n) + n) % n;
+    warmPlayUrl(ordered[(idx + 1) % n] ?? null);
+    warmPlayUrl(ordered[(idx - 1 + n) % n] ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [i, n]);
 
   if (!cur) {
     return (
@@ -207,7 +216,7 @@ export function ForYou({
               }}
             >
               <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 34, overflow: 'hidden' }}>
-                <Frame item={cur} tint={tint} />
+                <Frame key={cur.app_id} item={cur} tint={tint} />
               </div>
             </div>
           ) : (
@@ -241,7 +250,7 @@ export function ForYou({
                 <div style={{ width: 46 }} />
               </div>
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-                <Frame item={cur} tint={tint} />
+                <Frame key={cur.app_id} item={cur} tint={tint} />
               </div>
             </div>
           )}
@@ -288,22 +297,39 @@ export function ForYou({
   );
 }
 
+/**
+ * 框里那个页面。
+ *
+ * 翻到下一个时原来是：上一个页面还挂着 → 换成封面 → 换到令牌后新建一个空
+ * iframe（白的）→ 页面一点点画出来。四个画面接连换，看上去就是在几个页面
+ * 之间闪。现在：调用方按 app_id 给 key（换一个就是全新的，不会先露出上一个），
+ * 封面一直垫在底下，iframe 加载完才淡入盖上去——中间没有白屏那一下。
+ */
 function Frame({ item, tint }: { item: Listing; tint: string }) {
   /* 试玩走令牌地址，不是 /{owner}/{slug}/——见 wall.tsx 的 usePlayUrl */
   const play = usePlayUrl(item);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { setLoaded(false); }, [play]);
   if (item.status === 'stopped') {
     return <Cover src={item.cover_path} label={`${item.name} · 已停用`} tint={tint} radius={0} />;
   }
-  if (!play) {
-    return <Cover src={item.cover_path} label={item.name} tint={tint} radius={0} />;
-  }
   return (
-    <iframe
-      src={play}
-      title={item.name}
-      sandbox="allow-scripts allow-forms allow-popups"
-      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: tint }}
-    />
+    <>
+      <Cover src={item.cover_path} label={item.name} tint={tint} radius={0} />
+      {play && (
+        <iframe
+          key={play}
+          src={play}
+          title={item.name}
+          sandbox="allow-scripts allow-forms allow-popups"
+          onLoad={() => setLoaded(true)}
+          style={{
+            position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: tint,
+            opacity: loaded ? 1 : 0, transition: 'opacity .2s ease-out',
+          }}
+        />
+      )}
+    </>
   );
 }
 

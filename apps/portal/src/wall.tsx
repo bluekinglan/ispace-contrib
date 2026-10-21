@@ -65,8 +65,73 @@ export const ratioOf = (type: string): string => (deviceOf(type) === 'phone' ? '
  * 换令牌要一次往返，所以**没换到之前先不渲染 iframe**——返回 null，调用方
  * 摆封面或底色。空着也比先闪一下错误页好。
  */
+/**
+ * 换到的试玩地址，按页面记一会儿。
+ *
+ * 为你推荐里上下翻，每翻一下都要先换令牌、再装页面——换令牌那一来回就是
+ * 框里空着的那一下。记住它，翻回来不用再换；顺带让 warmPlayUrl 提前把下一个
+ * 换好。只记到令牌闲置过期之前，留一分钟余量。
+ */
+const playCache = new Map<string, { url: string; until: number }>();
+
+/*
+  服务端每人最多留 16 张试玩令牌，超了按最久没用的丢（services/play-session.ts）。
+  这边记得比它少，免得手里攥着一张已经被丢掉的：快速翻过十几个再翻回来，
+  框里会是「预览已经过期」。命中时挪到最后，丢的是最久没看的那个。
+*/
+const PLAY_CACHE_MAX = 12;
+
+function cachedPlay(key: string): string | null {
+  const hit = playCache.get(key);
+  if (!hit) return null;
+  playCache.delete(key);
+  if (hit.until <= Date.now()) return null;
+  playCache.set(key, hit);
+  return hit.url;
+}
+
+function rememberPlay(key: string, url: string, until: number): void {
+  playCache.delete(key);
+  playCache.set(key, { url, until });
+  while (playCache.size > PLAY_CACHE_MAX) {
+    const oldest = playCache.keys().next().value;
+    if (oldest === undefined) break;
+    playCache.delete(oldest);
+  }
+}
+
+/** 正在换的。预热和真要看几乎同时发生时，共用同一次请求，不换两张令牌。 */
+const playInflight = new Map<string, Promise<string>>();
+
+function openPlay(owner: string, slug: string): Promise<string> {
+  const key = `${owner}/${slug}`;
+  const hit = cachedPlay(key);
+  if (hit) return Promise.resolve(hit);
+  const pending = playInflight.get(key);
+  if (pending) return pending;
+  const p = api.playOpen(owner, slug)
+    .then((r) => {
+      const until = Math.min(
+        Number.isFinite(r.expiresAt) ? r.expiresAt - 60_000 : Infinity,
+        Date.now() + Math.max(0, r.idleMs / 2),
+      );
+      rememberPlay(key, r.url, until);
+      return r.url;
+    })
+    .finally(() => { playInflight.delete(key); });
+  playInflight.set(key, p);
+  return p;
+}
+
+/** 提前换好下一个要看的页面的试玩地址。失败就算了，轮到它时再换。 */
+export function warmPlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'> | null): void {
+  if (!l || l.status === 'stopped') return;
+  void openPlay(l.owner_username, l.slug).catch(() => undefined);
+}
+
 export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'> | null): string | null {
-  const [url, setUrl] = useState<string | null>(null);
+  const key0 = l ? `${l.owner_username}/${l.slug}` : '';
+  const [url, setUrl] = useState<string | null>(() => (key0 ? cachedPlay(key0) : null));
   const key = l ? `${l.owner_username}/${l.slug}` : '';
   const status = l?.status ?? '';
 
@@ -88,10 +153,11 @@ export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'
   useEffect(() => {
     if (!key || status === 'stopped') { setUrl(null); return; }
     let alive = true;
-    setUrl(null);
+    /* 记着的直接用，不先置空——置空那一下就是框里闪一下 */
+    setUrl(cachedPlay(key));
     const [owner, slug] = key.split('/');
-    void api.playOpen(owner!, slug!)
-      .then((r) => { if (alive) setUrl(r.url); })
+    void openPlay(owner!, slug!)
+      .then((u) => { if (alive) setUrl(u); })
       .catch(() => { /* 换不到就不渲染，调用方退回封面 */ });
     return () => { alive = false; };
   }, [key, status]);
