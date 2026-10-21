@@ -26,7 +26,8 @@ registerEventEffects();
  * 五轮普通奖 + 一轮压轴（轮数见 lottery-data 的 LOTTERY_ROUNDS）：
  *   第一~五轮各 17 人，**人人有奖**（85 人），抽过的人不再进下一轮的池子；
  *   压轴从 83 人里重新抽 1 个 1024 红包（甜豆、小爱只参加普通轮），和普通
- *   轮的名额叠加。
+ *   轮的名额叠加。台上的字照组织者的意思写「全员 85 人」——说的是这场抽奖
+ *   的全体，实际摇号的池子才是去掉两人的 83。
  *   代码里不写死轮次号：压轴是 LOTTERY_JACKPOT，普通轮是它之前的那些。
  *
  * 结果写 localStorage。这一点很重要：万一大屏那台机器在抽奖中途刷新了，
@@ -705,7 +706,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
             <span style={{
               marginTop: 22, fontSize: 32, fontWeight: 700, opacity: 0.85,
               animation: 'rise .7s cubic-bezier(.16,1,.3,1) .12s both',
-            }}>{round < LOTTERY_JACKPOT ? `${slots} 个名额 · ${poolN} 人待抽` : `1024红包 · 全员 ${poolN} 人参与`}</span>
+            }}>{round < LOTTERY_JACKPOT ? `${slots} 个名额 · ${poolN} 人待抽` : `1024红包 · 全员 ${LOTTERY_PEOPLE.length} 人参与`}</span>
             <div style={{ marginTop: 64, display: 'flex', animation: 'rise .7s cubic-bezier(.16,1,.3,1) .18s both' }}>
               <div style={{
                 height: 128, minWidth: 460, boxSizing: 'border-box', padding: '0 72px',
@@ -735,7 +736,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
           />
         )}
 
-        {isJackpot && jpw && <Jackpot who={jpw} gather={jpGather} peopleN={poolFor(LOTTERY_JACKPOT, results).length} />}
+        {isJackpot && jpw && <Jackpot who={jpw} gather={jpGather} peopleN={LOTTERY_PEOPLE.length} />}
 
         {/* 操作提示。抽奖这一步的键位和典礼其余部分一致，所以只写它特有的 */}
         <div className="mono" style={{
