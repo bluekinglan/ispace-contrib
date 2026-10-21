@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
 import { registerPlayRoutes } from '../routes/play.js';
 import { PlaySessions } from '../services/play-session.js';
+import { dropSelfBase } from '../services/static-serve.js';
 
 /**
  * 已发布页面的试玩：换令牌与按令牌出文件。
@@ -154,6 +155,43 @@ describe('试玩令牌', () => {
     expect(css.statusCode).toBe(200);
     expect(css.body).toBe('h1{color:red}');
     expect(css.headers['content-type']).toContain('text/css');
+  });
+
+  /*
+    沙箱头让页面成为 opaque origin（Origin: null），而 Vite / VitePress 的入口
+    是 `<script type="module" crossorigin>`、`<link rel=stylesheet crossorigin>`
+    ——按 CORS 去取。响应里没有 ACAO，浏览器直接丢掉：React 应用空屏、样式全无。
+    线上 zongkelong/voice-clone、ximengkai/life 就是这样（真 Chrome 里复现过）。
+  */
+  it('子资源带 Access-Control-Allow-Origin，沙箱里的模块脚本与带 crossorigin 的样式才取得到', async () => {
+    const { token } = (await mint('me')).json() as { token: string };
+    const css = await fetchFile(`/deploy/api/play/${token}/assets/a.css`, { origin: 'null' });
+    expect(css.headers['access-control-allow-origin']).toBe('*');
+    /* * 不许带凭据——放的只是"拿着这个地址的人本来就能取到的东西" */
+    expect(css.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+
+  /*
+    dongfei/deepseek-harness-learn 的 <head> 里写死了
+    `<base href="https://域名/dongfei/deepseek-harness-learn/">`：在试玩地址下它把
+    所有相对路径都改指回正式地址，而那边要登录，于是只剩没样式的字。
+  */
+  it('指回这个页面正式地址的 <base href> 在试玩里摘掉，别的 base 不动', async () => {
+    const docs = join(sites, 'lixiao', 'docs');
+    mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, 'index.html'),
+      '<!doctype html><head><base href="https://ispace.example.com/lixiao/docs/">'
+      + '<link rel=stylesheet href="./assets/s.css"></head><h1>文档</h1>');
+    const { token } = (await mint('me', { owner: 'lixiao', slug: 'docs' })).json() as { token: string };
+    const html = await fetchFile(`/deploy/api/play/${token}/`);
+    expect(html.body).not.toContain('<base');
+    expect(html.body).toContain('./assets/s.css');
+
+    expect(dropSelfBase('<base href="/lixiao/docs/">', 'lixiao', 'docs')).toBe('');
+    expect(dropSelfBase('<base href="https://cdn.example.com/x/">', 'lixiao', 'docs'))
+      .toBe('<base href="https://cdn.example.com/x/">');
+    expect(dropSelfBase('<base href="https://h/lixiao/docs-v2/">', 'lixiao', 'docs'))
+      .toBe('<base href="https://h/lixiao/docs-v2/">');
   });
 
   it('软链出去的站点根也能正常伺服（realpath 要拿 root 的 realpath 比）', async () => {

@@ -73,7 +73,39 @@ export function sandboxHeaders(reply: FastifyReply): FastifyReply {
     .header('cache-control', 'no-store')
     .header('x-content-type-options', 'nosniff')
     .header('referrer-policy', 'no-referrer')
-    .header('content-security-policy', SANDBOX_CSP);
+    .header('content-security-policy', SANDBOX_CSP)
+    /*
+      ⚠️ 没有这一行，Vite / VitePress 这类构建产物在框里是空屏或裸 HTML。
+
+      上面那条 CSP sandbox 让页面成为 opaque origin（Origin: null）。而构建
+      产物的入口是 `<script type="module" crossorigin>`、`<link rel=stylesheet
+      crossorigin>`——模块脚本和带 crossorigin 的样式**一律按 CORS 去取**，
+      从 null 源取同一台服务器的文件就是跨源，响应里没有 ACAO，浏览器直接
+      丢掉：React 应用空屏，样式全无。线上 zongkelong/voice-clone、
+      ximengkai/life 就是这个样子。
+
+      给 * 不放宽任何东西：这两条路上凭据在路径里（令牌 / previewId），
+      拿到地址的人本来就能不带 cookie 直接取；* 也不允许带凭据。
+    */
+    .header('access-control-allow-origin', '*');
+}
+
+/**
+ * 去掉指回这个页面正式地址的 <base href>。
+ *
+ * 有的产物在 <head> 里写死了 `<base href="https://域名/用户/页面/">`
+ * （dongfei/deepseek-harness-learn 就是）。直接打开正式地址时没问题；但在
+ * 试玩地址下，它把所有相对路径——样式、脚本、字体——都改指回正式地址，
+ * 而那边要登录，沙箱框里带不上 cookie，于是只剩一页没样式的字。
+ *
+ * 只摘指回**它自己**的那一条（绝对或根相对都算），指向别处的 base 原样留着。
+ */
+export function dropSelfBase(html: string, owner: string, slug: string): string {
+  const self = new RegExp(
+    `<base\\s+href=["'](?:https?://[^/"']+)?/${owner}/${slug}/?["'][^>]*>`,
+    'gi',
+  );
+  return html.replace(self, '');
 }
 
 /** p 是否在 base 之下（或就是 base）。 */

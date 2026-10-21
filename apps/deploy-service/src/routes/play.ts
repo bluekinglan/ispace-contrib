@@ -5,7 +5,7 @@ import type { Sql } from '@ispace/db';
 import { z } from 'zod';
 import { resolveAppAccess } from '../services/app-access.js';
 import { PLAY_IDLE_MS, type PlaySessions } from '../services/play-session.js';
-import { escapeHtml, noticePage, serveFile } from '../services/static-serve.js';
+import { dropSelfBase, escapeHtml, noticePage, serveFile } from '../services/static-serve.js';
 
 /**
  * 已发布页面的试玩（详情页与为你推荐里那个 iframe）。
@@ -96,7 +96,11 @@ export function registerPlayRoutes(
     const root = join(sitesRoot, s.owner, s.slug);
     const rel = (req.params as Record<string, string>)['*'] ?? '';
 
-    const r = await serveFile(reply, { root, rel, transformHtml: stripPlatformChrome });
+    const r = await serveFile(reply, {
+      root,
+      rel,
+      transformHtml: (html) => dropSelfBase(stripPlatformChrome(html), s.owner, s.slug),
+    });
     if (!r.ok) {
       return reply
         .status(404).type('text/html; charset=utf-8')
