@@ -81,8 +81,17 @@ describe('确认并发布的闸门', () => {
   });
 
   it('令牌过期与令牌不存在给同一句话——区分了等于告诉对方令牌存在', async () => {
-    const res = await post('/agent/publish', { confirmToken: 'another-wrong-one' });
-    expect(res.json().message).toContain('10 分钟');
+    /*
+      比两条消息**是否一字不差**，而不是断言里面有没有某个数字。原来写的是
+      toContain('10 分钟')，于是把有效期从 10 分钟放宽到 30 分钟时这条红了
+      ——它测的其实是文案里的一个常数，而它要守的是"两种情形说同一句话"。
+    */
+    const a = await post('/agent/publish', { confirmToken: 'not-a-real-token' });
+    const b = await post('/agent/publish', { confirmToken: 'another-wrong-one' });
+    expect(a.statusCode).toBe(b.statusCode);
+    expect(a.json().message).toBe(b.json().message);
+    /* 而且这句话要告诉人下一步干什么，不能只说"无效" */
+    expect(b.json().message).toContain('重新发起');
   });
 
   it('缺参数是 4xx 不是 500', async () => {

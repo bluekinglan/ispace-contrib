@@ -806,13 +806,25 @@ function Generating({
     } finally {
       /* 发布请求的 token 在流结束后问服务端要——它是 Agent 调工具时生成的 */
       const pend = await api.agentPending().catch(() => ({ items: [] }));
-      setGen((g) => ({
-        ...g,
-        busy: false,
-        steps: g.steps.map((s) => ({ ...s, done: true })),
-        confirmToken: pend.items[0]?.confirmToken ?? g.confirmToken,
-        site: pend.items[0]?.site ?? g.site,
-      }));
+      setGen((g) => {
+        /*
+          认准**这一次**要发的那个 slug。
+
+          待确认列表是整个人的，不是这一屏的：十分钟内做了两个页面，里面就
+          有两条。服务端已经按新到旧排了，但只认"第一条"仍然可能拿到另一个
+          页面的令牌——那条先过期，点发布报「令牌无效或已过期」，而他刚做好
+          的这个明明还新鲜。所以先按 site 对，对不上再退回最新的那条。
+        */
+        const mine = g.site ? pend.items.find((x) => x.site === g.site) : undefined;
+        const pick = mine ?? pend.items[0];
+        return {
+          ...g,
+          busy: false,
+          steps: g.steps.map((s) => ({ ...s, done: true })),
+          confirmToken: pick?.confirmToken ?? g.confirmToken,
+          site: pick?.site ?? g.site,
+        };
+      });
       setFsRev((n) => n + 1);
     }
   };

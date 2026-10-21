@@ -92,8 +92,19 @@ interface PendingDeploy {
   createdAt: number;
 }
 
-/** 确认 token 的有效期。过期即失效，避免旧 token 被翻出来用。 */
-const CONFIRM_TTL_MS = 10 * 60 * 1000;
+/**
+ * 确认 token 的有效期。过期即失效，避免旧 token 被翻出来用。
+ *
+ * 30 分钟而不是原来的 10 分钟：这个令牌的使用场景是"页面做好了，人把它看一
+ * 遍再决定发不发"——翻一翻预览、改两句话、去倒杯水，十分钟很容易就过了，
+ * 回来点发布只看到一句「令牌无效或已过期」，而他什么都没做错。
+ *
+ * 放宽不动安全性质：它仍然是一次性的、绑定本人、只在服务端内存里，而且
+ * 发布那一下仍要人亲自点。
+ *
+ * ⚠️ 它在内存里，服务重启即清空。重启后用户必须让 Agent 重新发起发布请求。
+ */
+const CONFIRM_TTL_MS = 30 * 60 * 1000;
 
 /** 「代码」页一次最多显示多大的文件。再大就只给大小，不往回送内容。 */
 const MAX_SHOWN_BYTES = 256 * 1024;
@@ -511,7 +522,8 @@ export function registerAgentRoutes(
     if (!p) {
       throw new IspaceError(
         ERROR_CODES.NOT_FOUND,
-        '确认令牌无效或已过期（有效期 10 分钟）。请让 Agent 重新发起发布请求。',
+        `确认令牌无效或已过期（有效期 ${CONFIRM_TTL_MS / 60000} 分钟，服务重启也会清空）。`
+        + '在左边说一句「可以发布了」，让它重新发起一次就行。',
       );
     }
     if (p.userId !== user.id) {
@@ -563,7 +575,8 @@ export function registerAgentRoutes(
     if (!p) {
       throw new IspaceError(
         ERROR_CODES.NOT_FOUND,
-        '确认令牌无效或已过期（有效期 10 分钟）。请让 Agent 重新发起发布请求。',
+        `确认令牌无效或已过期（有效期 ${CONFIRM_TTL_MS / 60000} 分钟，服务重启也会清空）。`
+        + '在左边说一句「可以发布了」，让它重新发起一次就行。',
       );
     }
     if (p.userId !== user.id) {
@@ -590,9 +603,18 @@ export function registerAgentRoutes(
   // ── 待确认列表（手机端拉取）──────────────────────────────────────
   app.get(`${API_BASE}/agent/pending`, async (req) => {
     const user = await requireAuth(req);
+    /*
+      **最新的排在前面**。
+
+      Map 的自然顺序是插入顺序，也就是最旧在前；而调用方（创建屏、手机壳）
+      取的都是第一条。一个人十分钟内做了两个页面时，第一条是上一个页面的
+      令牌——它马上就要过期，于是点发布报「确认令牌无效或已过期」，而他刚
+      做好的那个明明还新鲜。线上实测踩过。
+    */
     const items = [...pending.entries()]
       .filter(([, v]) => v.userId === user.id)
-      .map(([token, v]) => ({ confirmToken: token, site: v.site, summary: v.summary, createdAt: v.createdAt }));
+      .map(([token, v]) => ({ confirmToken: token, site: v.site, summary: v.summary, createdAt: v.createdAt }))
+      .sort((a, b) => b.createdAt - a.createdAt);
     return { items };
   });
 

@@ -53,48 +53,27 @@ export async function screenshotCover(
   if (running >= MAX_CONCURRENT) return false;
   running += 1;
   try {
-    await new Promise<void>((resolve, reject) => {
-      const child = execFile(
-        CHROMIUM,
-        [
-          '--headless',
-          '--no-sandbox', // 容器内非 root、无 user namespace，sandbox 起不来
-          '--disable-gpu',
-          '--disable-dev-shm-usage', // 容器 /dev/shm 很小，不加会因共享内存不足崩
-          '--hide-scrollbars',
-          '--force-device-scale-factor=1',
-          `--window-size=${SHOT_W},${SHOT_H}`,
-          /*
-            ⚠️ 这一行是封面好不好看的分水岭。
+    /*
+      先带「等一会儿再截」跑一次，失败了再不等直接截。
 
-            file:// 下每个文件都是**各自独立的 opaque origin**，于是
-            `<script type="module" src="./assets/index.js">` 会被当成跨源请求
-            挡掉——Vite / VitePress 这类构建产物的脚本一个都不跑，样式也多半
-            是脚本注进去的，截出来就是一页裸 HTML：蓝色下划线链接、左上角
-            堆着导航文字。线上好几个作品的封面就是这个样子，一直没人看出来
-            那是封面而不是页面本身。
+      --virtual-time-budget 是让 JS、字体、动画落定之后再截，绝大多数页面
+      靠它才不会截到半成品。但它要求虚拟时间**能走到**那个预算，而一个
+      requestAnimationFrame 的动画会一直排新帧，虚拟时间于是永远走不完
+      ——chromium 挂死，30 秒后被我们杀掉，那张封面就此没有。线上四个页面
+      （粒子动画、地图、看板）一直补不上封面，就是卡在这里。
 
-            加上它之后同一个产物截出来就是真实页面（实测 ximengkai/life：
-            340 KB 的裸 HTML → 377 KB 的完整首屏）。
-
-            安全上这一下只放开"这个一次性无头进程能读本地文件"，而它截的本来
-            就是平台自己刚写进磁盘的产物；进程截完即退，不碰网络。
-          */
-          '--allow-file-access-from-files',
-          // 给 JS/字体/动画一点落定时间再截，又不至于让它无限等
-          '--virtual-time-budget=2500',
-          `--screenshot=${outPngPath}`,
-          `file://${indexHtmlPath}`,
-        ],
-        // 硬超时兜底：某些页面会让 chromium 挂住，30s 后连进程一起杀
-        { timeout: 30_000, killSignal: 'SIGKILL' },
-        (err) => (err ? reject(err) : resolve()),
-      );
-      child.on('error', reject);
-    });
-    if (!existsSync(outPngPath)) return false; // chromium 偶尔静默不出文件
-    await chmod(outPngPath, 0o644);
-    return true;
+      去掉预算之后那四个 12 秒就截出来了，但也不能干脆不要它：没有它的话
+      异步渲染的页面会被截成一片空白。所以是"先讲究，不行再将就"。
+    */
+    if (await runChromium([...SHOT_FLAGS, '--virtual-time-budget=2500'], indexHtmlPath, outPngPath)) {
+      await chmod(outPngPath, 0o644);
+      return true;
+    }
+    if (await runChromium(SHOT_FLAGS, indexHtmlPath, outPngPath)) {
+      await chmod(outPngPath, 0o644);
+      return true;
+    }
+    return false;
   } catch {
     return false;
   } finally {
@@ -102,6 +81,46 @@ export async function screenshotCover(
   }
 }
 
+/** 两次尝试共用的那串 flag。差别只在要不要 --virtual-time-budget。 */
+const SHOT_FLAGS = [
+  '--headless',
+  '--no-sandbox', // 容器内非 root、无 user namespace，sandbox 起不来
+  '--disable-gpu',
+  '--disable-dev-shm-usage', // 容器 /dev/shm 很小，不加会因共享内存不足崩
+  '--hide-scrollbars',
+  '--force-device-scale-factor=1',
+  `--window-size=${SHOT_W},${SHOT_H}`,
+  /*
+    ⚠️ 这一行是封面好不好看的分水岭。
+
+    file:// 下每个文件都是**各自独立的 opaque origin**，于是
+    `<script type="module" src="./assets/index.js">` 会被当成跨源请求挡掉
+    ——Vite / VitePress 这类构建产物的脚本一个都不跑，样式也多半是脚本注
+    进去的，截出来就是一页裸 HTML：蓝色下划线链接、左上角堆着导航文字。
+    线上好几个作品的封面就是这个样子，一直没人看出来那是封面而不是页面。
+
+    加上它之后同一个产物截出来就是真实页面（实测 ximengkai/life：
+    340 KB 的裸 HTML → 377 KB 的完整首屏）。
+
+    安全上这一下只放开"这个一次性无头进程能读本地文件"，而它截的本来就是
+    平台自己刚写进磁盘的产物；进程截完即退，不碰网络。
+  */
+  '--allow-file-access-from-files',
+];
+
+/** 跑一次 chromium。出了文件才算成功——它偶尔会静默地什么都不写。 */
+function runChromium(flags: string[], indexHtmlPath: string, outPngPath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const child = execFile(
+      CHROMIUM,
+      [...flags, `--screenshot=${outPngPath}`, `file://${indexHtmlPath}`],
+      // 硬超时兜底：某些页面会让 chromium 挂住，30s 后连进程一起杀
+      { timeout: 30_000, killSignal: 'SIGKILL' },
+      () => resolve(existsSync(outPngPath)),
+    );
+    child.on('error', () => resolve(false));
+  });
+}
 /**
  * 截一个 URL 的首屏，返回 PNG 字节；失败返回 null。
  *
