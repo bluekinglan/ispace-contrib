@@ -346,14 +346,27 @@ export const api = {
     /** 生图通道（AGENT_IMAGE_MODELS）。空数组 = 平台不会生图。 */
     imageModels: { id: string; label: string; mult?: string }[];
   }>('/agent/status'),
+  /**
+   * 开一条新会话、一个新工作区（docs/specs/2026-10-21-agent-harness.md §1）。
+   *
+   * 创建屏一进来就要：预览和设计扇出都在第一句对话之前，它们得知道往哪个
+   * 工作区里看、往哪个工作区里写。
+   */
+  agentSession: () => post<{ sessionId: string }>('/agent/session'),
+  /**
+   * 撤回这一步：工作区退回这一轮开始前的样子，对话也截回那一刻。
+   * label 是那一轮用户说的话——放回输入框，人改两个字就能重说。
+   */
+  agentUndo: (sessionId: string) =>
+    post<{ label: string; written: number; removed: number; left: number }>('/agent/undo', { sessionId }),
   /** 工作区文件树（工作台「代码」页）。扁平路径表，前端自己摞成树。 */
-  workspaceTree: () => get<{ entries: { path: string; dir: boolean; size: number }[] }>(
-    '/agent/workspace',
+  workspaceTree: (sessionId?: string | null) => get<{ entries: { path: string; dir: boolean; size: number }[] }>(
+    `/agent/workspace${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,
   ),
   /** 单个文件的内容。二进制与超大文件只给标记，不送内容。 */
-  workspaceFile: (path: string) => get<{
+  workspaceFile: (path: string, sessionId?: string | null) => get<{
     path: string; size: number; text: string; binary?: boolean; tooBig?: boolean;
-  }>(`/agent/workspace/file?path=${encodeURIComponent(path)}`),
+  }>(`/agent/workspace/file?path=${encodeURIComponent(path)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''}`),
   /** Agent 发起的待确认发布。token 是一次性的，用掉即失效。 */
   agentPending: () =>
     get<{ items: { confirmToken: string; site: string; summary: string; createdAt: number }[] }>(
@@ -370,13 +383,13 @@ export const api = {
    * ——它是给沙箱里的页面取数用的，经 postMessage 递进去，印在地址里等于
    * 截个图就泄露了。
    */
-  previewOpen: () => post<{
+  previewOpen: (sessionId?: string | null) => post<{
     previewId: string;
     token: string;
     url: string;
     expiresAt: number;
     idleMs: number;
-  }>('/preview-session'),
+  }>('/preview-session', sessionId ? { sessionId } : undefined),
   /**
    * 这个工作区能不能直接伺服出来看。
    *

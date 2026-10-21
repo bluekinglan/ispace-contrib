@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Icon } from '@ispace/ui';
 import { api } from './api';
 import { Segment } from './detail';
+import { ACCEPT, MAX_FILE_MB, fileType } from './chat';
 
 /**
  * 输入框里那两颗：「+ 添加内容」和模型胶囊。
@@ -26,7 +27,15 @@ export interface AgentChoice {
   effort: Effort | null;
 }
 
+/**
+ * 对话里附的一个文件。名字沿用 AgentImage，是因为它最早只收图片；现在 md、
+ * Word、Excel、PPT、PDF 都走它（服务端存进 _uploads/、抽出文字交给模型，见
+ * services/attachments.ts）。
+ */
 export interface AgentImage { name: string; mimeType: string; dataBase64: string }
+
+/** 一次最多附几个。与服务端 MAX_ATTACHMENTS 一致。 */
+export const MAX_ATTACH = 6;
 
 export const EFFORTS: { k: Effort; label: string }[] = [
   { k: 'low', label: '快速' },
@@ -42,7 +51,7 @@ export const EFFORTS: { k: Effort; label: string }[] = [
  * 不如把"它将来会是什么"说清楚。
  */
 const ADDS: { label: string; icon: 'fileUp' | 'link' | 'shapes' | 'heart' | 'archive'; tip: string | null }[] = [
-  { label: '上传图片', icon: 'fileUp', tip: null },
+  { label: '上传文件', icon: 'fileUp', tip: null },
   { label: '粘贴链接', icon: 'link', tip: '贴一个网址、AI 先读一遍再动手——这一项还没接上' },
   { label: '选择 Skill', icon: 'shapes', tip: '挑一个团队沉淀的 Skill，比如「飞书表格」「审批流」——这一项还没接上' },
   { label: '收藏风格', icon: 'heart', tip: '从你收藏的页面里挑一个风格照着做——这一项还没接上' },
@@ -88,10 +97,11 @@ export async function toAgentImage(f: File): Promise<AgentImage> {
   let bin = '';
   const bytes = new Uint8Array(buf);
   for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]!);
-  return { name: f.name, mimeType: f.type || 'image/png', dataBase64: btoa(bin) };
+  /* 有的系统给 .md、.csv 报不出类型，空着交给服务端按扩展名认 */
+  return { name: f.name, mimeType: f.type || 'application/octet-stream', dataBase64: btoa(bin) };
 }
 
-/** 「+ 添加内容」。上传图片是真的；其余四项弹一句说明。 */
+/** 「+ 添加内容」。上传文件是真的；其余四项弹一句说明。 */
 export function AddButton({ up = false, size = 36, onImages, onToast }: {
   up?: boolean;
   size?: number;
@@ -106,12 +116,16 @@ export function AddButton({ up = false, size = 36, onImages, onToast }: {
       <input
         ref={file}
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept={ACCEPT}
         multiple
         hidden
         onChange={async (e) => {
-          const picked = [...(e.target.files ?? [])].slice(0, 4);
+          const all = [...(e.target.files ?? [])];
           e.target.value = '';
+          /* 太大的当场说，别读进内存再让服务端拒——10 MB 的 base64 读一遍也要时间 */
+          const big = all.filter((f) => f.size > MAX_FILE_MB * 1024 * 1024);
+          if (big.length) onToast(`${big.map((f) => f.name).join('、')} 超过 ${MAX_FILE_MB} MB，没加上`);
+          const picked = all.filter((f) => f.size <= MAX_FILE_MB * 1024 * 1024).slice(0, MAX_ATTACH);
           const next: AgentImage[] = [];
           for (const f of picked) next.push(await toAgentImage(f));
           onImages(next);
@@ -270,7 +284,7 @@ export function ModelPill({
   );
 }
 
-/** 输入框下面那一排图片。点 × 去掉一张。 */
+/** 输入框下面那一排附件。点 × 去掉一个。图片和文档用不同的角标，一眼分得开。 */
 export function ImageChips({ images, onRemove }: { images: AgentImage[]; onRemove: (i: number) => void }) {
   if (!images.length) return null;
   return (
@@ -284,10 +298,13 @@ export function ImageChips({ images, onRemove }: { images: AgentImage[]; onRemov
             fontSize: 'var(--text-base)', color: 'var(--text-secondary)',
           }}
         >
-          <Icon name="image" size={13} />{im.name}
+          {fileType(im) === 'image'
+            ? <Icon name="image" size={13} />
+            : <span className="mono" style={{ fontSize: 'var(--text-2xs)', fontWeight: 700, color: 'var(--text-tertiary)' }}>{im.name.split('.').pop()?.toUpperCase().slice(0, 4)}</span>}
+          <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{im.name}</span>
           <button
             onClick={() => onRemove(i)}
-            title="去掉这张"
+            title="去掉这个"
             style={{
               width: 20, height: 20, border: 0, borderRadius: 'var(--radius-pill)',
               background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',

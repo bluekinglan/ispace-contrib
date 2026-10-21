@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { User } from '@ispace/contracts';
 import { Icon, copyText } from '@ispace/ui';
 import { api } from './api';
+import { AiBubble, UserBubble, type ChatFile } from './chat';
 import {
-  AddButton, ImageChips, ModelPill, useModels,
+  AddButton, ImageChips, MAX_ATTACH, ModelPill, useModels,
   type AgentChoice, type AgentImage, type Effort,
 } from './composer';
 import { Segment } from './detail';
@@ -28,10 +29,10 @@ import {
  * │    清单来自 AGENT_MODELS，思考档位要 AGENT_EFFORT 开着           │
  * │    （/agent/status 两样都返回）。只配了一条通道又没开思考时，    │
  * │    仍旧是一个灰色的名字——下拉里只有一行、点了还是它，不如不画。 │
- * │ 3. 「添加内容」五项按稿子都在，但只有第一项是通的，而且叫「上传  │
- * │    图片」不叫「上传文件」：Agent 接口收的就是图片（/agent/ask 的 │
- * │    images）。其余四项点了弹一句话说明它是干什么的——设计稿里它们 │
- * │    也只是弹提示。                                                │
+ * │ 3. 「添加内容」五项按稿子都在，但只有第一项是通的：「上传文件」，│
+ * │    图片、md、Word、Excel、PPT、PDF 都收（/agent/ask 的 files，   │
+ * │    服务端存进 _uploads/ 并抽出文字给模型）。其余四项点了弹一句话 │
+ * │    说明它是干什么的——设计稿里它们也只是弹提示。                │
  * └──────────────────────────────────────────────────────────────────┘
  */
 export function Create({
@@ -185,7 +186,7 @@ function Idle({
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <AddButton
-            onImages={(next) => setImages((prev) => [...prev, ...next].slice(0, 4))}
+            onImages={(next) => setImages((prev) => [...prev, ...next].slice(0, MAX_ATTACH))}
             onToast={onToast}
           />
           <ModelPill
@@ -329,6 +330,19 @@ function Idle({
 // ── 生成中 / 生成完 ─────────────────────────────────────────────────────
 interface Step { key: string; title: string; detail: string; done: boolean }
 
+/**
+ * 对话流里的一段。ask 标的是"这一句真的发给了模型、开了一轮"——撤回按它找
+ * 退到哪儿。设计扇出的那几句（「基于它再出一版」）也是用户说的，但它们不开
+ * 会话轮次、服务端也不为它们拍快照，撤回时不能把它们当成"上一步"。
+ */
+interface Say { me: boolean; text: string; files?: ChatFile[]; ask?: true }
+
+/** 最近一句真正开了一轮的用户发言。-1 表示只剩开场那句。 */
+const lastAsk = (says: Say[]) => {
+  for (let i = says.length - 1; i >= 0; i--) if (says[i]!.me && says[i]!.ask) return i;
+  return -1;
+};
+
 interface Gen {
   /** 第一句话。显示在左栏顶上那个气泡里。 */
   text: string;
@@ -341,8 +355,10 @@ interface Gen {
   /** 模型和思考档位。开场选的那个；工作台输入框里能换，下一轮起生效。 */
   choice: AgentChoice;
   steps: Step[];
-  /** 模型说的话，按轮次分段。 */
-  says: { me: boolean; text: string }[];
+  /** 第一句话附的文件。存进工作区之后带上 path，刷新之后还点得开。 */
+  files?: ChatFile[];
+  /** 对话流，按轮次分段。me 是用户说的；files 是这一段附带的文件（附件、生成的图）。 */
+  says: Say[];
   busy: boolean;
   publishedUrl: string | null;
   /** 刷新之后从本地恢复出来的。开头那两道题就不再问了，对话里补一句说明。 */
@@ -358,15 +374,14 @@ interface Gen {
  * │ 个什么页面？」，用户的感受是"刚做的东西没了"。其实没有——模型写的文件 │
  * │ 一直在服务端这个人的工作区里，只是界面不认得它了。                    │
  * │                                                                      │
- * │ 存的是界面上那份东西：标题、对话、进度、发布到哪个 slug。**模型那边的 │
- * │ 记忆存不回来**——Agent 会话在服务端内存里（routes/agent.ts 的 NOTE），│
- * │ 刷新不丢、但服务一重启就没了。所以恢复出来时在对话里明说这一点：文件 │
- * │ 都在，它可以 read_file 接着改；但它不记得之前聊过什么。              │
+ * │ 存的是界面上那份东西：标题、对话、进度、发布到哪个 slug、会话 id。     │
+ * │ 模型那边的记忆在服务端：会话已经落库（agent_sessions），带着同一个     │
+ * │ 会话 id 回来，它记得之前聊过什么，文件也在这条会话自己的工作区里。    │
  * └──────────────────────────────────────────────────────────────────────┘
  *
  * 按用户分 key：同一台电脑换个账号登录，不该看到上一个人做到一半的东西。
- * 12 小时过期：工作区是一个人一份、会被下一个页面覆盖，太老的对话摆出来
- * 只会和文件对不上。发布成功就清掉——那时它已经在「我的作品」里了。
+ * 12 小时过期：太老的工作台摆出来，人多半已经不记得在做什么了——想接着改
+ * 发布过的页面，从「我的作品」进来更直接。发布成功就清掉。
  */
 const SAVE_TTL_MS = 12 * 60 * 60 * 1000;
 const saveKey = (username: string) => `ispace-workbench-v1:${username}`;
@@ -374,8 +389,15 @@ const saveKey = (username: string) => `ispace-workbench-v1:${username}`;
 function saveGen(username: string, g: Gen | null): void {
   try {
     if (!g || g.publishedUrl) { localStorage.removeItem(saveKey(username)); return; }
-    /* 图片是 base64，一张就上百 KB，不存——恢复出来也不会再发给模型 */
-    const slim: Gen = { ...g, images: [], busy: false };
+    /*
+      图片是 base64，一张就上百 KB，不存——恢复出来也不会再发给模型。附件里的
+      本地预览地址（object URL）刷新就失效，也不存；存进工作区的 path 留着。
+    */
+    const slimFiles = (fs?: ChatFile[]) => fs?.map(({ localUrl: _u, ...f }) => f);
+    const slim: Gen = {
+      ...g, images: [], busy: false, files: slimFiles(g.files),
+      says: g.says.map((m) => (m.files ? { ...m, files: slimFiles(m.files) } : m)),
+    };
     localStorage.setItem(saveKey(username), JSON.stringify({ at: Date.now(), gen: slim }));
   } catch { /* 隐身窗口或配额满了：存不了就算了，不挡正事 */ }
 }
@@ -399,8 +421,7 @@ function loadGen(username: string): Gen | null {
         ...(gen.says ?? []),
         {
           me: false,
-          text: '（刷新前做到这里。工作区里的文件都还在，右边就是；'
-            + '但它不记得之前聊过什么——想接着改的话，直接说要改哪里就行。）',
+          text: '（刷新前做到这里。文件和对话都还在，接着说要改哪里就行。）',
         },
       ],
     };
@@ -409,8 +430,20 @@ function loadGen(username: string): Gen | null {
   }
 }
 
+/** 刚选的附件 → 对话里的一张卡片。本地先给一个 object URL，存进工作区后再补上 path。 */
+function toChatFile(a: AgentImage): ChatFile {
+  const bin = atob(a.dataBase64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return {
+    name: a.name, mimeType: a.mimeType, size: bytes.length,
+    localUrl: URL.createObjectURL(new Blob([bytes], { type: a.mimeType })),
+  };
+}
+
 const freshGen = (text: string, images: AgentImage[], choice: AgentChoice): Gen => ({
   text, images, title: titleOf(text), site: null, confirmToken: null, sessionId: null,
+  files: images.map(toChatFile),
   /*
     busy 从 false 起。新稿里一上来不是"已经在做"，而是"先问你两句"
     （见 Generating 的 askStep）——写 true 会让进度区立刻出现「正在做…」，
@@ -449,7 +482,7 @@ interface PreviewKind {
   signals: string[];
 }
 
-function usePreview(active: boolean) {
+function usePreview(active: boolean, sessionId: string | null) {
   const [url, setUrl] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
   const [kind, setKind] = useState<PreviewKind | null>(null);
@@ -462,7 +495,8 @@ function usePreview(active: boolean) {
   useEffect(() => {
     if (!active || id.current) return;
     let alive = true;
-    void api.previewOpen().then(async (r) => {
+    /* 带着会话 id 开：预览伺服的必须是这条会话的工作区，而不是这个人随便哪个 */
+    void api.previewOpen(sessionId).then(async (r) => {
       if (!alive) return;
       id.current = r.previewId;
       token.current = r.token;
@@ -472,7 +506,7 @@ function usePreview(active: boolean) {
       /* 预览开不了不该拦住生成——右栏退回骨架屏，左边照常在做事 */
     });
     return () => { alive = false; };
-  }, [active]);
+  }, [active, sessionId]);
 
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -559,7 +593,7 @@ function useViewportWidth(): number {
  * 里那四项同一个处理。
  */
 const NOT_YET = {
-  history: '版本记录还没接上：现在每次改动都直接写进工作区，退不回上一版',
+  history: '版本记录还没接上。要退回上一步，用左上角的「撤回这一步」',
   more: '「更多」里的复制项目、导出代码、删除还没接上',
 };
 
@@ -588,8 +622,31 @@ function Generating({
   /* 文件树的版本号。一轮做完就 +1，让「代码」页重新拉一遍 */
   const [fsRev, setFsRev] = useState(0);
   const log = useRef<HTMLDivElement | null>(null);
+  /*
+    一进来先要一条会话、一个工作区（docs/specs/2026-10-21-agent-harness.md §1）。
+
+    预览、设计扇出都在第一句对话之前，它们得知道看哪个、写哪个工作区——所以
+    会话 id 不能等第一句话回来才有。要不到（服务端还是老版本）就退回老办法：
+    不带 id，由第一句话建会话。
+  */
+  const [noSession, setNoSession] = useState(false);
+  /*
+    守卫用 ref、结果照收：严格模式会把 effect 跑两遍，用"卸载就丢弃结果"的
+    写法会发两次请求、建两个工作区，还把第一个的结果扔掉（本机实测踩过）。
+  */
+  const askedSession = useRef(false);
+  useEffect(() => {
+    if (gen.sessionId || askedSession.current) return;
+    askedSession.current = true;
+    void api.agentSession()
+      .then((r) => setGen((g) => ({ ...g, sessionId: g.sessionId ?? r.sessionId })))
+      .catch(() => setNoSession(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const ready = gen.sessionId !== null || noSession;
+
   /* 发布之后右栏换成正式地址，预览就不用再开着了 */
-  const preview = usePreview(gen.publishedUrl === null);
+  const preview = usePreview(gen.publishedUrl === null && ready, gen.sessionId);
   const { models, effortOn } = useModels();
 
   /*
@@ -607,7 +664,11 @@ function Generating({
   /* 收藏只记在这一屏里：它是"挑方向时先标一下"，不是一个要留档的东西 */
   const [favs, setFavs] = useState<Set<string>>(() => new Set());
 
-  const run = async (text: string, images: AgentImage[]) => {
+  /**
+   * 跑一轮。first 为真表示这是开场那句话——附件存好之后要回填到顶上那个气泡
+   * （gen.files），而不是对话里最后一条。
+   */
+  const run = async (text: string, images: AgentImage[], first = false) => {
     setGen((g) => ({ ...g, busy: true }));
     setModelAsk(null);
     /*
@@ -623,6 +684,15 @@ function Generating({
         choice: gen.choice,
         sessionId: gen.sessionId,
         onSession: (id) => setGen((g) => ({ ...g, sessionId: id })),
+        /* 附件存进工作区了：把 path 补到气泡里的那几张卡片上，刷新之后还点得开 */
+        onAttachments: (saved) => setGen((g) => {
+          const merge = (old?: ChatFile[]) => saved.map((f, i) => ({ ...(old?.[i] ?? {}), ...f }));
+          if (first) return { ...g, files: merge(g.files) };
+          const says = [...g.says];
+          const at = lastAsk(says);
+          if (at >= 0) says[at] = { ...says[at]!, files: merge(says[at]!.files) };
+          return { ...g, says };
+        }),
         onText: (delta) => setGen((g) => {
           did = true;
           const says = [...g.says];
@@ -650,10 +720,22 @@ function Generating({
           }));
         },
         /* 文件落盘了，右栏跟着换一版 */
-        onToolDone: (name) => {
-          if (name === 'write_file' || name === 'delete_file') {
+        onToolDone: (name, result) => {
+          if (CHANGES_FILES.has(name)) {
             preview.refresh();
             setFsRev((n) => n + 1);
+          }
+          /* 生成的图直接摆进对话里，不用切到「代码」页去找 */
+          const drawn = name === 'generate_image' ? /已生成并写入 (\S+?)（/.exec(result)?.[1] : undefined;
+          if (drawn) {
+            const f: ChatFile = { name: drawn.split('/').pop() ?? drawn, mimeType: 'image/png', size: 0, path: drawn };
+            setGen((g) => {
+              const says = [...g.says];
+              const last = says[says.length - 1];
+              if (last && !last.me) says[says.length - 1] = { ...last, files: [...(last.files ?? []), f] };
+              else says.push({ me: false, text: '', files: [f] });
+              return { ...g, says };
+            });
           }
         },
         onDone: (stopReason, turns) => {
@@ -717,16 +799,17 @@ function Generating({
   */
   const sent = useRef(false);
   useEffect(() => {
-    if (sent.current || gen.restored || gen.says.length > 0) return;
+    /* 等会话 id 到了再发：第一句话必须落在预览正看着的那个工作区里 */
+    if (sent.current || gen.restored || gen.says.length > 0 || !ready) return;
     sent.current = true;
-    void run(gen.text, gen.images);
+    void run(gen.text, gen.images, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ready]);
 
   /** 模型问的那种，回答就是下一轮的输入。 */
   const answerModel = (o: AskOption) => {
     setModelAsk(null);
-    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: o.label }] }));
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: o.label, ask: true }] }));
     void run(o.label, []);
   };
 
@@ -736,7 +819,7 @@ function Generating({
     if (gen.busy) { onToast('等这一轮做完再换'); return; }
     setPick(d);
     setTab('preview');
-    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: `用「${d.name}」这一版` }] }));
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: `用「${d.name}」这一版`, ask: true }] }));
     void run(
       `就按「${d.name}」这一版的视觉来做。那一版在 ${d.path}，`
       + `先 read_file 看它的配色、字体和排版，再把真正的页面写成 index.html。`
@@ -759,14 +842,14 @@ function Generating({
     }));
     void fan.start({
       text: gen.text, device: 'both', model: gen.choice.model, effort: gen.choice.effort,
-      variant: { kind, base },
+      variant: { kind, base }, sessionId: gen.sessionId,
     });
   };
 
   /** 下载设计稿：就是那一版写出来的那个 HTML，原样存下来。 */
   const download = async (d: FanDir) => {
     try {
-      const f = await api.workspaceFile(d.path);
+      const f = await api.workspaceFile(d.path, gen.sessionId);
       if (f.binary || f.tooBig) { onToast('这一版的文件太大，没法直接下载'); return; }
       const href = URL.createObjectURL(new Blob([f.text], { type: 'text/html;charset=utf-8' }));
       const a = document.createElement('a');
@@ -787,7 +870,9 @@ function Generating({
   });
 
   const startFan = () => {
-    void fan.start({ text: gen.text, device: 'both', model: gen.choice.model, effort: gen.choice.effort });
+    void fan.start({
+      text: gen.text, device: 'both', model: gen.choice.model, effort: gen.choice.effort, sessionId: gen.sessionId,
+    });
   };
 
   const sendFollow = async () => {
@@ -796,8 +881,7 @@ function Generating({
     const imgs = followImgs;
     setFollow('');
     setFollowImgs([]);
-    const shownText = imgs.length ? `${t}\n（附了 ${imgs.length} 张图）` : t;
-    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: shownText }] }));
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text: t, files: imgs.map(toChatFile), ask: true }] }));
     await run(t, imgs);
   };
 
@@ -863,9 +947,50 @@ function Generating({
     const text = `预览里页面报了这些错，帮我看一下并修掉：\n${list}`;
     preview.clear();
     setShowErrs(false);
-    setGen((g) => ({ ...g, says: [...g.says, { me: true, text }] }));
+    setGen((g) => ({ ...g, says: [...g.says, { me: true, text, ask: true }] }));
     void run(text, []);
   };
+
+  /**
+   * 撤回这一步：工作区退回这一轮开始前，对话也截回那一刻（服务端两样一起退）。
+   *
+   * 被撤掉的那句话放回输入框——人撤回多半是"我刚才说得不对"，改两个字重发
+   * 比从头打一遍省事。连点就一步步往前退，退到头服务端会说"没有可以撤回的"。
+   */
+  const [undoing, setUndoing] = useState(false);
+  const undo = async () => {
+    if (gen.busy || undoing || !gen.sessionId) return;
+    setUndoing(true);
+    try {
+      const r = await api.agentUndo(gen.sessionId);
+      /*
+        放回输入框的那句话从**当前渲染的** gen 里取，不在 setGen 的回调里取：
+        React 可能推迟到下一次渲染才执行那个回调，那时 setFollow 早跑完了。
+      */
+      const at0 = lastAsk(gen.says);
+      const back = at0 >= 0 ? gen.says[at0]!.text : gen.text;
+      setGen((g) => {
+        const at = lastAsk(g.says);
+        return {
+          ...g,
+          says: at >= 0 ? g.says.slice(0, at) : [],
+          steps: [],
+          /* 令牌是照撤回前的样子签的，作废，要发布让它再请求一次 */
+          confirmToken: null,
+        };
+      });
+      setModelAsk(null);
+      setFollow((cur) => cur || back);
+      preview.refresh();
+      setFsRev((n) => n + 1);
+      const short = r.label.length > 16 ? `${r.label.slice(0, 16)}…` : r.label;
+      onToast(r.left ? `撤回了「${short}」，还能再撤 ${r.left} 步` : `撤回了「${short}」`);
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : '撤回失败');
+    } finally { setUndoing(false); }
+  };
+  const canUndo = !gen.busy && !undoing && gen.sessionId !== null && !gen.publishedUrl
+    && (gen.says.length > 0 || gen.steps.length > 0);
 
   /*
     有了刷新恢复之后，「新对话」就是必需品：不给出口的话，人会一直被困在上
@@ -940,7 +1065,12 @@ function Generating({
             </span>
             <IconBtn icon="plus" title={gen.busy ? '等这一轮做完' : '新对话'} onClick={newChat} disabled={gen.busy} />
             <div style={{ flex: 1 }} />
-            <IconBtn icon="history" title="历史版本" onClick={() => onToast(NOT_YET.history)} />
+            <IconBtn
+              icon="history"
+              title={gen.busy ? '等这一轮做完再撤回' : '撤回这一步'}
+              onClick={() => void undo()}
+              disabled={!canUndo}
+            />
             <IconBtn icon="forward" title="分享" onClick={share} />
           </div>
 
@@ -951,17 +1081,28 @@ function Generating({
               display: 'flex', flexDirection: 'column', gap: 20,
             }}
           >
-            <Bubble text={gen.text} />
+            <UserBubble text={gen.text} files={gen.files} sessionId={gen.sessionId} />
 
             {gen.says.map((m, i) => (
               m.me
-                ? <Bubble key={i} text={m.text} />
-                : (
-                  <div key={i} style={{ fontSize: 'var(--text-md)', lineHeight: 1.75, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
-                    {m.text}
-                  </div>
-                )
+                ? <UserBubble key={i} text={m.text} files={m.files} sessionId={gen.sessionId} />
+                : <AiBubble key={i} text={m.text} files={m.files} sessionId={gen.sessionId} />
             ))}
+
+            {canUndo && (
+              <button
+                type="button"
+                onClick={() => void undo()}
+                title="文件退回这一轮开始前，对话也截回那一刻"
+                style={{
+                  alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 6, marginLeft: 36,
+                  padding: 0, border: 0, background: 'none', cursor: 'pointer',
+                  fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)',
+                }}
+              >
+                <Icon name="history" size={13} />撤回这一步
+              </button>
+            )}
 
             <ProcessBlock
               steps={gen.steps}
@@ -1026,7 +1167,7 @@ function Generating({
                 <AddButton
                   up
                   size={34}
-                  onImages={(next) => setFollowImgs((prev) => [...prev, ...next].slice(0, 4))}
+                  onImages={(next) => setFollowImgs((prev) => [...prev, ...next].slice(0, MAX_ATTACH))}
                   onToast={onToast}
                 />
                 <ModelPill
@@ -1134,7 +1275,7 @@ function Generating({
           />
         )}
 
-        {tab === 'code' && <CodePane rev={fsRev} />}
+        {tab === 'code' && <CodePane rev={fsRev} sessionId={gen.sessionId} />}
 
         {tab === 'preview' && (
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-sidebar)' }}>
@@ -1435,21 +1576,6 @@ function PreviewBody({ url, phone, frameRef, notice }: {
   );
 }
 
-function Bubble({ text }: { text: string }) {
-  return (
-    <div
-      style={{
-        alignSelf: 'flex-end', maxWidth: '88%', padding: '14px 16px',
-        borderRadius: '18px 18px 6px 18px', background: 'var(--surface-1)',
-        border: '1px solid var(--border-subtle)', fontSize: 'var(--text-md)',
-        lineHeight: 1.7, color: 'var(--text-primary)', whiteSpace: 'pre-wrap',
-      }}
-    >
-      {text}
-    </div>
-  );
-}
-
 // ── 与 Agent 的那条流 ───────────────────────────────────────────────────
 /**
  * 逐字读 /agent/ask 的 SSE。
@@ -1471,7 +1597,9 @@ async function streamAsk(opts: {
    * 必须用 tool_result 而不是 tool_start：start 时文件还没落盘，那一刻
    * 刷新看到的仍是上一版，人会以为"改了没生效"。
    */
-  onToolDone: (name: string) => void;
+  onToolDone: (name: string, result: string) => void;
+  /** 附件存进工作区了，给出各自的路径（与发出去的顺序一致）。 */
+  onAttachments: (files: ChatFile[]) => void;
   /**
    * 这一轮为什么结束。
    *
@@ -1488,7 +1616,8 @@ async function streamAsk(opts: {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text: opts.text,
-      images: opts.images.map(({ mimeType, dataBase64 }) => ({ mimeType, dataBase64 })),
+      /* 附件一律走 files：服务端存进工作区、抽出文字；图片照样作为图发给模型 */
+      ...(opts.images.length ? { files: opts.images } : {}),
       /* 空的就别传：服务端按它自己的默认来，比传一个空串让它去校验干净 */
       ...(opts.choice.model ? { model: opts.choice.model } : {}),
       ...(opts.choice.effort ? { effort: opts.choice.effort } : {}),
@@ -1533,13 +1662,20 @@ async function streamAsk(opts: {
         if (e.type === 'session') opts.onSession(e.id as string);
         else if (e.type === 'text') opts.onText(e.delta as string);
         else if (e.type === 'tool_start') opts.onTool(e.name as string, (e.args ?? {}) as Record<string, unknown>);
-        else if (e.type === 'tool_result') opts.onToolDone(e.name as string);
+        else if (e.type === 'tool_result') opts.onToolDone(e.name as string, String(e.result ?? ''));
+        else if (e.type === 'attachments') {
+          opts.onAttachments((e.files as { name: string; mimeType: string; size: number; path: string }[])
+            .map((f) => ({ name: f.name, mimeType: f.mimeType, size: f.size, path: f.path })));
+        }
         else if (e.type === 'done') opts.onDone(String(e.stopReason), Number(e.turns ?? 0));
         else if (e.type === 'error') opts.onError(String(e.message));
       }
     }
   }
 }
+
+/** 这些工具做完，工作区就变了——预览和「代码」页要跟着刷新。 */
+const CHANGES_FILES = new Set(['write_file', 'edit_file', 'delete_file', 'copy_file', 'generate_image']);
 
 /** 工具名 → 人话。看不懂的工具名原样显示，总比吞掉好。 */
 function toStep(name: string, args: Record<string, unknown>): Step {
@@ -1548,7 +1684,12 @@ function toStep(name: string, args: Record<string, unknown>): Step {
     list_files: ['看看空间里有什么', ''],
     read_file: ['读文件', path],
     write_file: ['写文件', path],
+    edit_file: ['改文件', path],
+    search_files: ['搜一下', typeof args.pattern === 'string' ? args.pattern : ''],
+    copy_file: ['拷文件', typeof args.to === 'string' ? args.to : ''],
     delete_file: ['删文件', path],
+    check_publishable: ['发布前自检', ''],
+    screenshot_preview: ['截图看看效果', path || 'index.html'],
     get_quota: ['查一下配额', ''],
     list_apps: ['看已有的页面', ''],
     request_deploy: ['准备发布', typeof args.site === 'string' ? `/${args.site}/` : ''],

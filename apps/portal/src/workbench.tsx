@@ -188,6 +188,8 @@ export function useFanout() {
     model: string;
     effort: string | null;
     variant?: { kind: VariantKind; base: FanDir };
+    /** 往哪条会话的工作区里出草案——预览、「代码」页看的都是它。 */
+    sessionId?: string | null;
   }) => {
     setRunning(true);
     setErr(null);
@@ -203,6 +205,7 @@ export function useFanout() {
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
           text: opts.text,
           device: opts.device,
           ...(opts.model ? { model: opts.model } : {}),
@@ -847,30 +850,30 @@ export function RefineBar({ pick, onVariant, busy }: {
  * 只读。改文件是模型的事——摆一个能编辑的编辑器，等于让人和模型同时改同
  * 一份东西，而谁都不知道对方改了什么。想改哪里，在左边说一句。
  */
-export function CodePane({ rev }: { rev: number }) {
+export function CodePane({ rev, sessionId }: { rev: number; sessionId: string | null }) {
   const [entries, setEntries] = useState<{ path: string; dir: boolean; size: number }[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [file, setFile] = useState<{ text: string; binary?: boolean; tooBig?: boolean; size: number } | null>(null);
   const [q, setQ] = useState('');
 
   useEffect(() => {
-    void api.workspaceTree()
+    void api.workspaceTree(sessionId)
       .then((r) => {
         setEntries(r.entries);
         setSel((s) => s ?? r.entries.find((e) => e.path === 'index.html')?.path
           ?? r.entries.find((e) => !e.dir)?.path ?? null);
       })
       .catch(() => setEntries([]));
-  }, [rev]);
+  }, [rev, sessionId]);
 
   useEffect(() => {
     if (!sel) { setFile(null); return; }
     let alive = true;
-    void api.workspaceFile(sel)
+    void api.workspaceFile(sel, sessionId)
       .then((r) => { if (alive) setFile(r); })
       .catch(() => { if (alive) setFile(null); });
     return () => { alive = false; };
-  }, [sel, rev]);
+  }, [sel, rev, sessionId]);
 
   const files = entries.filter((e) => !e.dir && (!q.trim() || e.path.includes(q.trim())));
 
