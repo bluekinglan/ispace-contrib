@@ -75,6 +75,9 @@ import { registerPreviewRoutes } from './routes/preview.js';
 import { PreviewSessions } from './services/preview-session.js';
 import { makePreviewAuth } from './services/preview-auth.js';
 import { detectKind } from './services/preview-kind.js';
+import { PgAgentStore } from './services/agent-store.js';
+import { SessionWorkspaces } from './services/session-workspace.js';
+import { Workspaces } from './services/workspaces.js';
 import { registerPlayRoutes } from './routes/play.js';
 import { PlaySessions } from './services/play-session.js';
 
@@ -1077,10 +1080,17 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
   registerOverviewRoutes(app, { sql, requireAuth });
 
   // ── 工作区实时预览（docs/specs/2026-10-20-preview-runtime.md）────
+  /*
+    按页面分的工作区与落库的 Agent 会话（docs/specs/2026-10-21-agent-harness.md）。
+    预览与对话共用这一个解析器：右边伺服的目录必须就是左边模型在改的那个。
+  */
+  const sessionWorkspaces = new SessionWorkspaces(new PgAgentStore(sql), new Workspaces(WORKSPACE_ROOT));
   registerPreviewRoutes(app, {
     requireAuth,
     workspaceRoot: WORKSPACE_ROOT,
     sessions: previewSessions,
+    workspaceDir: async (user, sessionId) =>
+      sessionWorkspaces.ws.dir(user.username, await sessionWorkspaces.keyFor(user, sessionId)),
   });
 
   /*
@@ -1139,6 +1149,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
   registerAgentRoutes(app, {
     sql, requireAuth, deployService,
     workspaceRoot: WORKSPACE_ROOT,
+    sessionWorkspaces,
     /*
       创建屏开着预览、**而且这个工作区确实在渲染**时，才告诉模型"用户正看着"。
 
@@ -1146,10 +1157,15 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
       （services/preview-kind.ts）。那种情况下还说「你每写完一个文件它就
       刷新一次」，模型会照着一个根本不存在的反馈回路去安排工作。
     */
-    hasLivePreview: (userId) => {
+    hasLivePreview: (userId, dir) => {
       const s = previewSessions.sessionFor(userId);
       if (!s) return false;
-      return detectKind(join(WORKSPACE_ROOT, s.username)).kind === 'static';
+      /*
+        还得是**这个**工作区的预览：一个人开着两个创建屏时，预览只跟着后开
+        的那个。对另一条会话说"他正看着"，模型会照着一个看不见的预览安排。
+      */
+      const shown = s.dir ?? join(WORKSPACE_ROOT, s.username);
+      return shown === dir && detectKind(dir).kind === 'static';
     },
   });
 

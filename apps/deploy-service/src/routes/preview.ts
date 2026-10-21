@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, type User } from '@ispace/contracts';
 import { z } from 'zod';
 import { injectPreviewShim } from '../services/preview-shim.js';
-import { PREVIEW_IDLE_MS, type PreviewSessions } from '../services/preview-session.js';
+import { PREVIEW_IDLE_MS, type PreviewSession, type PreviewSessions } from '../services/preview-session.js';
 import { detectKind } from '../services/preview-kind.js';
 import { escapeHtml, noticePage, SANDBOX_CSP, serveFile } from '../services/static-serve.js';
 
@@ -45,9 +45,17 @@ export function registerPreviewRoutes(
     requireAuth: (req: FastifyRequest) => Promise<User>;
     workspaceRoot: string;
     sessions: PreviewSessions;
+    /**
+     * 这个人、这条会话对应哪个工作区目录（services/session-workspace.ts）。
+     *
+     * 预览必须和对话指着同一个目录，否则右边看到的不是左边在改的。不传时
+     * 回落到改版前的 {workspaceRoot}/{username}——只有单测走这一支。
+     */
+    workspaceDir?: (user: User, sessionId: string | undefined) => Promise<string>;
   },
 ): void {
   const { requireAuth, workspaceRoot, sessions } = deps;
+  const dirOf = (s: PreviewSession) => s.dir ?? join(workspaceRoot, s.username);
 
   /* 兜底回收。主动释放只是加速，浏览器崩溃时它发不出来。 */
   const timer = setInterval(() => { sessions.prune(); }, 5 * 60 * 1000);
@@ -57,7 +65,10 @@ export function registerPreviewRoutes(
   // ── 开一个预览（要登录：这是换钥匙的那一步）────────────────────
   app.post(`${API_BASE}/preview-session`, async (req) => {
     const me = await requireAuth(req);
-    const s = sessions.open(me.id, me.username);
+    /* 老客户端不带 body，新的带着创建屏那条会话的 id */
+    const { sessionId } = z.object({ sessionId: z.string().max(64).optional() }).parse(req.body ?? {});
+    const dir = deps.workspaceDir ? await deps.workspaceDir(me, sessionId) : undefined;
+    const s = sessions.open(me.id, me.username, dir);
     return {
       previewId: s.id,
       token: s.token,
@@ -78,7 +89,7 @@ export function registerPreviewRoutes(
       return reply.status(404).send({ code: ERROR_CODES.NOT_FOUND, message: '没有这个预览。' });
     }
     sessions.touch(s);
-    return detectKind(join(workspaceRoot, s.username));
+    return detectKind(dirOf(s));
   });
 
   // ── 主动释放（创建屏卸载时 sendBeacon 打这里）────────────────────
@@ -113,7 +124,7 @@ export function registerPreviewRoutes(
     }
     sessions.touch(s);
 
-    const root = join(workspaceRoot, s.username);
+    const root = dirOf(s);
     const rel = (req.params as Record<string, string>)['*'] ?? '';
 
     /*

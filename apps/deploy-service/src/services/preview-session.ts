@@ -29,6 +29,14 @@ export interface PreviewSession {
   token: string;
   userId: string;
   username: string;
+  /**
+   * 伺服哪个目录（工作区的绝对路径）。
+   *
+   * 按页面分工作区之后，一个人有好几个工作区，预览要跟着"创建屏此刻在做的
+   * 那个"走（见 services/session-workspace.ts）。不给时回落到改版前的
+   * {workspaceRoot}/{username}——只有单测和老客户端会走到这一支。
+   */
+  dir?: string | undefined;
   createdAt: number;
   lastSeenAt: number;
 }
@@ -57,7 +65,7 @@ export class PreviewSessions {
    * 代价是同一个人开两个创建屏时，老的那个会停止工作——而「每人同时
    * 1 个预览」本来就是约定的配额（方案 §6.7），表现一致，不算意外。
    */
-  open(userId: string, username: string): PreviewSession {
+  open(userId: string, username: string, dir?: string): PreviewSession {
     this.prune();
     const prev = this.byUser.get(userId);
     if (prev) this.drop(prev);
@@ -72,6 +80,7 @@ export class PreviewSessions {
       token: randomBytes(32).toString('base64url'),
       userId,
       username,
+      dir,
       createdAt: this.now(),
       lastSeenAt: this.now(),
     };

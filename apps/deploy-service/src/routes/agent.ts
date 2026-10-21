@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
@@ -8,16 +8,23 @@ import {
 } from '../services/connectors-available.js';
 import { getQuota, listAppsByOwner, writeAudit, type Sql } from '@ispace/db';
 import {
-  AgentSession, ALL_TOOLS, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION, TOOLS_WITH_IMAGE,
+  AgentSession, DEFAULT_CONTEXT_CHARS, DESIGN_DIRECTIONS, MAX_IMAGES_PER_SESSION,
   configuredImageModels, configuredModels, createEngine, createImageGenerator, effortEnabled,
-  fanoutCount, runFanout, variantDirections,
-  type AvailableConnector, type FanoutEvent, type ImageGenerator, type ReasoningEffort,
-  type SessionEvent,
+  fanoutCount, numEnv, runFanout, toolsFor, variantDirections,
+  type AvailableConnector, type Engine, type FanoutEvent, type ImageGenerator, type PublishCheck,
+  type ReasoningEffort, type SessionEvent,
   safePath,
   type ToolContext,
 } from '@ispace/agent';
 import { z } from 'zod';
 import type { DeployInput, DeployOutcome } from '../services/deploy.js';
+import { MemoryAgentStore, SESSION_RETENTION_MS } from '../services/agent-store.js';
+import { MAX_ATTACHMENTS, saveAttachments, type SavedFile } from '../services/attachments.js';
+import { preflight } from '../services/preflight.js';
+import { previewShotAvailable, screenshotWorkspace } from '../services/preview-shot.js';
+import { SessionWorkspaces } from '../services/session-workspace.js';
+import { Workspaces } from '../services/workspaces.js';
+import { registerAgentHarnessRoutes, snapshotsFor } from './agent-harness.js';
 
 /**
  * Coding Agent 子系统（技术方案 §6）。
@@ -34,9 +41,10 @@ import type { DeployInput, DeployOutcome } from '../services/deploy.js';
  *    docker socket（开一个容器逃逸的口子），要么再起一套编排；而实际需要
  *    的能力只是"改这个项目的文件、走平台发布链路"，受控文件工具完全覆盖。
  *
- * 3. 会话存内存而非数据库。当前是单实例部署，重启丢会话可接受——用户重新
- *    描述一次即可，而为此引入会话持久化会带来消息裁剪、并发写等一堆问题。
- *    多实例部署时必须改，已在下方 NOTE 标明。
+ * 3. 会话原先只存内存，理由是"单实例、重启丢了让用户重说一遍"。上线后每次
+ *    部署都是一次重启，代价比预想的大，2026-10-21 起落库（agent_sessions，
+ *    见 services/agent-store.ts），消息裁剪交给上下文压缩（packages/agent 的
+ *    compact.ts）。待确认 token 仍在内存，见下方 NOTE。
  *
  * 部署二次确认严格按方案 §6.2：审批收在平台层，手机端确认后签发一次性
  * token，部署工具校验 token 方可执行。比模型层审批更硬。
@@ -66,7 +74,24 @@ const askSchema = z.object({
     .array(z.object({ mimeType: z.string(), dataBase64: z.string() }))
     .max(4)
     .default([]),
+  /**
+   * 对话里附的文件（图片、md、Word、Excel、PPT、PDF……）。
+   *
+   * 和 images 分开：images 是老客户端（手机壳）的截图通道，只给模型看、不落
+   * 盘；files 会存进工作区的 _uploads/，文档类的文字由服务端抽出来交给模型
+   * （services/attachments.ts）。
+   */
+  files: z
+    .array(z.object({ name: z.string().min(1).max(200), mimeType: z.string().max(200), dataBase64: z.string() }))
+    .max(MAX_ATTACHMENTS)
+    .default([]),
 });
+
+/**
+ * /agent/ask 的请求体上限。全局是 1 MB（产物走 multipart 另算），而附件单个就
+ * 能到 10 MB、base64 之后再大三分之一。只给这一条路放宽，别处照旧。
+ */
+const ASK_BODY_LIMIT = 32 * 1024 * 1024;
 
 /**
  * 设计扇出的产物目录（相对工作区）。
@@ -78,6 +103,8 @@ const askSchema = z.object({
 export const FANOUT_DIR = '_fanout';
 
 const fanoutSchema = z.object({
+  /** 往哪条会话的工作区里出草案。老客户端不带，落到这个人最近在做的那个。 */
+  sessionId: z.string().max(64).optional(),
   text: z.string().min(1).max(4000),
   /** 第一道问题问出来的：这页主要在哪儿看。 */
   device: z.enum(['phone', 'pc', 'both']).default('both'),
@@ -106,6 +133,10 @@ interface PendingDeploy {
   site: string;
   summary: string;
   createdAt: number;
+  /** 哪条会话请求的：发布成功后把 slug 记到它身上，以后「改 /site/」能找回这个工作区。 */
+  sessionId: string;
+  /** 发布哪个工作区。令牌签发时定下来——之后会话切了工作区，也还是发当时那个。 */
+  workspace: string;
 }
 
 /**
@@ -176,15 +207,42 @@ export function registerAgentRoutes(
      *
      * 不传等同于没有——单测与不接预览的部署都走这一支。
      */
-    hasLivePreview?: (userId: string) => boolean;
+    hasLivePreview?: (userId: string, workspaceDir: string) => boolean;
+    /**
+     * 会话 → 工作区（services/session-workspace.ts）。与预览共用同一个，线上
+     * 由 server.ts 传入（会话落库）；不传时用内存版——单测走这一支，不碰库。
+     */
+    sessionWorkspaces?: SessionWorkspaces;
+    /**
+     * 截图器。不传就按机器上有没有 chromium 决定；传 null 显式关掉。
+     * 有它才挂 screenshot_preview，也才在提示里说"你能看见"。
+     */
+    screenshot?: ((absHtml: string, device: 'phone' | 'pc') => Promise<Buffer>) | null;
+    /** 发布前自检。默认就是发布链路那一套（services/preflight.ts）。 */
+    checkPublishable?: (workspaceDir: string) => Promise<PublishCheck>;
+    /**
+     * 造引擎。默认按环境变量连网关（createEngine）；路由测试换成按脚本出事件
+     * 的假引擎，才能不起网络地把"一句话 → 工具 → 落盘 → 存历史"整条走一遍。
+     */
+    makeEngine?: (choice: { model?: string | undefined; effort?: ReasoningEffort | undefined }) => Engine;
   },
 ): void {
   const { sql, workspaceRoot, requireAuth, deployService } = deps;
   const hasLivePreview = deps.hasLivePreview ?? (() => false);
+  const sw = deps.sessionWorkspaces
+    ?? new SessionWorkspaces(new MemoryAgentStore(), new Workspaces(workspaceRoot));
+  const shooter = deps.screenshot === undefined
+    ? (previewShotAvailable() ? screenshotWorkspace : null)
+    : deps.screenshot;
+  const checkPublishable = deps.checkPublishable ?? preflight;
+  const makeEngine = deps.makeEngine ?? ((choice) => createEngine(process.env, choice));
 
-  // NOTE(多实例)：会话与待确认 token 都在内存。横向扩容时必须外置到
-  // Redis 或数据库，否则用户的下一个请求打到另一个实例就找不到会话了。
-  const sessions = new Map<string, { session: AgentSession; userId: string; touched: number }>();
+  /**
+   * 正在跑的会话。同一条会话不许并发两句：每一句开工前要拍快照、结束后要存
+   * 历史，两句交叠的话，快照对不上历史，「撤回」就会退到一个奇怪的地方。
+   */
+  const busy = new Set<string>();
+  registerAgentHarnessRoutes(app, { requireAuth, sessionWorkspaces: sw, isBusy: (id) => busy.has(id) });
 
   /**
    * 这个人能用的连接器，喂给模型的系统提示。
@@ -204,12 +262,18 @@ export function registerAgentRoutes(
 
   const pending = new Map<string, PendingDeploy>();
 
-  /** 定期清理过期会话与 token，防止内存无限增长。 */
+  // NOTE(多实例)：待确认 token 仍在内存。横向扩容时必须外置到 Redis 或数据库，
+  // 否则用户的下一个请求打到另一个实例就找不到它了。会话已经落库，不受影响。
+
+  /** 定期清理过期 token，防止内存无限增长。 */
   setInterval(() => {
     const now = Date.now();
-    for (const [k, v] of sessions) if (now - v.touched > 60 * 60 * 1000) sessions.delete(k);
     for (const [k, v] of pending) if (now - v.createdAt > CONFIRM_TTL_MS) pending.delete(k);
   }, 5 * 60 * 1000).unref();
+  /* 对话历史保留 30 天。工作区文件不受影响，这里清的只是会话记录 */
+  setInterval(() => {
+    void sw.store.prune(SESSION_RETENTION_MS).catch(() => {});
+  }, 60 * 60 * 1000).unref();
 
   /**
    * 这一次请求能生几张图。
@@ -236,8 +300,13 @@ export function registerAgentRoutes(
     };
   }
 
-  const makeToolCtx = (user: User, clientIp: string, drawer: ImageGenerator | null): ToolContext => ({
-    ws: { root: join(workspaceRoot, user.username), username: user.username },
+  const makeToolCtx = (
+    user: User,
+    clientIp: string,
+    drawer: ImageGenerator | null,
+    at: { sessionId: string; workspace: string; dir: string },
+  ): ToolContext => ({
+    ws: { root: at.dir, username: user.username },
     platform: {
       async getQuota() {
         const q = await getQuota(sql, user.id);
@@ -256,7 +325,10 @@ export function registerAgentRoutes(
         // clientIp 由外层请求处理器捕获——这个闭包是给 Agent 工具集用的，
         // 调用时早已脱离 Fastify 的请求上下文。
         const confirmToken = randomBytes(16).toString('base64url');
-        pending.set(confirmToken, { userId: user.id, site, summary, createdAt: Date.now() });
+        pending.set(confirmToken, {
+          userId: user.id, site, summary, createdAt: Date.now(),
+          sessionId: at.sessionId, workspace: at.workspace,
+        });
         await writeAudit(sql, {
           actorId: user.id, action: 'app.deploy', targetType: 'app', targetId: null,
           source: 'agent', result: 'success',
@@ -265,12 +337,21 @@ export function registerAgentRoutes(
         });
         return { confirmToken };
       },
+      checkPublishable: () => checkPublishable(at.dir),
       ...(drawer ? { generateImage: drawer } : {}),
+      ...(shooter
+        ? {
+          async screenshot({ path, device }: { path: string; device: 'phone' | 'pc' }) {
+            const abs = safePath({ root: at.dir, username: user.username }, path);
+            return { mimeType: 'image/png', dataBase64: (await shooter(abs, device)).toString('base64') };
+          },
+        }
+        : {}),
     },
   });
 
   // ── 对话（SSE 流式）──────────────────────────────────────────────
-  app.post(`${API_BASE}/agent/ask`, async (req, reply) => {
+  app.post(`${API_BASE}/agent/ask`, { bodyLimit: ASK_BODY_LIMIT }, async (req, reply) => {
     const user = await requireAuth(req);
     /*
       原先这里按 identity 拦「非开发者」，配套的是壳设置里那个身份开关。
@@ -286,7 +367,7 @@ export function registerAgentRoutes(
 
     let engine;
     try {
-      engine = createEngine(process.env, {
+      engine = makeEngine({
         model: input.model,
         effort: input.effort as ReasoningEffort | undefined,
       });
@@ -297,45 +378,36 @@ export function registerAgentRoutes(
       );
     }
 
-    const wsRoot = join(workspaceRoot, user.username);
-    await mkdir(wsRoot, { recursive: true });
-
-    const sid = input.sessionId ?? crypto.randomUUID();
-    let entry = sessions.get(sid);
-    if (entry && entry.userId !== user.id) {
-      // 会话 id 是 uuid，猜中概率极低，但仍要校验——否则知道 id 的人
-      // 能读到别人的对话历史
-      throw new IspaceError(ERROR_CODES.NOT_OWNER, '这个会话不属于你');
-    }
     /*
-      生图通道配了才挂 generate_image，也才在系统提示里说"你能画"。
+      会话与工作区（services/session-workspace.ts）。会话不属于本人时这里抛
+      NOT_OWNER；带着 targetSlug 时对准那个页面的工作区，必要时把这条会话切过去。
+
+      引擎每一句都按这次请求的选择来建——历史在库里，不绑定哪个模型，输入框里
+      中途换了模型就从这一句起生效。
+    */
+    const { record, switched } = await sw.forAsk(user, {
+      sessionId: input.sessionId, targetSlug: input.targetSlug,
+    });
+    const sid = record.id;
+    if (busy.has(sid)) {
+      /* 契约里没有"冲突"这个码；这确实是一次此刻不能做的请求 */
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '上一句还没做完，等它停下来再说。');
+    }
+    const dir = sw.ws.dir(user.username, record.workspace);
+
+    /*
+      生图通道配了才挂 generate_image，也才在系统提示里说"你能画"；截图同理。
       两件事必须同进同出：说了却没挂，模型会写一个 <img src="assets/hero.png">
       然后发现没有那个工具，页面上留一个裂图。
     */
     const drawer = makeImageGen();
+    const canDraw = drawer !== null;
+    const canSee = shooter !== null;
 
-    if (!entry) {
-      entry = {
-        session: new AgentSession({
-          engine, toolCtx: makeToolCtx(user, req.ip, drawer),
-          connectors: await availableConnectors(user.id),
-          livePreview: hasLivePreview(user.id),
-          canDraw: drawer !== null,
-          tools: drawer ? TOOLS_WITH_IMAGE : ALL_TOOLS,
-        }),
-        userId: user.id,
-        touched: Date.now(),
-      };
-      sessions.set(sid, entry);
-    } else {
-      /*
-        已有的会话也换上这一次请求的引擎。原来只在建会话时选一次模型，之后
-        追问带来的 model 被悄悄丢掉——输入框里明明换了模型，跑的还是开场那个。
-      */
-      entry.session.useEngine(engine);
-    }
-    entry.touched = Date.now();
+    /* 附件先落盘再开流：存不下（超大、超个数）要以 4xx 回去，而不是流到一半报错 */
+    const att = input.files.length ? await saveAttachments(dir, input.files) : null;
 
+    busy.add(sid);
     reply.raw.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache',
@@ -343,36 +415,53 @@ export function registerAgentRoutes(
       // 关掉网关缓冲，否则 SSE 会被攒着一起发，前端看不到逐字输出
       'x-accel-buffering': 'no',
     });
-    const send = (e: SessionEvent | { type: 'session'; id: string }) => {
+    const send = (e: SessionEvent | { type: 'session'; id: string } | { type: 'attachments'; files: SavedFile[] }) => {
       reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
     };
     send({ type: 'session', id: sid });
+    /* 附件存在了哪儿。前端据此把气泡里的附件换成工作区路径，刷新之后还点得开 */
+    if (att) send({ type: 'attachments', files: att.saved });
 
-    // 重建 session 以带上本次的事件回调
     const session = new AgentSession({
       engine,
-      toolCtx: makeToolCtx(user, req.ip, drawer),
+      toolCtx: makeToolCtx(user, req.ip, drawer, { sessionId: sid, workspace: record.workspace, dir }),
       connectors: await availableConnectors(user.id),
-      livePreview: hasLivePreview(user.id),
-      canDraw: drawer !== null,
-      tools: drawer ? TOOLS_WITH_IMAGE : ALL_TOOLS,
+      livePreview: hasLivePreview(user.id, dir),
+      canDraw,
+      canSee,
+      tools: toolsFor({ canDraw, canSee }),
+      compact: { budgetChars: numEnv(process.env.AGENT_CONTEXT_CHARS, DEFAULT_CONTEXT_CHARS) },
       onEvent: send,
     });
-    // 继承历史（除 system，构造时已有）
-    session.messages.push(...entry.session.messages.slice(1));
+    // 接上库里的历史（不含 system，构造时已按此刻的连接器、预览状态拼好）
+    session.messages.push(...record.messages);
+
+    /*
+      开工前拍一张快照，「撤回这一步」就退到这里（routes/agent-harness.ts）。
+      拍不成不拦这一轮——撤回是兜底，不能因为兜底失败让人连话都说不了；
+      只是这一步没法撤，日志里留一笔。
+    */
+    await snapshotsFor(sw, user.username, record.workspace)
+      .take({ sessionId: sid, messageCount: record.messages.length, label: input.text.slice(0, 500) })
+      .catch((e) => req.log.warn({ err: e, sid }, 'agent 快照失败，这一步撤不回'));
 
     /*
       把对象作为一句前缀交给模型，而不是塞进 system。
       塞 system 会让整段历史都带着它，用户中途换了对象时，旧的那句还在
       上下文里跟新的打架。作为本轮的前缀，换了就自然只有新的生效。
     */
-    const text = input.targetSlug
-      ? `【本次要修改的是我已发布的页面 /${user.username}/${input.targetSlug}/，`
-        + `发布时请沿用 site="${input.targetSlug}" 覆盖它，不要新建页面。】\n${input.text}`
-      : input.text;
+    const prefix = [
+      input.targetSlug
+        ? `【本次要修改的是我已发布的页面 /${user.username}/${input.targetSlug}/，`
+          + `发布时请沿用 site="${input.targetSlug}" 覆盖它，不要新建页面。】`
+        : '',
+      /* 工作区换了，前面对话里提到的文件可能已经不在眼前——让它先看一眼再动手 */
+      switched ? '【工作区已切换到这个页面的文件。先 list_files 看看现在有什么，别照着前面的对话改。】' : '',
+    ].filter(Boolean).join('\n');
+    const text = `${prefix ? `${prefix}\n` : ''}${input.text}${att?.note ?? ''}`;
 
     try {
-      const r = await session.send(text, input.images);
+      const r = await session.send(text, [...input.images, ...(att?.images ?? [])]);
       /*
         把每一轮的结果记下来。
 
@@ -387,13 +476,19 @@ export function registerAgentRoutes(
           turns: r.turns,
           tools: session.messages.filter((m) => m.role === 'tool').length,
           said: session.messages.some((m) => m.role === 'assistant' && m.content.trim().length > 0),
+          workspace: record.workspace,
         },
       }, 'agent 一轮结束');
-      entry.session.messages.length = 0;
-      entry.session.messages.push(...session.messages);
     } catch (e) {
       send({ type: 'error', message: e instanceof Error ? e.message : String(e) });
     } finally {
+      /*
+        出错也要存：工具已经改过的文件不会因为这一轮失败而复原，历史得跟
+        文件对得上，否则下一句模型会照着一个不存在的状态说话。
+      */
+      await sw.store.save(sid, { messages: session.messages.slice(1) })
+        .catch((e) => req.log.error({ err: e, sid }, 'agent 会话保存失败'));
+      busy.delete(sid);
       reply.raw.end();
     }
     return reply;
@@ -429,8 +524,8 @@ export function registerAgentRoutes(
       );
     }
 
-    const wsRoot = join(workspaceRoot, user.username);
-    await mkdir(wsRoot, { recursive: true });
+    /* 草案出在创建屏那条会话的工作区里——预览、「代码」页看的也是它 */
+    const wsRoot = await sw.ws.open(user.username, await sw.keyFor(user, input.sessionId));
 
     /* 基于某一版再出：先把原稿读出来，读不到就当场说，别让几个会话对着空气改 */
     const v = input.variant;
@@ -525,14 +620,21 @@ export function registerAgentRoutes(
    */
   app.get(`${API_BASE}/agent/workspace`, async (req) => {
     const user = await requireAuth(req);
-    const root = join(workspaceRoot, user.username);
-    return { entries: await walkWorkspace(root) };
+    const { sessionId } = z.object({ sessionId: z.string().max(64).optional() }).parse(req.query);
+    /* 一个工作区都没有的人就是空的，不为一次 GET 建会话、建目录 */
+    const key = await sw.peek(user, sessionId);
+    return { entries: key ? await walkWorkspace(sw.ws.dir(user.username, key)) : [] };
   });
 
   app.get(`${API_BASE}/agent/workspace/file`, async (req) => {
     const user = await requireAuth(req);
-    const { path: rel } = z.object({ path: z.string().min(1).max(512) }).parse(req.query);
-    const root = join(workspaceRoot, user.username);
+    const { path: rel, sessionId } = z.object({
+      path: z.string().min(1).max(512),
+      sessionId: z.string().max(64).optional(),
+    }).parse(req.query);
+    const key = await sw.peek(user, sessionId);
+    if (!key) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个文件。');
+    const root = sw.ws.dir(user.username, key);
     const abs = safePath({ root, username: user.username }, rel);
 
     const st = await stat(abs).catch(() => null);
@@ -630,15 +732,26 @@ export function registerAgentRoutes(
       留着它不放宽任何东西：仍然一次性（成功即删）、仍然绑定本人、仍然到点
       自己过期。放宽的只是"失败了还能再试一次"。
     */
+    /*
+      发的是签令牌那一刻的那个工作区（不是这个人"最近在做的"那个）：他可能
+      同时开着两个创建屏，点的是哪个页面的发布，发出去的就该是哪个。
+    */
     const outcome = await deployService.deploy({
       user,
       slug: p.site,
-      srcDir: join(workspaceRoot, user.username),
+      srcDir: sw.ws.dir(user.username, p.workspace),
       name,
       source: 'agent',
       clientIp: req.ip,
     });
     pending.delete(confirmToken);
+    /*
+      记下"这个页面是从这个工作区发出去的"。以后手机壳里说「改 /zhoubao/」，
+      会话解析器按它找回这个工作区，而不是另起一个空的（session-workspace.ts）。
+      记不上不影响这次发布——页面已经在线了。
+    */
+    await sw.store.save(p.sessionId, { slug: p.site })
+      .catch((e) => req.log.warn({ err: e }, '发布成功但没能记下页面与工作区的对应'));
     return { ...outcome, summary: p.summary };
   });
 
@@ -675,7 +788,8 @@ export function registerAgentRoutes(
       effort: effortEnabled(),
       /* 生图是另一条通道，和对话模型分开配。空数组 = 平台没有这个能力 */
       imageModels: configuredImageModels(),
-      activeSessions: sessions.size,
+      /* 此刻正在跑的会话数（会话本身在库里，不再常驻内存） */
+      activeSessions: busy.size,
     };
   });
 }

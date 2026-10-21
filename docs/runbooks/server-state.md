@@ -57,7 +57,9 @@ Supabase 全部服务与 ispace 的 Caddy / portal 均**不发布宿主端口**�
 /srv/sites/{user}/{app}/          当前版本（软链）
 /srv/releases/{user}/{app}/{ts}/  历史版本
 /srv/bundles/                     移动端页面包
-/srv/workspaces/                  Agent 工作区，每用户一个
+/srv/workspaces/{user}/{会话id}/  Agent 工作区，每次「创建」一个（2026-10-21 起）
+/srv/workspaces/{user}/legacy/    改版前每人一个的那个工作区，原样搬进来的
+/srv/workspaces/{user}/.ispace/   布局标记 layout.json 与每轮快照 snapshots/
 /srv/platform/shell.js            注入用户页面的平台 chrome
 /srv/console  /srv/portal         前端产物
 /srv/dist/                        安卓安装包（公开可下载）
