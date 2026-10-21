@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
-  LOTTERY_ALL, LOTTERY_BY_PID, LOTTERY_JACKPOT, LOTTERY_PEOPLE, LOTTERY_PRIZES, LOTTERY_PRIZE_BY_K,
+  LOTTERY_ALL, LOTTERY_BY_PID, LOTTERY_JACKPOT, LOTTERY_JP_EXCLUDE, LOTTERY_PEOPLE, LOTTERY_PRIZES, LOTTERY_PRIZE_BY_K,
   LOTTERY_REGULAR, LOTTERY_ROUNDS, lotteryRoundTitle, LOTTERY_ROUND_CN,
 } from './lottery-data';
 import { dots1024, DOTS_ON_SCREEN, Mark } from './visual';
@@ -24,8 +24,9 @@ registerEventEffects();
  * └────────────────────────────────────────────────────────────────────┘
  *
  * 五轮普通奖 + 一轮压轴（轮数见 lottery-data 的 LOTTERY_ROUNDS）：
- *   第一~五轮各 17 人，**人人有奖**，抽过的人不再进下一轮的池子；
- *   压轴从全员 85 人里重新抽 1 个 1024 红包，和普通轮的名额叠加。
+ *   第一~五轮各 17 人，**人人有奖**（85 人），抽过的人不再进下一轮的池子；
+ *   压轴从 83 人里重新抽 1 个 1024 红包（甜豆、小爱只参加普通轮），和普通
+ *   轮的名额叠加。
  *   代码里不写死轮次号：压轴是 LOTTERY_JACKPOT，普通轮是它之前的那些。
  *
  * 结果写 localStorage。这一点很重要：万一大屏那台机器在抽奖中途刷新了，
@@ -40,11 +41,11 @@ const CY = 570;
 /** 透视焦距。越小越「鼓」，1500 是稿上的手感 */
 const FOCAL = 1500;
 /*
-  v4：10.21 普通轮从 4 轮改成 5 轮，轮次号的含义变了（原先第 5 轮是压轴，
-  现在是第五轮普通奖）。换键名让旧存档自动作废，免得大屏把旧的压轴结果
-  当成第五轮接着走。
+  v5（和 UI 稿同名）：10.21 普通轮从 4 轮改成 5 轮，轮次号的含义变了（原先
+  第 5 轮是压轴，现在是第五轮普通奖）。换键名让旧存档自动作废，免得大屏把
+  旧的压轴结果当成第五轮接着走。
 */
-const STORE_KEY = 'ispace-1024-lottery-v4';
+const STORE_KEY = 'ispace-1024-lottery-v5';
 
 type Phase = 'ready' | 'rolling' | 'stopping' | 'reveal';
 type Win = { pid: number; prize: string };
@@ -122,9 +123,14 @@ function expand(r: number): string[] {
   return out;
 }
 
-/** 第 r 轮的候选池。压轴是全员重来，普通轮要扣掉已经中过的人。 */
+/**
+ * 第 r 轮的候选池。压轴是重来一遍（不扣普通轮中过的人，只去掉
+ * LOTTERY_JP_EXCLUDE），普通轮要扣掉已经中过的人。
+ */
 function poolFor(r: number, res: Results): number[] {
-  if (r === LOTTERY_JACKPOT) return LOTTERY_PEOPLE.map((p) => p.pid);
+  if (r === LOTTERY_JACKPOT) {
+    return LOTTERY_PEOPLE.filter((p) => LOTTERY_JP_EXCLUDE.indexOf(p.nick) < 0).map((p) => p.pid);
+  }
   const used: Record<number, 1> = {};
   for (let k = 1; k < r; k += 1) (res[k] ?? []).forEach((x) => { used[x.pid] = 1; });
   return LOTTERY_PEOPLE.filter((p) => !used[p.pid]).map((p) => p.pid);
@@ -729,7 +735,7 @@ export const LotteryStage = forwardRef<LotteryHandle>(
           />
         )}
 
-        {isJackpot && jpw && <Jackpot who={jpw} gather={jpGather} peopleN={LOTTERY_PEOPLE.length} />}
+        {isJackpot && jpw && <Jackpot who={jpw} gather={jpGather} peopleN={poolFor(LOTTERY_JACKPOT, results).length} />}
 
         {/* 操作提示。抽奖这一步的键位和典礼其余部分一致，所以只写它特有的 */}
         <div className="mono" style={{
@@ -930,10 +936,25 @@ function Sphere({ phase, shown, chipBox, ringBox, tickNick, tickReal, winIdx, la
   );
 }
 
+/**
+ * 一轮 16 张普通卡 + 大卡时每张普通卡的位置（12 列网格里的 [列, 行]），照稿：
+ * 第 1、4 行各 4 张、每张 3 列宽；第 2、3 行左右各 2 张、每张 2 列宽。
+ */
+const FRAME: [string, number][] = [
+  ['1 / 4', 1], ['4 / 7', 1], ['7 / 10', 1], ['10 / 13', 1],
+  ['1 / 3', 2], ['3 / 5', 2], ['9 / 11', 2], ['11 / 13', 2],
+  ['1 / 3', 3], ['3 / 5', 3], ['9 / 11', 3], ['11 / 13', 3],
+  ['1 / 4', 4], ['4 / 7', 4], ['7 / 10', 4], ['10 / 13', 4],
+];
+
 function RevealGrid({ gridRef, round, list, meta }: {
   gridRef: React.RefObject<HTMLDivElement | null>;
   round: number; list: Win[]; meta: string;
 }) {
+  const isHero = (x: Win) => !!LOTTERY_PRIZE_BY_K[x.prize]!.cash && round < LOTTERY_JACKPOT;
+  const std = list.filter((x) => !isHero(x));
+  const framed = std.length === FRAME.length && std.length < list.length;
+  const stdIdx = new Map(std.map((x, i) => [x.pid, i]));
   return (
     <>
       <div style={{
@@ -948,30 +969,30 @@ function RevealGrid({ gridRef, round, list, meta }: {
         <span className="mono" style={{ fontSize: 24, fontWeight: 700, opacity: 0.75 }}>{meta}</span>
       </div>
       {/*
-        6×4，普通轮的现金大奖（666 红包）单独占正中一张大卡，其余奖品绕着它
-        自动排。显式定位的格子先占位、自动排的再填空，所以大卡在 DOM 里排第
-        一个也不会把别人挤乱。
+        照 UI 稿：12 列 × 4 行（一格 = 稿上 6 列里的半格），普通轮的现金大奖
+        （666 红包）固定占正中 2×2（第 5–8 列、第 2–3 行），其余卡片默认各占
+        2 列自动排。
 
-        大卡的宽度按人数定，让 24 格正好排满、不留空洞：稿上是一轮 21 人
-        （大卡 2×2 + 20 张）；改成 5 轮后一轮 17 人，大卡放宽到 4×2，上下
-        各一整排、左右各两张，正好 16 张。
+        一轮 17 人（16 张普通卡 + 大卡）时按稿上的「框」摆：上下两排各 4 张、
+        每张 3 列宽；中间两排左右各 2 张。24 格排满、不留空洞。人数不是 16+1
+        时退回自动排。
 
         z-index 压过彩纸（40）：彩纸从卡片后面飘，不糊在名字上。
       */}
       <div ref={gridRef} style={{
         position: 'absolute', left: 96, right: 96, top: 250, height: 674, zIndex: 50,
-        display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+        display: 'grid', gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
         gridTemplateRows: 'repeat(4, minmax(0, 1fr))', gap: 16,
       }}>
         {list.map((x) => {
           const p = LOTTERY_BY_PID[x.pid]!;
           const pz = LOTTERY_PRIZE_BY_K[x.prize]!;
           const cash = !!pz.cash;
-          if (cash && round < LOTTERY_JACKPOT) {
-            return <HeroCard key={x.pid} pid={x.pid} prize={pz.name} wide={list.length - 1 === 16} />;
-          }
+          if (cash && round < LOTTERY_JACKPOT) return <HeroCard key={x.pid} pid={x.pid} prize={pz.name} />;
+          const at = framed ? FRAME[stdIdx.get(x.pid)!] : undefined;
           return (
             <div key={x.pid} data-pid={x.pid} style={{
+              gridColumn: at ? at[0] : 'span 2', gridRow: at ? String(at[1]) : 'auto',
               position: 'relative', minWidth: 0, boxSizing: 'border-box', borderRadius: 22,
               padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 14,
               background: 'rgba(255,255,255,.06)',
@@ -1009,17 +1030,17 @@ function RevealGrid({ gridRef, round, list, meta }: {
 }
 
 /**
- * 「本轮大奖」：每个普通轮各一个的 666 红包，占名单正中（2×2，一轮 17 人时 4×2）。
+ * 「本轮大奖」：每个普通轮各一个的 666 红包，占名单正中 2×2。
  *
  * 金额和「红包」两个字分开排（稿上一大一小），从奖品名里拆：写死 666 的话
  * 哪天改了金额，大屏上就是错的。
  */
-function HeroCard({ pid, prize, wide }: { pid: number; prize: string; wide: boolean }) {
+function HeroCard({ pid, prize }: { pid: number; prize: string }) {
   const p = LOTTERY_BY_PID[pid]!;
   const m = /^(\d+)(.*)$/.exec(prize);
   return (
     <div data-pid={pid} style={{
-      position: 'relative', gridColumn: wide ? '2 / 6' : '3 / 5', gridRow: '2 / 4', minWidth: 0,
+      position: 'relative', gridColumn: '5 / 9', gridRow: '2 / 4', minWidth: 0,
       boxSizing: 'border-box', borderRadius: 32, padding: '24px 28px',
       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, textAlign: 'left',
       background: 'radial-gradient(120% 90% at 50% 0%,rgba(255,210,122,.32),rgba(251,146,60,.14) 60%,rgba(251,146,60,.08))',
@@ -1035,8 +1056,7 @@ function HeroCard({ pid, prize, wide }: { pid: number; prize: string; wide: bool
         boxShadow: '0 6px 18px rgba(251,146,60,.5)',
       }}>本轮大奖</span>
       <Face pid={pid} size={150} />
-      {/* 宽卡里文字不撑满，头像和文字作为一组居中；窄卡照稿撑满 */}
-      <span style={{ flex: wide ? '0 1 auto' : 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
         <span style={{
           maxWidth: '100%', fontSize: 56, fontWeight: 900, lineHeight: 1.05,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
