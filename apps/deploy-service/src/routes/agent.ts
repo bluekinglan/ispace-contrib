@@ -582,12 +582,17 @@ export function registerAgentRoutes(
     if (p.userId !== user.id) {
       throw new IspaceError(ERROR_CODES.NOT_OWNER, '这个发布请求不属于你');
     }
-    pending.delete(confirmToken);
-
     /*
-      产物就是这个人的工作区。Agent 的文件工具只能写在这里面
-      （makeToolCtx 的 ws.root），所以"工作区"与"他刚做出来的东西"是同一
-      回事；deploy 会把它拷进暂存目录再发，不动原件。
+      ⚠️ 令牌**发布成功之后才核销**，不是进门就核销。
+
+      原来是先 delete 再 deploy。于是发布链路把产物拦下时（扫描命中密钥或
+      XSS 规则——这是常事，也正是它存在的意义），令牌已经没了：用户看到一
+      句"被拦了"，让 Agent 改完再点发布，收到的却是「确认令牌无效或已过期」
+      ——一句与真正原因毫无关系的话，而他什么都没做错。线上 zongkelong/tianqi
+      就是这么卡住的（innerHTML-from-variable @ index.html:445）。
+
+      留着它不放宽任何东西：仍然一次性（成功即删）、仍然绑定本人、仍然到点
+      自己过期。放宽的只是"失败了还能再试一次"。
     */
     const outcome = await deployService.deploy({
       user,
@@ -597,6 +602,7 @@ export function registerAgentRoutes(
       source: 'agent',
       clientIp: req.ip,
     });
+    pending.delete(confirmToken);
     return { ...outcome, summary: p.summary };
   });
 

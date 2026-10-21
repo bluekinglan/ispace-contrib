@@ -902,7 +902,16 @@ function Generating({
       setPubOpen(false);
       onToast(`已发布到 ${r.url}`);
     } catch (e) {
-      onToast(e instanceof Error ? e.message : '发布失败');
+      /*
+        发布失败的话留在对话里，不只弹一个会淡出的 toast。
+
+        最常见的那种失败是发布链路把产物拦了（扫到密钥或 XSS 规则），而那句
+        话里带着**规则名和行号**——它正是下一步要照着改的东西。toast 一淡出，
+        人看到的就是"点了发布，按钮还在那儿"，根本不知道发生过什么。
+      */
+      const msg = e instanceof Error ? e.message : '发布失败';
+      setGen((g) => ({ ...g, says: [...g.says, { me: false, text: `没能发布：${msg}` }] }));
+      onToast(msg);
     } finally { setPublishing(false); }
   };
 
