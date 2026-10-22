@@ -32,7 +32,8 @@ import { absCover, api, type Listing } from '../api';
  */
 
 interface Msg {
-  role: 'user' | 'assistant' | 'tool';
+  /** note：壳自己插的一句说明（连接断了、还在后台做），不是谁说的话。 */
+  role: 'user' | 'assistant' | 'tool' | 'note';
   text: string;
   toolName?: string;
 }
@@ -186,6 +187,63 @@ export function AgentChat({
     onClearTarget();
   };
 
+  /* 收起助手之后，后台恢复那段轮询就别再往 state 里写了 */
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
+  /** 一个事件落进对话。流式和恢复两条路都走这里。 */
+  const onEvent = useCallback((e: Record<string, unknown>) => {
+    if (e.type === 'session') sessionId.current = e.id as string;
+    else if (e.type === 'text') {
+      setMsgs((m) => {
+        const last = m[m.length - 1];
+        /*
+          工具行之后的话另起一个气泡。之前是"最后一条不是助手就丢掉"——
+          模型调完工具再说的那句总结，一个字都显示不出来。
+        */
+        if (last?.role !== 'assistant') return [...m, { role: 'assistant', text: e.delta as string }];
+        return [...m.slice(0, -1), { ...last, text: last.text + (e.delta as string) }];
+      });
+    } else if (e.type === 'tool_start') {
+      setMsgs((m) => [...m, { role: 'tool', text: '', toolName: e.name as string }]);
+    } else if (e.type === 'error') {
+      setMsgs((m) => [...m, { role: 'assistant', text: `出错了：${e.message as string}` }]);
+    }
+  }, []);
+
+  /**
+   * 连接断了之后去把结果找回来。
+   *
+   * 服务端那一轮不会因为手机断线而停：它照样跑完、存库。这里每 3 秒问一次
+   * 这条会话还在不在跑，跑完了就把库里那份对话整个摆回来。最多等 12 分钟，
+   * 再久就让人自己从「历史」里打开——那时候多半是真出事了，不该一直转圈。
+   */
+  const recover = useCallback(async (t: string, sid: string) => {
+    setMsgs((m) => [...m, { role: 'note', text: '连接断了。AI 还在后台接着做，做完会显示在这里。' }]);
+    let lastSig = '';
+    let same = 0;
+    for (let i = 0; i < 240 && alive.current; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      let v: Awaited<ReturnType<typeof api.agentSessionView>>;
+      try { v = await api.agentSessionView(t, sid); } catch { continue; }
+      /*
+        老的服务端不带 busy：那就看对话两次（6 秒）没变，且最后一句是助手的。
+        猜得到的只有这么多，宁可多等一轮也别把半截结果当成做完了。
+      */
+      const tail = v.says[v.says.length - 1];
+      const sig = `${v.says.length}:${tail?.text.length ?? 0}`;
+      if (sig === lastSig) same += 1; else { lastSig = sig; same = 0; }
+      const done = v.busy === false || (v.busy === undefined && same >= 2 && tail !== undefined && !tail.me);
+      if (done) {
+        if (alive.current) setMsgs(v.says.map((x) => ({ role: x.me ? 'user' : 'assistant', text: x.text })));
+        return;
+      }
+    }
+    if (alive.current) {
+      setMsgs((m) => [...m, { role: 'note', text: '还没做完。过一会儿从左上角「历史」里打开这条对话看结果。' }]);
+    }
+  }, []);
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || busy) return;
@@ -196,66 +254,48 @@ export function AgentChat({
     const imgs = images;
     setImages([]);
 
-    const t = await session.get();
-    if (!t) {
-      setMsgs((m) => [...m, { role: 'assistant', text: '登录状态失效，请重新登录。' }]);
-      setBusy(false);
-      return;
-    }
-
-    // 先放一个空的助手气泡，流式片段往里追加
-    setMsgs((m) => [...m, { role: 'assistant', text: '' }]);
-
     try {
-      const res = await fetch(`${API_BASE}/deploy/api/agent/ask`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: sessionId.current, text, images: imgs,
-          // 让模型不必从话里猜「改一改」指的是哪个页面。服务端会把它
-          // 变成一条上下文：发布时覆盖这个 slug，而不是新建一个。
-          ...(target ? { targetSlug: target.slug } : {}),
-        }),
-      });
-
-      // React Native 的 fetch 不支持流式读取 body，只能整体拿到后再解析。
-      // 代价是逐字输出变成"一次性出现"——在手机上这个差别可接受，
-      // 换来的是不必引入第三方 SSE 库或改用 WebSocket。
-      const raw = await res.text();
-      for (const line of raw.split('\n')) {
-        if (!line.startsWith('data:')) continue;
-        let e: Record<string, unknown>;
-        try { e = JSON.parse(line.slice(5)) as Record<string, unknown>; } catch { continue; }
-
-        if (e.type === 'session') sessionId.current = e.id as string;
-        else if (e.type === 'text') {
-          setMsgs((m) => {
-            const last = m[m.length - 1];
-            if (last?.role !== 'assistant') return m;
-            return [...m.slice(0, -1), { ...last, text: last.text + (e.delta as string) }];
-          });
-        } else if (e.type === 'tool_start') {
-          setMsgs((m) => [...m, { role: 'tool', text: '', toolName: e.name as string }]);
-        } else if (e.type === 'error') {
-          setMsgs((m) => [...m, { role: 'assistant', text: `出错了：${e.message as string}` }]);
-        }
+      const t = await session.get();
+      if (!t) {
+        setMsgs((m) => [...m, { role: 'assistant', text: '登录状态失效，请重新登录。' }]);
+        return;
       }
+
+      /*
+        先开会话拿到 id 再发。之前是发出去之后等流里的第一个事件才知道 id——
+        而 fetch 要等整段回复收完才交出任何东西，连接一断，连"去哪儿找结果"
+        都不知道。
+      */
+      if (!sessionId.current) sessionId.current = (await api.agentNewSession(t)).sessionId;
+      const sid = sessionId.current;
+
+      const r = await streamAsk(t, {
+        sessionId: sid, text, images: imgs,
+        // 让模型不必从话里猜「改一改」指的是哪个页面。服务端会把它
+        // 变成一条上下文：发布时覆盖这个 slug，而不是新建一个。
+        ...(target ? { targetSlug: target.slug } : {}),
+      }, onEvent);
+
+      if (r.kind === 'http') setMsgs((m) => [...m, { role: 'assistant', text: r.message }]);
+      if (r.kind === 'dropped') await recover(t, sid);
 
       // 拉取待确认的发布请求
       const p = await fetch(`${API_BASE}/deploy/api/agent/pending`, {
         headers: { authorization: `Bearer ${t}` },
-      }).then((r) => r.json() as Promise<{ items: PendingDeploy[] }>).catch(() => ({ items: [] }));
-      setPending(p.items[0] ?? null);
+      }).then((x) => x.json() as Promise<{ items: PendingDeploy[] }>).catch(() => ({ items: [] }));
+      if (alive.current) setPending(p.items[0] ?? null);
     } catch (e) {
       setMsgs((m) => [...m, {
         role: 'assistant',
         text: `连接失败：${e instanceof Error ? e.message : String(e)}`,
       }]);
     } finally {
-      setBusy(false);
-      setTimeout(() => scroller.current?.scrollToEnd({ animated: true }), 60);
+      if (alive.current) {
+        setBusy(false);
+        setTimeout(() => scroller.current?.scrollToEnd({ animated: true }), 60);
+      }
     }
-  }, [input, busy, images, target]);
+  }, [input, busy, images, target, onEvent, recover]);
 
   const confirmDeploy = useCallback(async () => {
     if (!pending) return;
@@ -300,14 +340,19 @@ export function AgentChat({
         {talking ? msgs.map((m, i) =>
           m.role === 'tool' ? (
             <Text key={i} style={s.toolLine}>· {toolLabel(m.toolName)}</Text>
-          ) : (
+          ) : m.role === 'note' ? (
+            <Text key={i} style={s.noteLine}>{m.text}</Text>
+          ) : !m.text ? null : (
             <View key={i} style={[s.bubble, m.role === 'user' ? s.bubbleUser : s.bubbleBot]}>
-              <Text style={m.role === 'user' ? s.bubbleUserText : s.bubbleBotText}>
-                {m.text || (busy && i === msgs.length - 1 ? '…' : '')}
-              </Text>
+              <Text style={m.role === 'user' ? s.bubbleUserText : s.bubbleBotText}>{m.text}</Text>
             </View>
           ),
-        ) : (
+        ) : null}
+        {/* 还在等下一个字（刚发出去、或者正在调工具）：补一个省略号，别让人以为卡住了 */}
+        {talking && busy && msgs[msgs.length - 1]?.role !== 'assistant' && (
+          <View style={[s.bubble, s.bubbleBot]}><Text style={s.bubbleBotText}>…</Text></View>
+        )}
+        {!talking && (
           <>
             <Text style={s.hello}>{displayName}，今天想做点什么？</Text>
             <View style={s.paths}>
@@ -538,6 +583,7 @@ const s = StyleSheet.create({
   bubbleUserText: { color: '#fff', fontSize: 15, lineHeight: 22 },
   bubbleBotText: { color: '#181715', fontSize: 15, lineHeight: 22 },
   toolLine: { fontSize: 12.5, color: '#a2a09b', marginLeft: 4 },
+  noteLine: { fontSize: 13, lineHeight: 20, color: '#ee5c2a', marginLeft: 4 },
 
   confirm: {
     marginTop: 8, padding: 16, borderRadius: 22, backgroundColor: '#fbe4da', gap: 4,
@@ -585,3 +631,53 @@ const s = StyleSheet.create({
   sheetRowText: { flex: 1, fontSize: 15, color: '#181715' },
   sheetRowWhen: { fontSize: 12.5, color: '#a2a09b' },
 });
+
+/**
+ * 发一句、边收边处理。
+ *
+ * 用 XMLHttpRequest 而不是 fetch：React Native 的 fetch 要等整段回复收完
+ * 才交出 body，一轮动辄一两分钟，这期间屏幕上什么都没有，连接一断就全丢。
+ * RN 的 XHR 挂了 onprogress 会把收到的部分一段段递上来，SSE 正好按块解析。
+ *
+ * 结果三种：done 正常收完；http 服务端回了错误码（带着它的那句话）；
+ * dropped 连接断在半路（切后台、网络抖、网关掐了长连接）——调用方去恢复。
+ */
+function streamAsk(
+  token: string,
+  body: Record<string, unknown>,
+  onEvent: (e: Record<string, unknown>) => void,
+): Promise<{ kind: 'done' } | { kind: 'http'; message: string } | { kind: 'dropped' }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    let seen = 0;
+    let buf = '';
+    const pump = () => {
+      if (xhr.status !== 200) return;
+      const text = xhr.responseText ?? '';
+      buf += text.slice(seen);
+      seen = text.length;
+      // 一个事件以空行结尾；最后一段可能是半截，留到下一次
+      const frames = buf.split('\n\n');
+      buf = frames.pop() ?? '';
+      for (const frame of frames) {
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue; // `: ping` 心跳之类的注释行
+          try { onEvent(JSON.parse(line.slice(5)) as Record<string, unknown>); } catch { /* 半条丢掉 */ }
+        }
+      }
+    };
+    xhr.open('POST', `${API_BASE}/deploy/api/agent/ask`);
+    xhr.setRequestHeader('authorization', `Bearer ${token}`);
+    xhr.setRequestHeader('content-type', 'application/json');
+    xhr.onprogress = pump;
+    xhr.onload = () => {
+      if (xhr.status === 200) { pump(); resolve({ kind: 'done' }); return; }
+      let message = `请求失败（${xhr.status}）`;
+      try { message = (JSON.parse(xhr.responseText) as { message?: string }).message ?? message; } catch { /* 不是 JSON */ }
+      resolve({ kind: 'http', message });
+    };
+    xhr.onerror = () => { pump(); resolve({ kind: 'dropped' }); };
+    xhr.ontimeout = () => { pump(); resolve({ kind: 'dropped' }); };
+    xhr.send(JSON.stringify(body));
+  });
+}

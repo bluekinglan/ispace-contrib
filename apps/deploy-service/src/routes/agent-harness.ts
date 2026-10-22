@@ -96,12 +96,18 @@ export function registerAgentHarnessRoutes(
     };
   });
 
-  /** 一条会话的对话流（给人看的那份，见 services/session-view.ts）。 */
+  /**
+   * 一条会话的对话流（给人看的那份，见 services/session-view.ts）。
+   *
+   * busy：这一句是不是还在跑。手机上等回复的那条连接会断（切到后台、网络
+   * 一抖），但服务端那一轮照样跑完、照样存库——手机靠这个字段轮询，等它
+   * 变成 false 再把结果摆回来，而不是只留一句 Network request failed。
+   */
   app.get(`${API_BASE}/agent/session/:id`, async (req) => {
     const user = await requireAuth(req);
     const r = await mine(user, (req.params as { id: string }).id);
     return {
-      id: r.id, slug: r.slug, updatedAt: r.updatedAt,
+      id: r.id, slug: r.slug, updatedAt: r.updatedAt, busy: isBusy(r.id),
       title: sessionTitle(r.messages.find((m) => m.role === 'user')?.content ?? ''),
       says: toView(r.messages),
     };

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, ERROR_CODES, IspaceError, appSlugSchema, type User } from '@ispace/contracts';
@@ -25,6 +26,25 @@ import { previewShotAvailable, screenshotWorkspace } from '../services/preview-s
 import { SessionWorkspaces } from '../services/session-workspace.js';
 import { Workspaces } from '../services/workspaces.js';
 import { registerAgentHarnessRoutes, snapshotsFor } from './agent-harness.js';
+
+/**
+ * SSE 心跳：每 15 秒写一行注释（`: ping`），给中间每一跳一个"还活着"的信号。
+ *
+ * 模型写一个大文件时，一两分钟里没有任何一个事件要发——工具调用的参数是一口
+ * 气生成完才执行的。这一路上的网关、负载均衡、手机系统的省电策略，看到一条
+ * 一分钟不动的连接，都可能把它当死连接掐掉。线上实测：手机上等一轮 158 秒的
+ * 回复，连接断在半路，服务端照样跑完存库，手机只剩一句 Network request failed。
+ *
+ * 注释行不是事件：门户和手机壳的解析都只认 `data:` 开头的行，这一行被跳过。
+ */
+const HEARTBEAT_MS = 15_000;
+function heartbeat(raw: ServerResponse): () => void {
+  const t = setInterval(() => {
+    if (!raw.writableEnded && !raw.destroyed) raw.write(': ping\n\n');
+  }, HEARTBEAT_MS);
+  t.unref();
+  return () => clearInterval(t);
+}
 
 /**
  * Coding Agent 子系统（技术方案 §6）。
@@ -432,6 +452,7 @@ export function registerAgentRoutes(
       reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
     };
     send({ type: 'session', id: sid });
+    const stopBeat = heartbeat(reply.raw);
     /* 附件存在了哪儿。前端据此把气泡里的附件换成工作区路径，刷新之后还点得开 */
     if (att) send({ type: 'attachments', files: att.saved });
 
@@ -524,6 +545,7 @@ export function registerAgentRoutes(
       await sw.store.save(sid, { messages: session.messages.slice(1) })
         .catch((e) => req.log.error({ err: e, sid }, 'agent 会话保存失败'));
       busy.delete(sid);
+      stopBeat();
       reply.raw.end();
     }
     return reply;
@@ -606,6 +628,7 @@ export function registerAgentRoutes(
     /* 客户端断开就别再烧模型了——六个会话一起跑，这一下省的是六份 */
     const abort = new AbortController();
     req.raw.on('close', () => abort.abort());
+    const stopBeat = heartbeat(reply.raw);
 
     try {
       await runFanout({
@@ -634,6 +657,7 @@ export function registerAgentRoutes(
         message: e instanceof Error ? e.message : String(e),
       });
     } finally {
+      stopBeat();
       reply.raw.end();
     }
     return reply;

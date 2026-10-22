@@ -153,6 +153,19 @@ describe('顶栏那几颗的接口', () => {
     expect((await req('GET', '/agent/session/00000000-0000-4000-8000-000000000000')).statusCode).toBe(404);
   });
 
+  /*
+    手机上等回复的连接断了（切后台、网络抖一下），服务端那一轮照样跑完存库。
+    手机靠 busy 轮询：还在跑就等，跑完再把对话摆回来。
+  */
+  it('点开一条会话时说得出它是不是还在跑', async () => {
+    const a = await made('做一个值班排班表');
+    expect((await req('GET', `/agent/session/${a.id}`)).json().busy).toBe(false);
+    busy.add(a.id);
+    try {
+      expect((await req('GET', `/agent/session/${a.id}`)).json().busy).toBe(true);
+    } finally { busy.delete(a.id); }
+  });
+
   it('复制为新页面：文件拷进新工作区（不带 node_modules），对话与快照从头开始', async () => {
     const a = await made('原页面');
     const dir = sw.ws.dir('lixiao', a.workspace);

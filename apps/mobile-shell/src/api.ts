@@ -113,11 +113,18 @@ export const api = {
     call<{ items: { id: string; title: string; slug: string | null; updatedAt: number }[] }>(
       '/agent/sessions', t,
     ),
-  /** 一条会话给人看的那份对话，点开历史时摆回来接着聊。 */
+  /**
+   * 一条会话给人看的那份对话，点开历史时摆回来接着聊。busy：这一句还在跑
+   * （老的服务端不带这个字段，调用方按 undefined 处理）。
+   */
   agentSessionView: (t: string | null, id: string) =>
-    call<{ id: string; slug: string | null; title: string; says: { me: boolean; text: string }[] }>(
-      `/agent/session/${encodeURIComponent(id)}`, t,
-    ),
+    call<{
+      id: string; slug: string | null; title: string; busy?: boolean;
+      says: { me: boolean; text: string }[];
+    }>(`/agent/session/${encodeURIComponent(id)}`, t),
+  /** 先开一条会话拿到 id，再发第一句——连接中途断了也知道去哪儿找结果。 */
+  agentNewSession: (t: string | null) =>
+    call<{ sessionId: string }>('/agent/session', t, { method: 'POST' }),
 
   /** 设置 ·「编辑资料」。和电脑端头像菜单里那个对话框同一条接口。 */
   updateProfile: (t: string | null, displayName: string) =>
