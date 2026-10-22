@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
 /**
@@ -342,6 +343,131 @@ function fileKind(url: string): 'image' | 'video' | 'other' {
 }
 
 /**
+ * 附件查看器：点开一张之后能左右翻。
+ *
+ * 为什么要它：卡片上只摆得下一张封面（卡是定高的），多出来的收成一个
+ * 「+N」。没有这个查看器，那个数字就只是个数字——点开永远是第一张，剩下
+ * 几张没有任何入口。有人一口气传了 5 张，而评委和投票的人要看的恰恰是
+ * 那几张。
+ *
+ * 不做成新标签页：翻页要回退再点下一张，五张图点十次。
+ */
+function FileViewer({ files, at, onAt, onClose }: {
+  files: { name: string; url: string }[];
+  at: number;
+  onAt: (i: number) => void;
+  onClose: () => void;
+}) {
+  const n = files.length;
+  const cur = files[at];
+
+  /* 左右翻页与 Esc。循环而不是到头停住——五张图来回比对时不用管在哪一端。 */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (n < 2) return;
+      if (e.key === 'ArrowRight') { e.preventDefault(); onAt((at + 1) % n); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); onAt((at - 1 + n) % n); }
+    };
+    document.addEventListener('keydown', onKey);
+    /* 打开期间锁住背后的滚动，否则滚轮会在底下那一页上跑 */
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [at, n, onAt, onClose]);
+
+  if (!cur) return null;
+  const kind = fileKind(cur.url);
+  const arrow = (dir: -1 | 1, label: string) => (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={(e) => { e.stopPropagation(); onAt((at + dir + n) % n); }}
+      style={{
+        position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+        [dir < 0 ? 'left' : 'right']: 'max(12px, 3vw)',
+        width: 48, height: 48, borderRadius: 100, cursor: 'pointer',
+        border: '1px solid rgba(255,255,255,.28)', background: 'rgba(0,18,23,.6)',
+        color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 22, lineHeight: 1,
+      }}
+    >{dir < 0 ? '‹' : '›'}</button>
+  );
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={cur.name}
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'rgba(0,8,11,.92)', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', padding: 'max(16px, 4vh) 72px',
+        boxSizing: 'border-box',
+      }}
+    >
+      {/* 顶栏：第几张、文件名、下载、关闭 */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, top: 0,
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '14px 18px', color: 'rgba(255,255,255,.88)', fontSize: 13,
+      }}>
+        {n > 1 && <span className="mono" style={{ fontWeight: 700 }}>{at + 1} / {n}</span>}
+        <span style={{
+          flex: 1, minWidth: 0, overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.8,
+        }}>{cur.name}</span>
+        <a
+          href={cur.url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={{ color: 'var(--tabby-orange)', textDecoration: 'none', whiteSpace: 'nowrap' }}
+        >原图</a>
+        <button
+          type="button"
+          aria-label="关闭"
+          onClick={onClose}
+          style={{
+            width: 30, height: 30, borderRadius: 100, cursor: 'pointer', flex: 'none',
+            border: '1px solid rgba(255,255,255,.28)', background: 'transparent',
+            color: '#fff', fontSize: 16, lineHeight: 1,
+          }}
+        >×</button>
+      </div>
+
+      {/* 点图本身不关闭，只有点背景才关 */}
+      <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', display: 'flex' }}>
+        {kind === 'image' && (
+          <img
+            src={cur.url}
+            alt={cur.name}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
+          />
+        )}
+        {kind === 'video' && (
+          /* 这里才自动播：全屏看的时候一次只有一个视频在解码 */
+          <video src={cur.url} controls autoPlay style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 8 }} />
+        )}
+        {kind === 'other' && (
+          <a href={cur.url} target="_blank" rel="noreferrer" style={{
+            padding: '14px 20px', borderRadius: 12, color: '#fff',
+            border: '1px solid rgba(255,255,255,.28)', textDecoration: 'none',
+          }}>打开 {cur.name}</a>
+        )}
+      </div>
+
+      {n > 1 && arrow(-1, '上一张')}
+      {n > 1 && arrow(1, '下一张')}
+    </div>
+  );
+}
+
+/**
  * 作品的照片 / 视频缩略图。
  *
  * 硬件作品（kind='other'）没有可点开的链接，它的全部内容就是这几个文件。
@@ -376,9 +502,22 @@ export function WorkFiles({
    */
   only?: boolean;
 }) {
+  /* null = 没打开。索引是「在 files 里的第几个」，翻页就在整份 files 上走 */
+  const [open, setOpen] = useState<number | null>(null);
   if (files.length === 0) return null;
   const border = dark ? 'rgba(255,255,255,.18)' : 'var(--border-subtle)';
   const fg = dark ? 'rgba(255,255,255,.72)' : 'var(--text-secondary)';
+  /*
+    左键点开查看器，而不是跳新标签——五张图要来回比对，走新标签得回退再点，
+    点十次。按住 cmd / ctrl 或中键仍然照常在新标签打开，那是浏览器的约定，
+    不该因为加了个查看器就没了。
+  */
+  const openAt = (i: number) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    setOpen(i);
+  };
   const lead = cover && files[0] && fileKind(files[0].url) === 'image' ? files[0] : null;
   const rest = only && lead ? [] : lead ? files.slice(1) : files;
   const more = only && lead ? files.length - 1 : 0;
@@ -390,7 +529,7 @@ export function WorkFiles({
           target="_blank"
           rel="noreferrer"
           title={lead.name}
-          onClick={(e) => e.stopPropagation()}
+          onClick={openAt(0)}
           style={{
             /*
               固定高度而不是 aspect-ratio：卡片是定高的（.ev-work-card 252px），
@@ -412,8 +551,10 @@ export function WorkFiles({
         </a>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-      {rest.map((f) => {
+      {rest.map((f, k) => {
         const kind = fileKind(f.url);
+        /* rest 可能掐掉了首图，索引要换算回整份 files 的下标 */
+        const idx = lead ? k + 1 : k;
         return (
           <a
             key={f.url}
@@ -421,7 +562,7 @@ export function WorkFiles({
             target="_blank"
             rel="noreferrer"
             title={f.name}
-            onClick={(e) => e.stopPropagation()}
+            onClick={openAt(idx)}
             style={{
               position: 'relative', width: size, height: size, flex: 'none',
               borderRadius: 10, overflow: 'hidden', boxSizing: 'border-box',
@@ -444,6 +585,9 @@ export function WorkFiles({
         );
       })}
       </div>
+      {open !== null && (
+        <FileViewer files={files} at={open} onAt={setOpen} onClose={() => setOpen(null)} />
+      )}
     </div>
   );
 }
