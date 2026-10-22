@@ -339,6 +339,13 @@ export interface EventFinalist {
   kind: 'page' | 'other' | null;
   /** kind='page' 时的公开地址 */
   url: string | null;
+  /**
+   * 作品的照片和视频（kind='other' 时就靠它）。
+   *
+   * 不下发这个字段的时候，硬件作品在页面上是一片空白：既没有可点的链接，
+   * 也没有图——大家照着一个名字投票，评委也照着一个名字打分。
+   */
+  files: EventFile[];
   /** 已交作品 / 制作中 */
   submitted: boolean;
   /** 得票数。只在 demo 之后返回——投票期间实时票数会影响投票行为。 */
@@ -477,6 +484,8 @@ export interface EventJudgeItem {
   desc: string;
   kind: 'page' | 'other' | null;
   url: string | null;
+  /** 作品的照片和视频。硬件作品只有它，不给的话评委没东西可看。 */
+  files: EventFile[];
   /** 我给它打的分；没打过是 null */
   mine: { dims: (number | null)[]; total: number; note: string; submitted: boolean } | null;
   /** 其他评委已提交的人数（不含我）。只是个数，看不出谁打了多少。 */

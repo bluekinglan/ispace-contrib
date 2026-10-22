@@ -381,12 +381,13 @@ export function registerEventRoutes(
           idea_id: string; no: string | null; finalist: boolean; idea_name: string; plan: string;
           who: string; owner_username: string;
           kind: string | null; work_name: string | null; pitch: string | null;
+          work_files: EventFile[] | null;
           app_slug: string | null; app_owner: string | null;
           submitted: boolean; votes: number;
         }[]>`
           SELECT i.id AS idea_id, i.finalist_no AS no, i.finalist, i.name AS idea_name, i.plan,
                  u.display_name AS who, u.username AS owner_username,
-                 w.kind, w.name AS work_name, w.pitch,
+                 w.kind, w.name AS work_name, w.pitch, w.files AS work_files,
                  a.slug AS app_slug, au.username AS app_owner,
                  (w.id IS NOT NULL) AS submitted,
                  (SELECT count(*) FROM ispace.event_votes v
@@ -409,6 +410,8 @@ export function registerEventRoutes(
           ownerUsername: r.owner_username,
           kind: (r.kind as 'page' | 'other' | null) ?? null,
           url: workUrl(r.kind, r.app_owner, r.app_slug),
+          /* 硬件作品只有照片，没有它页面上就是一片空白 */
+          files: r.work_files ?? [],
           submitted: r.submitted,
           votes: showVotes ? Number(r.votes) : null,
         }))
@@ -759,6 +762,7 @@ export function registerEventRoutes(
       sql<{
         idea_id: string; no: string; idea_name: string; plan: string;
         who: string; kind: string | null; work_name: string | null; pitch: string | null;
+        work_files: EventFile[] | null;
         app_slug: string | null; app_owner: string | null;
         dims: (number | null)[] | null; total: number | null;
         note: string | null; submitted: boolean;
@@ -766,7 +770,7 @@ export function registerEventRoutes(
       }[]>`
         SELECT i.id AS idea_id, i.finalist_no AS no, i.name AS idea_name, i.plan,
                u.display_name AS who,
-               w.kind, w.name AS work_name, w.pitch,
+               w.kind, w.name AS work_name, w.pitch, w.files AS work_files,
                a.slug AS app_slug, au.username AS app_owner,
                s.dims, s.total, s.note, (s.submitted_at IS NOT NULL) AS submitted,
                (SELECT count(*) FROM ispace.event_scores o
@@ -796,6 +800,8 @@ export function registerEventRoutes(
       desc: r.pitch ?? r.plan,
       kind: (r.kind as 'page' | 'other' | null) ?? null,
       url: workUrl(r.kind, r.app_owner, r.app_slug),
+      /* 硬件作品只有照片。不给的话评委是对着一个名字打分。 */
+      files: r.work_files ?? [],
       mine: r.dims
         ? {
             dims: r.dims,

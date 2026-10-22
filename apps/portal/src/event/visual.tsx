@@ -330,3 +330,101 @@ export function SectionHead({ no, title, en, note, side }: {
     </div>
   );
 }
+
+// ── 作品附件 ──────────────────────────────────────────────────────────
+
+/** 按后缀认类型。地址是服务端拼的 `…/files/{uuid}.{ext}`，后缀可信。 */
+function fileKind(url: string): 'image' | 'video' | 'other' {
+  const ext = (url.split('?')[0] ?? '').toLowerCase().slice(-4);
+  if (ext === '.png' || ext === '.jpg' || ext === 'jpeg' || ext === 'webp' || ext === '.gif') return 'image';
+  if (ext === '.mp4' || ext === '.mov') return 'video';
+  return 'other';
+}
+
+/**
+ * 作品的照片 / 视频缩略图。
+ *
+ * 硬件作品（kind='other'）没有可点开的链接，它的全部内容就是这几个文件。
+ * 在补上这个之前，活动页和评委页都只显示一个作品名——大家照着名字投票，
+ * 评委照着名字打分。
+ *
+ * 视频不在卡片上自动播：一屏十几张卡同时解码会把大屏拖垮，而且活动页在
+ * 手机上也会被看。点一下在新标签打开，交给浏览器自己的播放器。
+ */
+export function WorkFiles({ files, size = 56, dark = true, cover = false, coverHeight = 96 }: {
+  files: { name: string; url: string }[];
+  size?: number;
+  /** 深色卡片上用浅边框，浅色页面上用深边框 */
+  dark?: boolean;
+  /**
+   * 把第一张图铺成整条宽图。
+   *
+   * 投票的人是靠看来决定投谁的，而硬件作品那张图就是作品本身——缩成一个
+   * 小方块等于只告诉人「这儿有东西可点」。其余文件仍然排成小格跟在后面。
+   */
+  cover?: boolean;
+  /** 宽图的高度。活动页的卡是定高的所以压得矮，评委页可以给足。 */
+  coverHeight?: number;
+}) {
+  if (files.length === 0) return null;
+  const border = dark ? 'rgba(255,255,255,.18)' : 'var(--border-subtle)';
+  const fg = dark ? 'rgba(255,255,255,.72)' : 'var(--text-secondary)';
+  const lead = cover && files[0] && fileKind(files[0].url) === 'image' ? files[0] : null;
+  const rest = lead ? files.slice(1) : files;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {lead && (
+        <a
+          href={lead.url}
+          target="_blank"
+          rel="noreferrer"
+          title={lead.name}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            /*
+              固定高度而不是 aspect-ratio：卡片是定高的（.ev-work-card 252px），
+              由介绍那一块吸收伸缩。按比例算出来的高度不肯收缩，会把底下的作者
+              和「投一票」整条挤出卡外——卡片 overflow:hidden，挤出去就是没了。
+            */
+            display: 'block', width: '100%', height: coverHeight, flex: 'none',
+            borderRadius: 12, border: `1px solid ${border}`, boxSizing: 'border-box',
+            background: `center/cover url("${lead.url}")`,
+          }}
+        />
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {rest.map((f) => {
+        const kind = fileKind(f.url);
+        return (
+          <a
+            key={f.url}
+            href={f.url}
+            target="_blank"
+            rel="noreferrer"
+            title={f.name}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'relative', width: size, height: size, flex: 'none',
+              borderRadius: 10, overflow: 'hidden', boxSizing: 'border-box',
+              border: `1px solid ${border}`, display: 'flex',
+              alignItems: 'center', justifyContent: 'center',
+              background: kind === 'image' ? `center/cover url("${f.url}")` : 'transparent',
+              color: fg, textDecoration: 'none',
+            }}
+          >
+            {/* 视频和 PDF 没有缩略图，用图标顶上，别留一个空框 */}
+            {kind !== 'image' && (
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                <EIcon name={kind === 'video' ? 'presentation' : 'clipboard'} size={18} />
+                <span style={{ fontSize: 9, fontWeight: 600 }}>
+                  {kind === 'video' ? '视频' : '文件'}
+                </span>
+              </span>
+            )}
+          </a>
+        );
+      })}
+      </div>
+    </div>
+  );
+}

@@ -12,7 +12,7 @@ import { EVENT_JUDGES, judgeAvatar } from './judges';
 import { EventLayoutStyles, EventOrange } from './styles';
 import {
   BinaryTen, Caret, DOTS_ON_ORANGE, DotMatrix, EIcon, EventKeyframes,
-  Mark, SectionHead, type EventIconName,
+  Mark, SectionHead, WorkFiles, type EventIconName,
 } from './visual';
 
 /**
@@ -886,6 +886,17 @@ function FinalistCards({
               position: 'relative', margin: 0, fontSize: 12, lineHeight: 1.6,
               color: 'rgba(255,255,255,.72)',
             }}>{f.desc}</p>
+
+            {/*
+              硬件作品没有可点开的链接，照片就是它的全部内容——不摆出来，
+              大家是照着一个名字在投票。页面作品也摆：有人除了页面还传了
+              演示视频。
+            */}
+            {f.files.length > 0 && (
+              <div style={{ position: 'relative' }}>
+                <WorkFiles files={f.files} size={44} cover />
+              </div>
+            )}
 
             <div style={{
               position: 'relative', display: 'flex', alignItems: 'center',

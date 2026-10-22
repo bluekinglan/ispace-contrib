@@ -5,7 +5,7 @@ import {
 } from '@ispace/contracts';
 import { Badge, Button, GlobalKeyframes, Toast, ToneProvider } from '@ispace/ui';
 import { api } from '../api';
-import { EIcon, EventKeyframes, Mark } from './visual';
+import { EIcon, EventKeyframes, Mark, WorkFiles } from './visual';
 import { EventOrange } from './styles';
 import { Screening } from './Screening';
 
@@ -463,6 +463,11 @@ function Detail({
         <p style={{ margin: '4px 0 0', fontSize: 13, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
           {it.desc}
         </p>
+        {/*
+          作品的照片和视频。硬件作品没有可点开的链接，这几个文件就是评委
+          能看到的全部——不摆出来就是对着一个名字打分。
+        */}
+        {it.files.length > 0 && <WorkFiles files={it.files} size={72} dark={false} cover coverHeight={200} />}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
