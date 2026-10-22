@@ -894,7 +894,7 @@ function FinalistCards({
             */}
             {f.files.length > 0 && (
               <div style={{ position: 'relative' }}>
-                <WorkFiles files={f.files} size={44} cover />
+                <WorkFiles files={f.files} cover only />
               </div>
             )}
 

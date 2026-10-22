@@ -351,7 +351,9 @@ function fileKind(url: string): 'image' | 'video' | 'other' {
  * 视频不在卡片上自动播：一屏十几张卡同时解码会把大屏拖垮，而且活动页在
  * 手机上也会被看。点一下在新标签打开，交给浏览器自己的播放器。
  */
-export function WorkFiles({ files, size = 56, dark = true, cover = false, coverHeight = 96 }: {
+export function WorkFiles({
+  files, size = 56, dark = true, cover = false, coverHeight = 96, only = false,
+}: {
   files: { name: string; url: string }[];
   size?: number;
   /** 深色卡片上用浅边框，浅色页面上用深边框 */
@@ -365,12 +367,21 @@ export function WorkFiles({ files, size = 56, dark = true, cover = false, coverH
   cover?: boolean;
   /** 宽图的高度。活动页的卡是定高的所以压得矮，评委页可以给足。 */
   coverHeight?: number;
+  /**
+   * 只放封面，其余文件收成封面右下角的一个数字。
+   *
+   * 活动页那张卡是定高 252px 的，封面之外再排一行小格就会把底下的作者和
+   * 「投一票」挤出卡外——有人一口气传了 5 张，实测就是这样裁没的。密集的
+   * 卡墙上一张封面足够，想看全的点开。评委页不定高，不要开这个。
+   */
+  only?: boolean;
 }) {
   if (files.length === 0) return null;
   const border = dark ? 'rgba(255,255,255,.18)' : 'var(--border-subtle)';
   const fg = dark ? 'rgba(255,255,255,.72)' : 'var(--text-secondary)';
   const lead = cover && files[0] && fileKind(files[0].url) === 'image' ? files[0] : null;
-  const rest = lead ? files.slice(1) : files;
+  const rest = only && lead ? [] : lead ? files.slice(1) : files;
+  const more = only && lead ? files.length - 1 : 0;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       {lead && (
@@ -386,11 +397,19 @@ export function WorkFiles({ files, size = 56, dark = true, cover = false, coverH
               由介绍那一块吸收伸缩。按比例算出来的高度不肯收缩，会把底下的作者
               和「投一票」整条挤出卡外——卡片 overflow:hidden，挤出去就是没了。
             */
-            display: 'block', width: '100%', height: coverHeight, flex: 'none',
-            borderRadius: 12, border: `1px solid ${border}`, boxSizing: 'border-box',
-            background: `center/cover url("${lead.url}")`,
+            position: 'relative', display: 'block', width: '100%', height: coverHeight,
+            flex: 'none', borderRadius: 12, border: `1px solid ${border}`,
+            boxSizing: 'border-box', background: `center/cover url("${lead.url}")`,
           }}
-        />
+        >
+          {more > 0 && (
+            <span style={{
+              position: 'absolute', right: 6, bottom: 6, borderRadius: 100,
+              padding: '2px 8px', background: 'rgba(0,18,23,.72)', color: '#fff',
+              fontSize: 11, fontWeight: 700,
+            }}>+{more}</span>
+          )}
+        </a>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
       {rest.map((f) => {
