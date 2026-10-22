@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from '@ispace/db';
 import type { EventConfig, EventPhase } from '@ispace/contracts';
-import { computeRanking, resolvePhase, scoringWindow } from '../routes/events.js';
+import { computeRanking, resolvePhase, scoringWindow, voteStarted } from '../routes/events.js';
 
 /**
  * 阶段推导与名次汇总是这届活动里两件「算错了没人会立刻发现」的事：
@@ -21,6 +21,38 @@ const DEADLINES: EventConfig['deadlines'] = {
 
 const cfg = { deadlines: DEADLINES } as EventConfig;
 const at = (iso: string) => new Date(iso);
+
+/**
+ * 票数从什么时候开始给人看。
+ *
+ * 组织者 10.22 晚上决定投票进行中也实时显示（代价是靠前的更容易被跟投，
+ * 见 showVotes 上那段）。这里钉的是两头的边界：开放前不给，截止之后要
+ * 继续给——用「还能不能投」来判显示的话，12:00 一到票数会从页面上凭空
+ * 消失，而那正是大家最想看结果的时候。
+ */
+describe('票数什么时候给看', () => {
+  const withOpen = {
+    phase: null,
+    config: { deadlines: { ...DEADLINES, voteOpen: '2026-10-22T18:00:00+08:00' } } as EventConfig,
+  };
+
+  it.each<[string, boolean, string]>([
+    ['2026-10-22T17:59:00+08:00', false, '开放前一分钟：不给'],
+    ['2026-10-22T18:00:00+08:00', true,  '开放那一刻：给'],
+    ['2026-10-23T11:00:00+08:00', true,  '投票进行中：给'],
+    ['2026-10-23T11:55:00+08:00', true,  '截止那一刻：继续给，别让票数消失'],
+    ['2026-10-23T15:30:00+08:00', true,  '颁奖时：给'],
+  ])('%s → %s（%s）', (iso, want) => {
+    expect(voteStarted(withOpen, at(iso))).toBe(want);
+  });
+
+  /* 往届配置里没有 voteOpen，那时投票就是路演当天开——退回按阶段判 */
+  it('没配 voteOpen 时退回看阶段，不崩也不提前泄露', () => {
+    const noOpen = { phase: null, config: cfg };
+    expect(voteStarted(noOpen, at('2026-10-22T20:00:00+08:00'))).toBe(false);
+    expect(voteStarted(noOpen, at('2026-10-23T09:00:00+08:00'))).toBe(true);
+  });
+});
 
 describe('阶段按截止时间推导', () => {
   it.each<[string, EventPhase]>([

@@ -866,7 +866,12 @@ function FinalistCards({
                 }} />
                 {submitted ? '已交作品' : '制作中'}
               </span>
-              {voting && f.votes != null && (
+              {/*
+                有票数就显示，不看投票开着没有。原先这里要求 voting 为真，
+                而服务端那时只在结果公布后才给票数——那会儿投票早已截止，
+                两个条件永远碰不到一起，这一格从来没亮过。
+              */}
+              {f.votes != null && (
                 <span className="mono" style={{ flex: 'none', fontSize: 11, color: 'rgba(255,255,255,.72)' }}>
                   {f.votes} 票
                 </span>

@@ -271,6 +271,19 @@ export function scoringWindow(ev: EventRow, now: Date): { open: boolean; reason:
  *
  * 缺 voteOpen 的老配置回落到「demo 阶段才开」，与改版前行为一致。
  */
+/**
+ * 投票开放过没有（开放中，或者已经截止）。
+ *
+ * 和 voteWindowOpen 分开：那个管「现在还能不能投」，这个管「票数该不该
+ * 给人看」。截止之后不能再投，但票数要继续显示到颁奖——用前者判显示，
+ * 12:00 一到票数就会从页面上消失。
+ */
+export function voteStarted(ev: EventRow, now: Date): boolean {
+  const at = ev.config?.deadlines?.voteOpen;
+  if (at) return now.getTime() >= Date.parse(at);
+  return phaseAtLeast(resolvePhase(ev, now), 'demo');
+}
+
 function voteWindowOpen(ev: EventRow, now: Date): boolean {
   const d = ev.config?.deadlines;
   const t = now.getTime();
@@ -366,10 +379,18 @@ export function registerEventRoutes(
     */
     const showFinalists = phaseAtLeast(phase, 'building');
     /*
-      票数只在结果公布后给。投票进行中实时放票数会把投票变成跟票——
-      人气奖的意义就没了。
+      投票一开放就给票数，投票进行中也给。
+
+      ⚠️ 这是组织者 10.22 晚上定的，是个有代价的选择：实时票数会让靠前的
+      更容易被跟投，人气奖因此偏向先领先的那一个。原先的做法是藏到结果
+      公布（代码里曾写着「会把投票变成跟票，人气奖的意义就没了」），换成
+      现在这样是用那份公正换热闹和拉票的动力。要改回去，把这里换成
+      phaseAtLeast(phase, 'result') 就行。
+
+      用 voteStarted 而不是 voteWindowOpen：后者在 12:00 截止那一刻变 false，
+      票数会从页面上凭空消失，而那正是大家最想看结果的时候。
     */
-    const showVotes = phaseAtLeast(phase, 'result');
+    const showVotes = voteStarted(ev, now);
 
     /*
       一条查询取两份：入围的（不管交没交作品），和没入围但交了作品的——
