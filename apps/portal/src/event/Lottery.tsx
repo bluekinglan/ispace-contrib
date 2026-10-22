@@ -938,15 +938,31 @@ function Sphere({ phase, shown, chipBox, ringBox, tickNick, tickReal, winIdx, la
 }
 
 /**
- * 一轮 16 张普通卡 + 大卡时每张普通卡的位置（12 列网格里的 [列, 行]），照稿：
- * 第 1、4 行各 4 张、每张 3 列宽；第 2、3 行左右各 2 张、每张 2 列宽。
+ * 每张普通卡在 12 列网格里的位置（[列, 行]），按这一轮有几张普通卡选一套。
+ *
+ * 大卡（666 红包）固定占正中 5–9 列、2–4 行，所以第 2、3 行中间那段是留给
+ * 它的，普通卡只能贴左右两边——两套框的第 2、3 行因此完全一样。
  */
-const FRAME: [string, number][] = [
-  ['1 / 4', 1], ['4 / 7', 1], ['7 / 10', 1], ['10 / 13', 1],
-  ['1 / 3', 2], ['3 / 5', 2], ['9 / 11', 2], ['11 / 13', 2],
-  ['1 / 3', 3], ['3 / 5', 3], ['9 / 11', 3], ['11 / 13', 3],
-  ['1 / 4', 4], ['4 / 7', 4], ['7 / 10', 4], ['10 / 13', 4],
-];
+const FRAMES: Record<number, [string, number][]> = {
+  /* 16 张 + 大卡 = 17 人。照稿：第 1、4 行各 4 张、每张 3 列宽。 */
+  16: [
+    ['1 / 4', 1], ['4 / 7', 1], ['7 / 10', 1], ['10 / 13', 1],
+    ['1 / 3', 2], ['3 / 5', 2], ['9 / 11', 2], ['11 / 13', 2],
+    ['1 / 3', 3], ['3 / 5', 3], ['9 / 11', 3], ['11 / 13', 3],
+    ['1 / 4', 4], ['4 / 7', 4], ['7 / 10', 4], ['10 / 13', 4],
+  ],
+  /*
+    17 张 + 大卡 = 18 人（第三轮）。多出来的那一个加在最上面一排：5 张
+    3-2-2-2-3，两头仍是 3 列宽、中间三张 2 列宽，正好 12 列且左右对称。
+    其余三行一个没动——多的人只摊在一排上，整屏的节奏不变。
+  */
+  17: [
+    ['1 / 4', 1], ['4 / 6', 1], ['6 / 8', 1], ['8 / 10', 1], ['10 / 13', 1],
+    ['1 / 3', 2], ['3 / 5', 2], ['9 / 11', 2], ['11 / 13', 2],
+    ['1 / 3', 3], ['3 / 5', 3], ['9 / 11', 3], ['11 / 13', 3],
+    ['1 / 4', 4], ['4 / 7', 4], ['7 / 10', 4], ['10 / 13', 4],
+  ],
+};
 
 function RevealGrid({ gridRef, round, list, meta }: {
   gridRef: React.RefObject<HTMLDivElement | null>;
@@ -954,7 +970,8 @@ function RevealGrid({ gridRef, round, list, meta }: {
 }) {
   const isHero = (x: Win) => !!LOTTERY_PRIZE_BY_K[x.prize]!.cash && round < LOTTERY_JACKPOT;
   const std = list.filter((x) => !isHero(x));
-  const framed = std.length === FRAME.length && std.length < list.length;
+  /* 没有对应的框就退回自动排：宁可排得松散，也不要有卡片落到格子外面 */
+  const frame = std.length < list.length ? FRAMES[std.length] : undefined;
   const stdIdx = new Map(std.map((x, i) => [x.pid, i]));
   return (
     <>
@@ -974,9 +991,8 @@ function RevealGrid({ gridRef, round, list, meta }: {
         （666 红包）固定占正中 2×2（第 5–8 列、第 2–3 行），其余卡片默认各占
         2 列自动排。
 
-        一轮 17 人（16 张普通卡 + 大卡）时按稿上的「框」摆：上下两排各 4 张、
-        每张 3 列宽；中间两排左右各 2 张。24 格排满、不留空洞。人数不是 16+1
-        时退回自动排。
+        普通卡的摆法按张数查 FRAMES：17 人（16 张）是稿上那个框，18 人
+        （17 张，第三轮）在最上面一排多放一张。查不到对应的框就退回自动排。
 
         z-index 压过彩纸（40）：彩纸从卡片后面飘，不糊在名字上。
       */}
@@ -990,7 +1006,7 @@ function RevealGrid({ gridRef, round, list, meta }: {
           const pz = LOTTERY_PRIZE_BY_K[x.prize]!;
           const cash = !!pz.cash;
           if (cash && round < LOTTERY_JACKPOT) return <HeroCard key={x.pid} pid={x.pid} prize={pz.name} />;
-          const at = framed ? FRAME[stdIdx.get(x.pid)!] : undefined;
+          const at = frame?.[stdIdx.get(x.pid)!];
           return (
             <div key={x.pid} data-pid={x.pid} style={{
               gridColumn: at ? at[0] : 'span 2', gridRow: at ? String(at[1]) : 'auto',
