@@ -848,18 +848,24 @@ function FinalistCards({
                   padding: '2px 7px', whiteSpace: 'nowrap',
                 }}>{f.kind === 'page' ? 'iSpace 页面' : '硬件'}</span>
               )}
-              {!voting && (
+              {/*
+                交没交作品，投票开着的时候也要显示。
+
+                本届投票 10.22 18:00 就开了，而作品 10.23 00:00 才截止——这段
+                时间里大半作品还没交。原先这一处用 `!voting` 挡着，投票一开就
+                只剩一个编号：投票的人看不出点进去有没有东西，交作品的人也看
+                不出自己交没交上。
+              */}
+              <span style={{
+                flex: 'none', display: 'flex', alignItems: 'center', gap: 5,
+                fontSize: 11, color: 'rgba(255,255,255,.72)', whiteSpace: 'nowrap',
+              }}>
                 <span style={{
-                  flex: 'none', display: 'flex', alignItems: 'center', gap: 5,
-                  fontSize: 11, color: 'rgba(255,255,255,.72)', whiteSpace: 'nowrap',
-                }}>
-                  <span style={{
-                    width: 6, height: 6, borderRadius: 100,
-                    background: submitted ? 'var(--success)' : 'var(--warning)',
-                  }} />
-                  {submitted ? '已交作品' : '制作中'}
-                </span>
-              )}
+                  width: 6, height: 6, borderRadius: 100,
+                  background: submitted ? 'var(--success)' : 'var(--warning)',
+                }} />
+                {submitted ? '已交作品' : '制作中'}
+              </span>
               {voting && f.votes != null && (
                 <span className="mono" style={{ flex: 'none', fontSize: 11, color: 'rgba(255,255,255,.72)' }}>
                   {f.votes} 票
