@@ -14,7 +14,7 @@ import {
   type EventScreeningRankRow, type EventScreeningResponse, type EventScreeningTallyRow,
   type EventRankRow, type EventResponse, type EventSummary, type User,
 } from '@ispace/contracts';
-import type { Sql } from '@ispace/db';
+import { getPlatformPolicy, writeAudit, type Sql } from '@ispace/db';
 
 /**
  * 1024 程序员节的赛事接口。
@@ -280,6 +280,14 @@ function voteWindowOpen(ev: EventRow, now: Date): boolean {
 }
 
 /** 作品公开地址。硬件作品没有地址，只有照片。 */
+/**
+ * 作品页面在创意市场里的分类。
+ *
+ * 必须和 contracts/social.ts 里 BUCKETS 表上那个键一模一样——探索页
+ * 「1024 作品」那一格、以及卡片右上角的 1024 徽章都认这个字符串。
+ */
+const EVENT_APP_CATEGORY = '1024 作品';
+
 function workUrl(kind: string | null, owner: string | null, slug: string | null): string | null {
   return kind === 'page' && owner && slug ? `/${owner}/${slug}/` : null;
 }
@@ -561,6 +569,12 @@ export function registerEventRoutes(
     const idea = ideaRows[0];
     if (!idea) throw new IspaceError(ERROR_CODES.NOT_FOUND, '你这届没有交创意');
 
+    /* 换作品时要把上一个页面的 1024 标记摘掉，所以得在覆盖之前记下来 */
+    const [prevWork] = await sql<{ app_id: string | null }[]>`
+      SELECT app_id FROM ispace.event_works WHERE idea_id = ${idea.id}
+    `;
+    const prevAppId = prevWork?.app_id ?? null;
+
     let appId: string | null = null;
     let appVersion: number | null = null;
     let name: string;
@@ -600,7 +614,73 @@ export function registerEventRoutes(
              pitch = excluded.pitch, files = excluded.files, updated_at = now()
       RETURNING id
     `;
-    return { ok: true, workId: rows[0]!.id, appVersion };
+
+    /*
+      作品是页面的话，顺手把它摆到大家看得见的地方。
+
+      ┌─ 两件事都是「交作品」这个动作的应有之义 ──────────────────────────┐
+      │ 可见范围 —— 可见性是网关强制的（见 routes/authz.ts 补的那个越权）。 │
+      │   拿「仅自己」的页面交作品，活动页上那个「打开作品」别人点进去会被 │
+      │   挡住，而投票和评委打分都要先打得开。交上来参赛本身就是同意给全   │
+      │   公司看，所以这里直接改，并在返回里告诉他改了。                   │
+      │                                                                    │
+      │ 上架 + 分类 —— 首页探索那一格「1024 作品」是按 apps.category 归桶  │
+      │   的（contracts/social.ts 的 exploreBucket），卡片右上角那个 1024  │
+      │   徽章认同一个值。不在这里设，那一格永远是空的——这套机制一直都在， │
+      │   只是从来没有哪一步去填它。                                       │
+      └────────────────────────────────────────────────────────────────────┘
+
+      会覆盖作者原来选的分类。换作品时把上一个页面的标记摘掉（下面那段），
+      免得 1024 那一格里留着他换掉的那一版。
+    */
+    let shared: { madePublic: boolean; listed: boolean } | null = null;
+    if (input.kind === 'page' && appId) {
+      const [before] = await sql<{ visibility: string }[]>`
+        SELECT visibility FROM ispace.apps WHERE id = ${appId}
+      `;
+      const madePublic = before?.visibility !== 'public';
+
+      /*
+        平台关掉「全公司」共享时不硬来：那是管理员的决定，参赛不该成为
+        绕过它的口子。这时作品仍然交得上，只是别人暂时打不开——由组织者
+        去把开关打开，而不是让一个活动接口替平台改策略。
+      */
+      const { allowPublicShare } = await getPlatformPolicy(sql);
+      if (allowPublicShare) {
+        await sql`
+          UPDATE ispace.apps SET visibility = 'public', category = ${EVENT_APP_CATEGORY}
+           WHERE id = ${appId}
+        `;
+        await sql`
+          INSERT INTO ispace.marketplace_listings (app_id, published_by)
+          VALUES (${appId}, ${me.id})
+          ON CONFLICT (app_id) DO UPDATE SET published_at = now()
+        `;
+        shared = { madePublic, listed: true };
+        await writeAudit(sql, {
+          actorId: me.id, action: 'app.share', targetType: 'app', targetId: appId,
+          source: 'console', result: 'success',
+          metadata: { marketplace: true, viaEvent: ev.slug, madePublic },
+          ip: req.ip,
+        }).catch(() => undefined);
+      } else {
+        shared = { madePublic: false, listed: false };
+      }
+    }
+
+    /*
+      换了页面的话，把上一个页面的 1024 标记摘掉。
+      只在它确实还挂着这个分类时才动，免得清掉作者后来自己改的值。
+      上架不撤：下架是比打标记重得多的动作，而且他可能本来就想挂在市场里。
+    */
+    if (prevAppId && prevAppId !== appId) {
+      await sql`
+        UPDATE ispace.apps SET category = NULL
+         WHERE id = ${prevAppId} AND category = ${EVENT_APP_CATEGORY}
+      `;
+    }
+
+    return { ok: true, workId: rows[0]!.id, appVersion, shared };
   });
 
   // ── 投票（需要登录）──────────────────────────────────────────────

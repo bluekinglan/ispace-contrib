@@ -1697,8 +1697,18 @@ function WorkSheet({
         const r = await api.putWork(CURRENT_EVENT_SLUG, {
           kind: 'page', appSlug: pick, pitch: pitch.trim() || undefined,
         });
+        /*
+          改了别人的可见范围就得说一声。服务端交页面作品时会把它设成全公司
+          可见并上架到创意市场——不说的话，作者只会在某天发现自己的页面出现
+          在了市场里，而不知道是交作品那一下带的。
+        */
+        const extra = r.shared?.madePublic
+          ? ' · 已设为全公司可见，大家才打得开'
+          : r.shared?.listed === false
+            ? ' · 平台暂时关闭了全公司共享，别人还打不开，找管理员开一下'
+            : '';
         await onDone(`${current ? '已换成' : '已提交'}「${apps?.find((a) => a.slug === pick)?.name ?? pick}」`
-          + (r.appVersion ? ` · 参评版本 v${r.appVersion}` : ''));
+          + (r.appVersion ? ` · 参评版本 v${r.appVersion}` : '') + extra);
       } else {
         if (!name.trim()) { say('先写作品名称', 'error'); return; }
         if (files.length === 0) { say('至少传一张照片或一段视频', 'error'); return; }

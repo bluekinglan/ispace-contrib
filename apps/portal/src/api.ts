@@ -477,7 +477,14 @@ export const api = {
   putIdea: (slug: string, input: IdeaInput) =>
     send<{ ok: boolean; ideaId: string }>('PUT', `/events/${slug}/idea`, input),
   putWork: (slug: string, input: WorkInput) =>
-    send<{ ok: boolean; workId: string; appVersion: number | null }>('PUT', `/events/${slug}/work`, input),
+    send<{
+      ok: boolean; workId: string; appVersion: number | null;
+      /**
+       * 交页面作品时服务端顺手做的两件事：设成全公司可见、上架到创意市场。
+       * 交硬件作品（kind='other'）时是 null。
+       */
+      shared: { madePublic: boolean; listed: boolean } | null;
+    }>('PUT', `/events/${slug}/work`, input),
   /** 投票是开关：投过再点就是撤回。remaining 是服务端算的真实剩余票数。 */
   toggleVote: (slug: string, ideaId: string) =>
     post<{ ok: boolean; voted: boolean; remaining: number }>(`/events/${slug}/votes/${ideaId}`),
