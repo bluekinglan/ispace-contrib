@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path, Rect } from 'react-native-svg';
+import { BrandMark, Icon } from './Icon';
 
 /**
  * 壳自己的底部导航（移动端 v2 稿 · isp-tabbar）。
@@ -28,12 +28,15 @@ export type ShellTab = 'assistant' | 'explore' | 'community' | 'msg' | 'me';
 
 const ON = '#ee5c2a';
 const OFF = '#292724';
+/** isp-tabbar 稿上的那两层：一层下沉的软影，一圈 1px 的描边。 */
+const SHADOW = '0 10px 26px -12px rgba(24,23,21,.35), 0 0 0 1px rgba(24,23,21,.05)';
 
 export function ShellTabs({
   active, onChange, avatarLetter, pageUpdate, onApplyPageUpdate, onDismissPageUpdate,
   shellUpdate, unread, dark = false,
 }: {
-  active: ShellTab;
+  /** null：哪一格都不亮——比如首页是用户自己设的那个页面时，它不属于任何一格。 */
+  active: ShellTab | null;
   onChange: (t: ShellTab) => void;
   /** 「我」那一格是头像而不是图标——稿上如此，它是四格里唯一代表「人」的。 */
   avatarLetter: string;
@@ -80,18 +83,18 @@ export function ShellTabs({
           accessibilityLabel="助手"
           style={[s.round, active === 'assistant' && s.roundOn]}
         >
-          <Mark size={30} />
+          <BrandMark size={30} />
         </Pressable>
 
         <View style={s.pill}>
           <Tab label="探索" on={active === 'explore'} onPress={() => onChange('explore')}>
-            <CompassGlyph on={active === 'explore'} />
+            <Icon name="compass" size={24} strokeWidth={1.9} color={active === 'explore' ? ON : OFF} />
           </Tab>
           <Tab label="社区" on={active === 'community'} onPress={() => onChange('community')}>
-            <UsersGlyph on={active === 'community'} />
+            <Icon name="users" size={24} strokeWidth={1.9} color={active === 'community' ? ON : OFF} />
           </Tab>
           <Tab label="消息" on={active === 'msg'} onPress={() => onChange('msg')} dot={unread}>
-            <MsgGlyph on={active === 'msg'} />
+            <Icon name="msg" size={24} strokeWidth={1.9} color={active === 'msg' ? ON : OFF} />
           </Tab>
           <Tab label="我" on={active === 'me'} onPress={() => onChange('me')} dot={shellUpdate}>
             <View style={[s.avatar, active === 'me' && s.avatarOn]}>
@@ -128,63 +131,24 @@ function Tab({
   );
 }
 
-/** 品牌标记。与 packages/brand/mark.svg 同一组 path。 */
-function Mark({ size }: { size: number }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 1024 1024">
-      <Rect width={1024} height={1024} rx={276} fill="#ee5c2a" />
-      <Path d="M216 304Q216 280 239 272L464 208Q488 201 488 226V766Q488 787 468 794L239 858Q216 865 216 840Z" fill="#ffffff" />
-      <Path d="M536 226Q536 201 560 208L785 272Q808 280 808 304V840Q808 865 785 858L556 794Q536 787 536 766Z" fill="#ffffff" />
-    </Svg>
-  );
-}
-
-function CompassGlyph({ on }: { on: boolean }) {
-  const c = on ? ON : OFF;
-  return (
-    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
-      <Circle cx={12} cy={12} r={10} stroke={c} strokeWidth={1.9} />
-      <Path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36z" stroke={c} strokeWidth={1.9} strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-function UsersGlyph({ on }: { on: boolean }) {
-  const c = on ? ON : OFF;
-  return (
-    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
-      <Path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" stroke={c} strokeWidth={1.9} strokeLinecap="round" />
-      <Circle cx={9} cy={7} r={4} stroke={c} strokeWidth={1.9} />
-      <Path d="M22 21v-2a4 4 0 0 0-3-3.87" stroke={c} strokeWidth={1.9} strokeLinecap="round" />
-      <Path d="M16 3.13a4 4 0 0 1 0 7.75" stroke={c} strokeWidth={1.9} strokeLinecap="round" />
-    </Svg>
-  );
-}
-
-function MsgGlyph({ on }: { on: boolean }) {
-  const c = on ? ON : OFF;
-  return (
-    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
-      <Path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" stroke={c} strokeWidth={1.9} strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
 const s = StyleSheet.create({
   wrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 14 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  /*
+    阴影用 boxShadow（稿上的原值），不用 elevation。安卓的 elevation 阴影按
+    视图的轮廓算，这颗圆钮在荣耀机上被算成了方的——圆钮背后浮着一块方形
+    灰影。boxShadow 跟着圆角走，两边也终于是同一个值。
+  */
   round: {
     width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff',
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#181715', shadowOpacity: 0.22, shadowRadius: 13,
-    shadowOffset: { width: 0, height: 10 }, elevation: 6,
+    boxShadow: SHADOW,
   },
   roundOn: { borderWidth: 2, borderColor: ON },
   pill: {
-    flex: 1, height: 60, flexDirection: 'row', alignItems: 'center',
+    flex: 1, height: 60, flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 5, borderRadius: 30, backgroundColor: '#fff',
-    shadowColor: '#181715', shadowOpacity: 0.22, shadowRadius: 13,
-    shadowOffset: { width: 0, height: 10 }, elevation: 6,
+    boxShadow: SHADOW,
   },
   tab: { flex: 1, height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center' },
   tabOn: { backgroundColor: '#f3f1ec' },
@@ -196,9 +160,9 @@ const s = StyleSheet.create({
   avatar: {
     width: 32, height: 32, borderRadius: 16, backgroundColor: '#ffede0',
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(24,23,21,.08)',
+    boxShadow: '0 0 0 1px rgba(24,23,21,.08)',
   },
-  avatarOn: { borderWidth: 2, borderColor: ON },
+  avatarOn: { boxShadow: `0 0 0 2px ${ON}` },
   avatarText: { fontSize: 14, fontWeight: '700', color: '#181715' },
   banner: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10,

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable,
-  StyleSheet, Text, TextInput, View,
+  ActivityIndicator, AppState, BackHandler, Dimensions, Keyboard, Platform, Pressable,
+  StatusBar, StyleSheet, Text, TextInput, View,
 } from 'react-native';
+import Svg, { Defs, LinearGradient, Rect as SvgRect, Stop } from 'react-native-svg';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Updates from 'expo-updates';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -10,18 +11,19 @@ import {
   channelNameFor, CURRENT_EVENT_SLUG as EVENT_SLUG, EVENT_PATH,
   type AppJson,
 } from '@ispace/contracts';
-import { ShellChrome, UpdateCard, IncompatibleScreen } from './src/shell/ShellChrome';
+import { ShellChrome, IncompatibleScreen } from './src/shell/ShellChrome';
 import { NavContainer, parseAppJson } from './src/shell/NavContainer';
 import { Settings, type SettingKey } from './src/shell/Settings';
 import { AgentChat, type EditTarget } from './src/shell/AgentChat';
-import { Launcher, type LaunchItem } from './src/shell/Launcher';
 import { WebPage, type WebPageTarget } from './src/shell/WebPage';
 import { Explore } from './src/shell/Explore';
-import { Community } from './src/shell/Community';
+import { Community, type MyApp } from './src/shell/Community';
 import { Messages } from './src/shell/Messages';
 import { Profile } from './src/shell/Profile';
 import { Interests } from './src/shell/Interests';
-import { api, type Listing } from './src/api';
+import { api } from './src/api';
+import { BrandMark, Icon } from './src/shell/Icon';
+import { ScanScreen } from './src/shell/Scan';
 
 import { ShellTabs, type ShellTab } from './src/shell/ShellTabs';
 import { checkShellUpdate } from './src/runtime/shell-update';
@@ -31,8 +33,9 @@ import {
   switchToUserChannel, versionInfo, type LoadPhase,
 } from './src/runtime/channel';
 import {
-  deviceId, getDefaultHome, interestsAsked, markInterestsAsked, session,
-  setDefaultHome, unlockWithBiometrics,
+  clearRecentPages, deviceId, getAutoPlay, getDefaultHome, getRecentPages, interestsAsked,
+  markInterestsAsked, pushRecentPage, session, setAutoPlay, setDefaultHome, unlockWithBiometrics,
+  type RecentPage,
 } from './src/runtime/bridge';
 import appJson from './app.json';
 
@@ -69,7 +72,7 @@ import appJson from './app.json';
 const SHELL_VERSION: string = appJson.expo.version;
 
 interface Me {
-  user: { username: string; displayName: string; identity: 'user' | 'developer' };
+  user: { username: string; displayName: string; identity: 'user' | 'developer'; email?: string | null };
   spaceUrl: string;
   /** /me 本来就带着它，改版前壳没用上——「我」那一屏顶上的容量 chip 要。 */
   quota?: { storageBytesUsed: number; storageBytesLimit: number };
@@ -115,12 +118,20 @@ type ShellView =
   | { kind: 'me' }
   /** 助手。底栏左边那颗圆钮，不是一个 tab 格子但也是一个去处 */
   | { kind: 'assistant' }
-  /** 我的页面宫格。从「我」里进去，不再占底栏的位置 */
-  | { kind: 'works' }
+  /** 「我」左上角那颗：扫电脑上页面的二维码 */
+  | { kind: 'scan' }
   /** 设置。从「我」右上角那颗齿轮进去，是「我」的下一层 */
   | { kind: 'settings' }
   /** 首次登录问一次「你常做什么」 */
   | { kind: 'interests' };
+
+/**
+ * 「我的」里的一项：页面包里的一屏，或者一个用 WebView 打开的地址
+ * （自己的页面、添加的别人的页面、露出的后端）。
+ */
+type LaunchItem =
+  | { kind: 'screen'; key: string; route: string; name: string; letter: string }
+  | { kind: 'web'; key: string; path: string; name: string; letter: string; owner?: string; cover?: string | null };
 
 /** 活动接口里横幅用得上的那几项。只取用到的，不复刻整个响应类型。 */
 type EventPayload = {
@@ -179,16 +190,25 @@ function Root() {
   const [booting, setBooting] = useState(true);
   const [phase, setPhase] = useState<LoadPhase>({ kind: 'idle' });
   const [updateReady, setUpdateReady] = useState(false);
+  /** 查过一次更新没有。设置里「页面更新」那一行据此显示「检查中…」还是结果。 */
+  const [updateChecked, setUpdateChecked] = useState(false);
   const [view, setView] = useState<ShellView>({ kind: 'home' });
+  /**
+   * 收起助手时回到哪一格。助手是整屏的、盖在某一格上面打开的，收起来
+   * 应该回到原来那一格，而不是每次都跳回探索。
+   */
+  const [lastTab, setLastTab] = useState<Exclude<ShellTab, 'assistant'>>('explore');
+  useEffect(() => {
+    const k = view.kind;
+    if (k === 'explore' || k === 'community' || k === 'msg' || k === 'me') setLastTab(k);
+  }, [view.kind]);
   const [webApps, setWebApps] = useState<LaunchItem[]>([]);
-  const [loadingApps, setLoadingApps] = useState(false);
   /**
    * 1024 活动横幅。null = 没有在办的活动（接口拿不到、或已结束），整块不显示。
    *
    * 与 webApps 分开拉：活动接口免登录，而且它挂了不该连带让页面墙空着。
    */
   const [eventBanner, setEventBanner] = useState<EventBannerData | null>(null);
-  const [kbUp, setKbUp] = useState(false);
   /*
     横幅收起只对本次启动生效，不落盘：用户按 ✕ 是"现在别烦我"，
     不是"这个版本我永远不要"。下次回前台照常再提。
@@ -198,21 +218,23 @@ function Root() {
   const [shellUp, setShellUp] = useState(false);
   useEffect(() => { void checkShellUpdate().then((r) => setShellUp(Boolean(r))); }, []);
   /*
-    首页默认打开哪个页面。
+    手机首页：打开 App 直接就是的那个页面（「我」里长按一个页面设）。
 
     大多数人做页面是为了天天用其中某一个（今天排班、本周待办），
-    每次都要先看一屏宫格再点进去，等于每天多点一下。首页直接就是它，
-    宫格挪到「我的作品」——那才是"管理我做的东西"的地方。
+    每次都要先刷一圈推荐再去「我」里点进去，等于每天多点两下。
+    没设就落在探索——移动端 v2 的首屏本来就是刷推荐。
   */
   const [homeKey, setHomeKey] = useState<string | null>(null);
   useEffect(() => { void getDefaultHome().then(setHomeKey); }, []);
   /*
-    对话的主语：这次要改哪个页面。跨 tab 保留——用户从首页长按选了一个
-    页面进对话，切去创意逛一圈再回来，不该又变回「新页面」。
+    对话的主语：这次要改哪个页面。跨 tab 保留——用户从「我」长按选了一个
+    页面交给助手，切去社区逛一圈再回来，不该又变回「新页面」。
   */
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   /** 只有自己的页面能改，别人分享来的不列进去。 */
   const [myTargets, setMyTargets] = useState<EditTarget[]>([]);
+  /** 发帖能附的页面：自己的全部（不只是公开的那些，服务端也只认自己的）。 */
+  const [myApps, setMyApps] = useState<MyApp[]>([]);
   /**
    * 「照这个做一个」带过去的那句话。
    *
@@ -220,8 +242,8 @@ function Root() {
    * 留着的话，用户下次自己点开助手会发现输入框里莫名其妙躺着别人的提示词。
    */
   const [remixSeed, setRemixSeed] = useState<string | null>(null);
-  /** 发帖时能附的页面；也是「我 · 喜欢」那一栏的数据源。 */
-  const [myListings, setMyListings] = useState<Listing[]>([]);
+  /** 从助手「找一个」去探索时，一进去就打开搜索。用一次就清。 */
+  const [exploreSearch, setExploreSearch] = useState(false);
   /** 待接受的分享数。只用来在「消息」那格点一个点。 */
   const [pendingShares, setPendingShares] = useState(0);
   /** 容量，给「我」那一屏顶上的 chip。拿不到就不显示。 */
@@ -230,6 +252,12 @@ function Root() {
     autoUpdate: true, wifiOnly: true, voiceTextOnly: true,
     clearDraftOnLogout: false, biometricLock: false,
   });
+  /** 设置 ·「自动播放动态内容」。存本机，见 bridge.getAutoPlay。 */
+  const [autoPlay, setAutoPlayState] = useState(true);
+  useEffect(() => { void getAutoPlay().then(setAutoPlayState); }, []);
+  /** 「我 · 页面 · 最近」。 */
+  const [recent, setRecent] = useState<RecentPage[]>([]);
+  useEffect(() => { void getRecentPages().then(setRecent); }, []);
 
   // ── 启动：读会话 ────────────────────────────────────────────────
   useEffect(() => {
@@ -251,6 +279,23 @@ function Root() {
     })();
   }, []);
 
+  /*
+    状态栏的字：只有登录页是深底白字，其余各屏都是浅底黑字（稿上推荐页
+    也是黑字）。
+
+    之前整个壳没有一处管它，安卓默认白字——于是社区、我、设置这些白底屏上，
+    时间和信号图标白字白底，整条状态栏看不见。打开页面时 WebPage 会按页面
+    顶部的颜色自己再设一次，那一层盖在这里之上，关掉页面就退回这里的值。
+  */
+  const darkScreen = !me;
+  useEffect(() => {
+    StatusBar.setBarStyle(darkScreen ? 'light-content' : 'dark-content', true);
+    if (Platform.OS === 'android') {
+      StatusBar.setTranslucent(true);
+      StatusBar.setBackgroundColor('transparent');
+    }
+  }, [darkScreen]);
+
   /**
    * 页面封面存的是站内相对路径（如 /zongkelong/gugong-yiri/cover.png）——
    * 网页端 <img> 靠浏览器同源自动补全域名，portal 那边直接拿来用就行。
@@ -267,13 +312,12 @@ function Root() {
    * 手机端不重新实现一套"我有哪些页面"的判断——服务端已经知道了，
    * 两端各判一次迟早会不一致。
    *
-   * 后端（露出的全栈应用）与页面在启动器里一视同仁地并排——它们都是
-   * kind:'web'，打开方式同样是 WebView 打开一个地址（/svc/{user}/{name}/
-   * 而不是 /{user}/{slug}/），Launcher/Tile 那层不需要为此新增分支。
+   * 后端（露出的全栈应用）与页面一视同仁地并排——它们都是 kind:'web'，
+   * 打开方式同样是 WebView 打开一个地址（/svc/{user}/{name}/ 而不是
+   * /{user}/{slug}/）。
    */
   const loadWebApps = useCallback(async () => {
     if (!token) return;
-    setLoadingApps(true);
     const auth = { authorization: `Bearer ${token}` };
     try {
       const [mineRes, instRes, bkRes, instBkRes] = await Promise.all([
@@ -298,6 +342,7 @@ function Root() {
           mine.push({ slug: a.slug, name: a.name, letter: a.iconLetter });
         }
         setMyTargets(mine);
+        setMyApps(apps.filter((a) => a.status !== 'stopped').map((a) => ({ app_id: a.id, name: a.name })));
       }
       if (instRes.ok) {
         const { installed } = (await instRes.json()) as {
@@ -339,24 +384,15 @@ function Root() {
       }
       setWebApps(items);
     } catch {
-      // 离线时启动器仍要能开：本机页面包那部分不依赖网络
-    } finally { setLoadingApps(false); }
+      // 离线时照样能开：本机页面包那部分不依赖网络
+    }
   }, [token, me?.user.username]);
 
   useEffect(() => { void loadWebApps(); }, [loadWebApps]);
 
-  /*
-    社交那几屏要的数据。和 loadWebApps 分开拉：那一份是"我的页面"，
-    这一份是"全公司的东西"，一边挂了不该让另一边空着。
-
-    拉的是整份 /marketplace 而不是只拉我的——「我 · 喜欢」那一栏要从里面
-    筛 liked，而那恰恰是别人的页面。
-  */
+  /* 待接受的分享：只用来在「消息」那格点一个点 */
   useEffect(() => {
     if (!token) return;
-    void api.marketplace(token)
-      .then((r) => setMyListings(r.listings.filter((l) => l.mine)))
-      .catch(() => setMyListings([]));
     void api.pendingShares(token)
       .then((r) => setPendingShares(r.shares.length))
       .catch(() => setPendingShares(0));
@@ -397,12 +433,7 @@ function Root() {
           headers: token ? { authorization: `Bearer ${token}` } : {},
         });
         if (!res.ok) throw new Error(String(res.status));
-        const r = (await res.json()) as {
-          event: { phase: string; config: { deadlines: Record<string, string>; voteLimit: number } };
-          stats: { ideaCount: number };
-          finalists: unknown[];
-          me: { idea: { name: string; finalist: boolean } | null } | null;
-        };
+        const r = (await res.json()) as EventPayload;
         if (!alive) return;
         setEventBanner(r.event.phase === 'ended' ? null : eventBannerData(r));
       } catch {
@@ -422,6 +453,7 @@ function Root() {
   const check = useCallback(() => {
     void checkQuietly().then((r) => {
       setUpdateReady(r.available);
+      setUpdateChecked(true);
       if (r.available) setBannerHidden(false);
     });
   }, []);
@@ -442,10 +474,42 @@ function Root() {
     });
   }, []);
 
+  /*
+    登录成功。令牌要和 me 一起放进 state：之前只放了 me，令牌留在 SecureStore
+    里没人读——于是刚登录的这一次，凡是要带令牌的请求（我的页面、选方向、
+    发帖能附的页面……）一个都没发，「我」里显示「还没有页面」，杀掉重开才好。
+    三条登录路径（密码、扫码、SSO）都是先 session.set 再回调到这里。
+  */
+  const onLoggedIn = (m: Me) => {
+    void session.get().then((t) => {
+      setToken(t);
+      setMe(m);
+      setView({ kind: 'home' });
+      void loadMyApp(m);
+    });
+  };
+
+  /*
+    退出。把这个人的东西从内存里清干净：共用手机换人登录时，下一个人不该在
+    「我」里先看到上一个人的页面、在助手里接着上一个人的对话。
+  */
+  const onLogout = () => {
+    setMe(null);
+    setToken(null);
+    setWebApps([]);
+    setMyTargets([]);
+    setMyApps([]);
+    setEditTarget(null);
+    setRemixSeed(null);
+    setRecent([]);
+    void clearRecentPages();
+    setView({ kind: 'home' });
+  };
+
   if (booting) return <Splash />;
 
   if (!me) {
-    return <LoginScreen onLoggedIn={(m) => { setMe(m); void loadMyApp(m); }} />;
+    return <LoginScreen onLoggedIn={onLoggedIn} />;
   }
 
   if (phase.kind === 'incompatible') {
@@ -469,7 +533,7 @@ function Root() {
   const v = versionInfo();
 
   /*
-    页面包声明的屏。除首屏外的每一屏都进启动器——用户的第二个、
+    页面包声明的屏。除首屏外的每一屏都并进「我的」——用户的第二个、
     第三个页面得有地方去，不能只有 app.json 里声明的那 5 个 tab 位。
   */
   const screenItems: LaunchItem[] = Object.keys(bundle?.screens ?? {}).map((route, i) => ({
@@ -477,13 +541,7 @@ function Root() {
     name: i === 0 ? (bundle?.title ?? '我的应用') : route.replace(/^\//, '') || '主页',
     letter: (bundle?.title ?? '应').slice(0, 1),
   }));
-  // 市场已是底部栏的常驻 tab，启动器里不必再放一行入口
   const launchItems: LaunchItem[] = [...screenItems, ...webApps];
-  /*
-    单页应用（home:'page' 且只有一屏、也没有别的页面）直接进那一屏——
-    为一个东西画一屏宫格是没话找话。多于一个才需要启动器。
-  */
-  const soloPage = config.home === 'page' && screenItems.length === 1 && webApps.length === 0;
 
   /*
     首页要渲染的那个页面。选过但已经不在了（删了 / 改名）就当没选过——
@@ -491,20 +549,35 @@ function Root() {
   */
   const homeItem = homeKey ? launchItems.find((i) => i.key === homeKey) : undefined;
 
-  const openItem = (it: LaunchItem) => {
-    if (it.kind === 'market') setView({ kind: 'explore' });
-    else if (it.kind === 'web') setView({ kind: 'web', target: { path: it.path, title: it.name } });
-    else setView({ kind: 'screen', route: it.route, name: it.name });
+  const openWeb = (path: string, title: string, cover?: string | null) => {
+    setView({ kind: 'web', target: { path, title } });
+    /* 「最近」只记页面（/{user}/{slug}/、/svc/…），控制台和作者主页不算 */
+    if (/^\/[^/]+\/[^/]+\/?$/.test(path) || path.startsWith('/svc/')) {
+      void pushRecentPage({ path, name: title, cover: cover ?? null }).then(setRecent);
+    }
   };
 
   if (view.kind === 'web') {
-    return <WebPage target={view.target} token={token} onBack={() => setView({ kind: 'home' })} />;
+    return <WebPage target={view.target} token={token} onBack={() => setView({ kind: lastTab })} />;
   }
-  /* 底栏的几个去处都是壳自己的屏，切换只是换 view，不入栈 */
-  const goTab = (t: ShellTab) => setView({ kind: t });
 
-  /** 底栏。五屏共用一份，省得每屏抄一遍那七个 props。 */
-  const tabs = (active: ShellTab, dark = false) => (
+  if (view.kind === 'scan') {
+    return (
+      <ScanScreen
+        onClose={() => setView({ kind: 'me' })}
+        onOpenPath={(path) => openWeb(path, '扫到的页面')}
+      />
+    );
+  }
+
+  /*
+    底栏的几个去处都是壳自己的屏，切换只是换 view，不入栈。
+    「进探索就打开搜索」是从助手「找一个」带过来的一次性意图，换格就清掉。
+  */
+  const goTab = (t: ShellTab) => { setExploreSearch(false); setView({ kind: t }); };
+
+  /** 底栏。几屏共用一份，省得每屏抄一遍那七个 props。 */
+  const tabs = (active: ShellTab | null, dark = false) => (
     <ShellTabs
       active={active}
       onChange={goTab}
@@ -518,57 +591,39 @@ function Root() {
     />
   );
 
-  const openWeb = (path: string, title: string) =>
-    setView({ kind: 'web', target: { path, title } });
+  /** 带着一句话去助手（做同款、找灵感）。目标置空：这是做新的，不是改已有的那个。 */
+  const toAssistant = (seed: string | null) => {
+    setEditTarget(null);
+    setRemixSeed(seed);
+    setView({ kind: 'assistant' });
+  };
 
-  if (view.kind === 'works') {
+  /*
+    首页。设过手机首页就是那个页面；本机装着页面包（旧的个人包）就是它；
+    都没有就是探索——移动端 v2 的首屏就是刷推荐。
+  */
+  const homeWeb = view.kind === 'home' && homeItem?.kind === 'web' ? homeItem : null;
+  const homeBundle = view.kind === 'home' && !homeWeb && bundle !== null;
+
+  if (homeWeb) {
     return (
       <View style={{ flex: 1 }}>
-        <Launcher
-          items={launchItems}
-          loading={loadingApps}
-          homeKey={homeKey}
-          onRefresh={() => void loadWebApps()}
-          onOpen={openItem}
-          {...(eventBanner ? {
-            event: eventBanner,
-            /* 活动页是网页，壳里用 WebView 打开，和打开任何一个页面同一条路 */
-            onOpenEvent: () => setView({
-              kind: 'web', target: { path: EVENT_PATH, title: '1024 程序员节' },
-            }),
-          } : {})}
-          onNew={() => { setEditTarget(null); setView({ kind: 'assistant' }); }}
-          onSetHome={(it) => {
-            const next = homeKey === it.key ? null : it.key;
-            setHomeKey(next);
-            void setDefaultHome(next);
-          }}
-          onEdit={(it) => {
-            const slug = it.kind === 'web' ? it.path.split('/').filter(Boolean)[1] : undefined;
-            const t = slug ? myTargets.find((m) => m.slug === slug) : undefined;
-            if (t) { setEditTarget(t); setView({ kind: 'assistant' }); }
-          }}
-        />
-        {tabs('me')}
+        {/* 首页是根：不给返回键，出口是底下那条 tab */}
+        <WebPage target={{ path: homeWeb.path, title: homeWeb.name }} token={token} />
+        {tabs(null)}
       </View>
     );
   }
 
-  if (view.kind === 'explore') {
+  if (view.kind === 'explore' || (view.kind === 'home' && !homeBundle)) {
     return (
       <View style={{ flex: 1 }}>
         <Explore
           token={token}
-          onOpen={(l) => openWeb(`/${l.owner_username}/${l.slug}/`, l.name)}
-          onRemix={(l) => {
-            /*
-              「照这个做一个」就是带着那句话去助手。目标置空——这是做新的，
-              不是改已有的那个；不置空的话，发布时会覆盖上一次在改的页面。
-            */
-            setEditTarget(null);
-            setRemixSeed(l.source_prompt ?? `做一个和「${l.name}」类似的页面：`);
-            setView({ kind: 'assistant' });
-          }}
+          autoPlay={autoPlay}
+          searchFirst={exploreSearch}
+          onOpen={(l) => openWeb(`/${l.owner_username}/${l.slug}/`, l.name, absCover(l.cover_path))}
+          onRemix={toAssistant}
           onAuthor={(u) => openWeb(`/${u}`, u)}
           onInstalled={() => void loadWebApps()}
         />
@@ -582,9 +637,12 @@ function Root() {
       <View style={{ flex: 1 }}>
         <Community
           token={token}
-          myApps={myListings}
+          me={{ displayName: me.user.displayName }}
+          myApps={myApps}
           onOpenApp={(owner, slug, name) => openWeb(`/${owner}/${slug}/`, name)}
           onAuthor={(u) => openWeb(`/${u}`, u)}
+          onBell={() => setView({ kind: 'msg' })}
+          onRemix={toAssistant}
         />
         {tabs('community')}
       </View>
@@ -620,26 +678,25 @@ function Root() {
   }
 
   /*
-    助手。移动端 v2 把它从「我的作品里的一层」提成了底栏左边那颗圆钮——
-    新稿的首屏是刷别人的页面，"我要做一个"没有别的地方可挂了。
-
-    键盘弹起时收掉底栏：输入法已经占掉半屏，再浮一条 60 的胶囊，正在打字
-    的那一行就被压到看不见了。
+    助手。移动端 v2 把它提成了底栏左边那颗圆钮，而且是整屏的——稿上这一屏
+    没有底栏，右上角那颗 ⌄ 收起。之前底栏照样浮在上面，正好压住输入框。
   */
   if (view.kind === 'assistant') {
     return (
-      <View style={{ flex: 1 }}>
-        <AgentChat
-          username={me.user.username}
-          target={editTarget}
-          targets={myTargets}
-          seed={remixSeed}
-          onSeedUsed={() => setRemixSeed(null)}
-          onPickTarget={setEditTarget}
-          onKeyboard={setKbUp}
-        />
-        {!kbUp && tabs('assistant')}
-      </View>
+      <AgentChat
+        token={token}
+        displayName={me.user.displayName}
+        target={editTarget}
+        onClearTarget={() => setEditTarget(null)}
+        onClose={() => {
+          if (exploreSearch) setExploreSearch(false);
+          setView({ kind: lastTab });
+        }}
+        onOpenPage={(path, name) => openWeb(path, name)}
+        onExplore={(search) => { setExploreSearch(search); setView({ kind: 'explore' }); }}
+        seed={remixSeed}
+        onSeedUsed={() => setRemixSeed(null)}
+      />
     );
   }
 
@@ -657,11 +714,23 @@ function Root() {
             .map((it) => ({
               key: it.key, name: it.name, letter: it.letter,
               cover: it.cover ?? null, owner: it.owner, path: it.path,
+              editable: it.key.startsWith('mine:'),
             }))}
-          onOpenPath={(path, name) => openWeb(path, name)}
+          recent={recent}
+          homeKey={homeKey}
+          onOpenPath={(path, name, cover) => openWeb(path, name, cover)}
           onSettings={() => setView({ kind: 'settings' })}
           onConsole={() => openWeb('/console', '控制台')}
           onAuthor={(u) => openWeb(`/${u}`, u)}
+          onExpand={() => openWeb('/console#quota', '空间与配额')}
+          onScan={() => setView({ kind: 'scan' })}
+          onSetHome={(key) => { setHomeKey(key); void setDefaultHome(key); }}
+          onEdit={(key) => {
+            const it = launchItems.find((i) => i.key === key);
+            const slug = it?.kind === 'web' ? it.path.split('/').filter(Boolean)[1] : undefined;
+            const t = slug ? myTargets.find((m) => m.slug === slug) : undefined;
+            if (t) { setEditTarget(t); setRemixSeed(null); setView({ kind: 'assistant' }); }
+          }}
         />
         {tabs('me')}
       </View>
@@ -670,53 +739,40 @@ function Root() {
 
   if (view.kind === 'settings') {
     return (
-      <Settings
-        user={me.user}
-        spaceUrl={me.spaceUrl}
-        bundleVersion={v.updateId ? v.updateId.slice(0, 8) : '内嵌包'}
-        updateChannel={channelNameFor(me.user.username)}
-        autoUpdate={prefs.autoUpdate}
-        wifiOnly={prefs.wifiOnly}
-        voiceTextOnly={prefs.voiceTextOnly}
-        clearDraftOnLogout={prefs.clearDraftOnLogout}
-        biometricLock={prefs.biometricLock}
-        onToggle={(k: SettingKey, val) => {
-          setPrefs((p) => ({ ...p, [k]: val }));
-          if (k === 'biometricLock' && val) void unlockWithBiometrics('开启后回到应用需要验证');
-        }}
-        onCheckUpdate={() => void checkQuietly().then((r) => setUpdateReady(r.available))}
-        onRollback={() => void rollbackToPrevious(me.user.username)}
-        onLogout={() => { setMe(null); setView({ kind: 'home' }); }}
-        onClose={() => setView({ kind: 'me' })}
-      />
-    );
-  }
-
-  if (view.kind === 'home' && homeItem?.kind === 'web') {
-    return (
       <View style={{ flex: 1 }}>
-        {/* 首页是根：不给返回键，出口是底下那条 tab */}
-        <WebPage target={{ path: homeItem.path, title: homeItem.name }} token={token} />
-        {tabs('explore')}
+        <Settings
+          token={token}
+          user={me.user}
+          shellVersion={SHELL_VERSION}
+          bundleVersion={v.updateId ? v.updateId.slice(0, 8) : '内嵌包'}
+          updateChannel={channelNameFor(me.user.username)}
+          quota={quota}
+          pageUpdate={updateChecked ? updateReady : null}
+          onCheckUpdate={check}
+          onApplyUpdate={() => void applyUpdate(setPhase)}
+          autoPlay={autoPlay}
+          onAutoPlay={(on) => { setAutoPlayState(on); void setAutoPlay(on); }}
+          autoUpdate={prefs.autoUpdate}
+          wifiOnly={prefs.wifiOnly}
+          voiceTextOnly={prefs.voiceTextOnly}
+          clearDraftOnLogout={prefs.clearDraftOnLogout}
+          biometricLock={prefs.biometricLock}
+          onToggle={(k: SettingKey, val) => {
+            setPrefs((p) => ({ ...p, [k]: val }));
+            if (k === 'biometricLock' && val) void unlockWithBiometrics('开启后回到应用需要验证');
+          }}
+          onRollback={() => void rollbackToPrevious(me.user.username)}
+          onOpenWeb={(path, title) => openWeb(path, title)}
+          onRenamed={(displayName) => setMe((m) => (m ? { ...m, user: { ...m.user, displayName } } : m))}
+          onLogout={onLogout}
+          onClose={() => setView({ kind: 'me' })}
+        />
+        {tabs('me')}
       </View>
     );
   }
 
-  const bundleContent = bundle ? (
-    <NavContainer
-      config={config}
-      screens={bundle.screens}
-      title={bundle.title}
-      {...(view.kind === 'screen' ? { forceRoute: view.route } : {})}
-    />
-  ) : (
-    <NoBundleScreen
-      username={me.user.username}
-      onLoad={() => void loadMyApp(me)}
-      error={phase.kind === 'failed' ? phase.message : parsed.error}
-    />
-  );
-
+  /* 剩下的只有一种：本机装着页面包（旧的个人包），首页就是它 */
   return (
     <ShellChrome
       appJson={config}
@@ -724,30 +780,27 @@ function Root() {
       // 收在底栏那条横幅上——用户页面的四个角都还给页面自己
       {...(view.kind === 'screen' ? { onBack: () => setView({ kind: 'home' }) } : {})}
     >
-      {/*
-        首页就是首页。
-        原先由身份决定首页形态（使用者看应用、开发者看对话页）——那是在
-        只有一屏可用时的折中：想跟 Agent 说话就得把整个首页换掉。现在
-        对话是底部栏里的一个 tab，两者可以同时存在，身份不必再管导航。
-        它仍然决定服务端放不放行 Agent，那是权限，不是布局。
-      */}
-      {view.kind === 'screen' || soloPage || bundle ? (
-        bundleContent
+      {bundle ? (
+        <NavContainer
+          config={config}
+          screens={bundle.screens}
+          title={bundle.title}
+          {...(view.kind === 'screen' ? { forceRoute: view.route } : {})}
+        />
       ) : (
-        <HomeUnset onPick={() => setView({ kind: 'works' })} />
+        <NoBundleScreen
+          username={me.user.username}
+          onLoad={() => void loadMyApp(me)}
+          error={phase.kind === 'failed' ? phase.message : parsed.error}
+        />
       )}
 
       {/*
         壳的底部导航只在首页出现。
         进到具体页面（view.kind === 'screen'）就交出整块屏幕——页面可能
-        自带底部操作条，两条叠在一起谁都点不准。开发者的对话页同理，
-        输入框本来就在最下面。
-
-        单页应用（soloPage）也保留这条：它没有启动器，市场就成了到不了的
-        地方，而那正是他去看别人做了什么的唯一入口。
+        自带底部操作条，两条叠在一起谁都点不准。
       */}
-      {view.kind === 'home' && tabs('explore')}
-
+      {view.kind === 'home' && tabs(null)}
     </ShellChrome>
   );
 }
@@ -759,50 +812,22 @@ function avatarLetter(name: string): string {
   return /[\u4e00-\u9fa5]/.test(t) ? t.slice(-1) : t.slice(0, 1).toUpperCase();
 }
 
+// ── 登录（移动端 v2 稿 01）──────────────────────────────────────────
 /**
- * 品牌标记。
+ * 登录。
  *
- * 画出来而不是 require 一张图——因为 assets/icon.png 同时是 app.json 里的
- * 应用图标。那个文件在构建期被 prebuild 拿去生成启动器图标，**不会**再进
- * JS 的资源登记表，于是运行时 require 到的是空的：ImageView 照常占位，
- * 就是不显示任何东西，也不报错。查了半天才发现。
+ * 邮箱 + 密码，与桌面端同一套账号；配了 OIDC_* 时多一个「用公司账号登录」。
  *
- * 而这个标记本身只是一个圆角方块加两个字母，画出来还省掉了把 1024px
- * 位图缩到 48pt 的开销，任意尺寸都清晰。
- */
-function BrandMark({ size = 48 }: { size?: number }) {
-  return (
-    <View
-      accessible={false}
-      style={{
-        width: size, height: size,
-        // 圆角取边长的 27%，与 packages/brand/mark.svg 一致
-        borderRadius: size * 0.27,
-        backgroundColor: '#fb923c',
-        alignItems: 'center', justifyContent: 'center',
-        marginBottom: 10,
-      }}
-    >
-      <Text style={{
-        color: '#fff', fontWeight: '700', fontSize: size * 0.42,
-        letterSpacing: size * 0.01,
-      }}>
-        AI
-      </Text>
-    </View>
-  );
-}
-
-// ── 登录（设计稿第 10 屏）──────────────────────────────────────────
-/**
- * 登录 / 注册（设计稿第 10 屏）。
+ * 版式照移动端 v2 稿第 01 屏：整屏深色，上半屏一片斜着的封面拼贴往下渐暗，
+ * 底下一句大字、两颗胶囊。两颗胶囊按有没有 SSO 换角色：
+ *   有 SSO：用公司账号登录 / 邮箱（稿上就是这样）
+ *   没 SSO：用邮箱登录 / 扫码登录——稿上那颗「公司账号」点下去没有地方去，
+ *           不摆一颗死按钮；扫码本来就在这一屏，提上来当第二颗
+ * 点「邮箱」才展开输入框：稿上这一屏没有输入框，一进来就是两个空框，
+ * 和稿的气质差得最远。
  *
- * 改为邮箱 + 密码，与桌面端同一套账号。原先的 SSO 深链方案保留在
- * openSsoAndAwait 里——配了 OIDC_* 时会多出一个入口，没配就只有密码。
- *
- * 手机上不做注册时的「空间标识」自定义：那一栏在小屏上很难解释清楚，
- * 而且注册这件事一辈子做一次，在电脑上做更合适。手机端只留登录，
- * 注册引导到桌面端——除非用户坚持，那就用邮箱推导出的默认标识。
+ * 手机上不做注册：那一栏「空间标识」在小屏上很难解释清楚，而且注册这件事
+ * 一辈子做一次，在电脑上做更合适。
  */
 function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
   const insets = useSafeAreaInsets();
@@ -813,7 +838,6 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const [scanning, setScanning] = useState(false);
-  /** 开了 SSO 时，邮箱表单收在一颗「邮箱」后面——稿上那颗次要胶囊。 */
   const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
@@ -821,6 +845,21 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { ssoEnabled?: boolean } | null) => setSsoEnabled(Boolean(d?.ssoEnabled)))
       .catch(() => setSsoEnabled(false));
+  }, []);
+
+  /*
+    键盘：安卓 edge-to-edge 下窗口不缩，输入框在屏幕下半截，键盘一起来就把
+    它整个盖住。自己量键盘顶边，把底下那一块往上抬。
+  */
+  const [kb, setKb] = useState(0);
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const a = Keyboard.addListener(showEvt, (e) => {
+      setKb(Math.max(0, Dimensions.get('screen').height - e.endCoordinates.screenY));
+    });
+    const b = Keyboard.addListener(hideEvt, () => setKb(0));
+    return () => { a.remove(); b.remove(); };
   }, []);
 
   const login = async () => {
@@ -854,52 +893,60 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
     );
   }
 
-  /*
-    版式照移动端 v2 稿第 01 屏：整屏深色、底下一句大字、两颗胶囊。
-    稿上大字上方是一片页面封面拼贴——那些封面要登录才拿得到（/marketplace
-    要会话），所以这里换成同一套品牌色的色块：构图一致，但不假装展示了
-    并不存在的内容。
-  */
   const emailReady = email.trim().length > 0 && password.length > 0;
-  const showForm = !ssoEnabled || formOpen;
+  const { width, height } = Dimensions.get('window');
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: '#100f0e' }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={[s.loginRoot, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 28 }]}>
-        <View style={s.loginBrand}>
-          <BrandMark />
-          <Text style={s.loginWordmark}>iSPACE</Text>
-        </View>
+    <View style={{ flex: 1, backgroundColor: '#100f0e' }}>
+      {/*
+        封面拼贴。稿上每一块是一张真页面的封面——那些封面要登录才拿得到
+        （/marketplace 要会话），所以这里是同一组底色的空块：构图照稿，
+        但不假装展示了并不存在的内容。
+      */}
+      <View style={s.collage} pointerEvents="none">
+        {COLLAGE.map((col, i) => (
+          <View key={i} style={{ width: 170, gap: 14, paddingTop: col.top }}>
+            {col.tiles.map((t, j) => (
+              <View key={j} style={{ height: t.h, borderRadius: 28, backgroundColor: t.bg }} />
+            ))}
+          </View>
+        ))}
+      </View>
+      <Svg style={StyleSheet.absoluteFill} width={width} height={height} pointerEvents="none">
+        <Defs>
+          <LinearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0.3" stopColor="#100f0e" stopOpacity={0} />
+            <Stop offset="0.62" stopColor="#100f0e" stopOpacity={0.92} />
+            <Stop offset="0.78" stopColor="#100f0e" stopOpacity={1} />
+          </LinearGradient>
+        </Defs>
+        <SvgRect x={0} y={0} width={width} height={height} fill="url(#fade)" />
+      </Svg>
 
-        <View style={s.collage} pointerEvents="none">
-          {COLLAGE.map((c, i) => (
-            <View key={i} style={[s.collageTile, { backgroundColor: c.bg, height: c.h, marginTop: c.top }]} />
-          ))}
-        </View>
+      {/* 左上那颗 ×：安卓上就是退出（这一屏没有别的地方可回）。iOS 不许 App 自己退出，不摆 */}
+      {Platform.OS === 'android' && (
+        <Pressable
+          style={[s.loginClose, { top: insets.top + 10 }]}
+          onPress={() => BackHandler.exitApp()}
+          accessibilityLabel="退出"
+        >
+          <Icon name="x" size={20} color="#fff" />
+        </Pressable>
+      )}
+      <View style={[s.loginBrand, { top: insets.top + 14 }]}>
+        <BrandMark size={30} />
+        <Text style={s.loginWordmark}>iSPACE</Text>
+      </View>
 
-        <View style={{ flex: 1 }} />
-
-        <Text style={s.loginTitle}>用同事的{'\n'}做自己的</Text>
-        <Text style={s.loginSub}>下一个，做给组里每天都要用它的人。</Text>
-
-        {ssoEnabled && (
-          <Pressable
-            style={s.loginPrimary}
-            onPress={() => { void openSsoAndAwait().then((m) => m && onLoggedIn(m)); }}
-            disabled={busy}
-          >
-            <Text style={s.loginPrimaryText}>用公司账号登录</Text>
-          </Pressable>
+      <View style={[s.loginBottom, { bottom: kb > 0 ? kb + 16 : insets.bottom + 28 }]}>
+        {kb === 0 && (
+          <>
+            <Text style={s.loginTitle}>用同事的{'\n'}做自己的</Text>
+            <Text style={s.loginSub}>下一个，做给组里每天都要用它的人。</Text>
+          </>
         )}
 
-        {!showForm ? (
-          <Pressable style={s.loginSecondary} onPress={() => setFormOpen(true)}>
-            <Text style={s.loginSecondaryText}>邮箱</Text>
-          </Pressable>
-        ) : (
+        {formOpen ? (
           <View style={s.loginForm}>
             <TextInput
               style={s.loginInput}
@@ -911,6 +958,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
               autoCapitalize="none"
               autoCorrect={false}
               autoComplete="email"
+              autoFocus
               editable={!busy}
             />
             <TextInput
@@ -931,37 +979,62 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
               disabled={busy || !emailReady}
               onPress={() => void login()}
             >
-              <Text style={s.loginPrimaryText}>{busy ? '登录中…' : '登录'}</Text>
+              <Text style={[s.loginPrimaryText, { textAlign: 'center' }]}>{busy ? '登录中…' : '登录'}</Text>
+            </Pressable>
+            <Pressable style={s.loginLink} onPress={() => { setFormOpen(false); setErr(null); }} hitSlop={8}>
+              <Text style={s.loginLinkText}>换个方式登录</Text>
             </Pressable>
           </View>
+        ) : (
+          <>
+            <Pressable
+              style={s.loginPrimary}
+              disabled={busy}
+              onPress={ssoEnabled
+                ? () => { void openSsoAndAwait().then((m) => m && onLoggedIn(m)); }
+                : () => setFormOpen(true)}
+            >
+              <View style={s.loginPrimaryIcon}>
+                <Icon name={ssoEnabled ? 'building' : 'mail'} size={21} color="#fff" />
+              </View>
+              <Text style={s.loginPrimaryText}>{ssoEnabled ? '用公司账号登录' : '用邮箱登录'}</Text>
+              <Text style={s.loginChevrons}>›››</Text>
+            </Pressable>
+            <Pressable
+              style={s.loginSecondary}
+              onPress={ssoEnabled ? () => setFormOpen(true) : () => setScanning(true)}
+              disabled={busy}
+            >
+              <Icon name={ssoEnabled ? 'mail' : 'qr'} size={20} color="#fff" />
+              <Text style={s.loginSecondaryText}>{ssoEnabled ? '邮箱' : '扫码登录'}</Text>
+            </Pressable>
+          </>
         )}
 
-        <Pressable style={s.loginLink} onPress={() => setScanning(true)} disabled={busy}>
-          <Text style={s.loginLinkText}>扫码登录 · 电脑上已登录就不用敲密码</Text>
-        </Pressable>
-
-        {/* 注册引导到桌面端：空间标识那一栏在小屏上很难解释清楚，
-            而它是长期对外的地址，值得在电脑前想清楚再定。 */}
-        <Text style={s.loginFoot}>
-          还没有账号？在电脑上打开 {DISPLAY_HOST} 注册{'\n'}
-          壳 {SHELL_VERSION} · runtimeVersion {v.runtimeVersion}
-        </Text>
+        {kb === 0 && (
+          <Text style={s.loginFoot}>
+            {ssoEnabled && !formOpen ? (
+              <Text style={s.loginFootLink} onPress={() => setScanning(true)}>扫码登录 · 电脑上已登录就不用敲密码{'\n'}</Text>
+            ) : null}
+            {/* 注册引导到桌面端：空间标识那一栏在小屏上很难解释清楚，
+                而它是长期对外的地址，值得在电脑前想清楚再定。 */}
+            还没有账号？在电脑上打开 <Text style={s.loginFootLink}>{DISPLAY_HOST}</Text> 注册{'\n'}
+            App {SHELL_VERSION} · runtimeVersion {v.runtimeVersion}
+          </Text>
+        )}
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 /**
- * 登录页顶上那片色块。
- *
- * 纯装饰：三列错落的圆角块，取的是品牌 wash 那一组色。它替掉了稿上的
- * 封面拼贴（那些要登录才拿得到），所以刻意不放任何文字——不让人误以为
- * 这是某个真实页面的缩略图。
+ * 登录页那片封面拼贴的几何，照稿抄：三列、每列宽 170、错开的起点、
+ * 整片转 -9°。颜色是稿上那几块封面的底色。
  */
 const COLLAGE = [
-  { bg: '#36241e', h: 150, top: 40 }, { bg: '#2f3b2f', h: 150, top: 110 },
-  { bg: '#34373b', h: 140, top: 70 }, { bg: '#3a3120', h: 130, top: 0 },
-  { bg: '#2a2745', h: 150, top: 0 }, { bg: '#36241e', h: 150, top: 0 },
+  { top: 40, tiles: [{ h: 300, bg: '#36241e' }, { h: 260, bg: '#3a3120' }] },
+  { top: 140, tiles: [{ h: 300, bg: '#2f3b2f' }, { h: 300, bg: '#2a2745' }] },
+  { top: 80, tiles: [{ h: 280, bg: '#34373b' }, { h: 300, bg: '#36241e' }] },
 ];
 
 /**
@@ -1230,52 +1303,38 @@ function NoBundleScreen({
   );
 }
 
-/**
- * 首页还没定下来时的落点。
- *
- * 不自作主张挑一个：用户有好几个页面时，替他选错了比空着更让人困惑
- * ——他会以为 App 坏了或者页面被换了。这里只说清怎么定。
- */
-function HomeUnset({ onPick }: { onPick: () => void }) {
-  return (
-    <View style={s.center}>
-      <Text style={s.title}>把常用的那个放到首页</Text>
-      <Text style={s.body}>
-        每天都要看的那个页面，设成首页之后打开 App 直接就是它，不用再点一次。
-        去「我的作品」里长按任意一个页面就能设。
-      </Text>
-      <Pressable style={[s.btn, s.btnPrimary]} onPress={onPick}>
-        <Text style={s.btnPrimaryText}>去我的作品</Text>
-      </Pressable>
-    </View>
-  );
-}
-
 function Splash() {
   return <View style={s.center}><ActivityIndicator color="#fb923c" /></View>;
 }
 
 const s = StyleSheet.create({
   // ── 登录（移动端 v2 稿 01）──────────────────────────────────────
-  loginRoot: { flex: 1, paddingHorizontal: 24, gap: 14 },
-  loginBrand: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-end' },
-  loginWordmark: { fontSize: 22, fontWeight: '700', color: '#fff', letterSpacing: -0.4 },
   collage: {
-    position: 'absolute', left: -40, right: -40, top: 0, height: 320,
-    flexDirection: 'row', flexWrap: 'wrap', gap: 14, opacity: 0.9,
-    transform: [{ rotate: '-9deg' }],
+    position: 'absolute', left: -70, top: -40, flexDirection: 'row', gap: 14,
+    transform: [{ rotate: '-9deg' }], transformOrigin: 'top left',
   },
-  collageTile: { width: 150, borderRadius: 28 },
-  loginTitle: { fontSize: 50, fontWeight: '900', lineHeight: 56, color: '#fff', letterSpacing: -1 },
-  loginSub: { fontSize: 16, color: 'rgba(255,255,255,.72)', paddingBottom: 10 },
+  loginClose: {
+    position: 'absolute', left: 18, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,.14)', alignItems: 'center', justifyContent: 'center',
+  },
+  loginBrand: { position: 'absolute', right: 18, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  loginWordmark: { fontSize: 22, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
+  loginBottom: { position: 'absolute', left: 24, right: 24, gap: 14 },
+  loginTitle: { fontSize: 54, fontWeight: '900', lineHeight: 60, color: '#fff', letterSpacing: -1 },
+  loginSub: { fontSize: 16, color: 'rgba(255,255,255,.72)', paddingBottom: 14 },
   loginPrimary: {
-    height: 60, borderRadius: 30, backgroundColor: '#ee5c2a',
+    flexDirection: 'row', alignItems: 'center', gap: 12, height: 62, paddingLeft: 8, paddingRight: 20,
+    borderRadius: 31, backgroundColor: '#ee5c2a', justifyContent: 'center',
+  },
+  loginPrimaryIcon: {
+    width: 46, height: 46, borderRadius: 23, backgroundColor: 'rgba(255,255,255,.22)',
     alignItems: 'center', justifyContent: 'center',
   },
-  loginPrimaryText: { fontSize: 17, fontWeight: '700', color: '#fff' },
+  loginPrimaryText: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '700', color: '#fff' },
+  loginChevrons: { fontSize: 18, color: 'rgba(255,255,255,.8)', letterSpacing: -1 },
   loginSecondary: {
-    height: 56, borderRadius: 28, backgroundColor: '#1e1c1a',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,.14)',
+    flexDirection: 'row', gap: 10, height: 58, borderRadius: 29, backgroundColor: '#1e1c1a',
+    boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)',
     alignItems: 'center', justifyContent: 'center',
   },
   loginSecondaryText: { fontSize: 17, fontWeight: '700', color: '#fff' },
@@ -1286,12 +1345,13 @@ const s = StyleSheet.create({
     fontSize: 16, color: '#fff',
   },
   loginErr: { fontSize: 14, color: '#ff8a8a', paddingHorizontal: 8 },
-  loginLink: { alignItems: 'center', paddingTop: 6 },
+  loginLink: { alignItems: 'center', paddingTop: 4 },
   loginLinkText: { fontSize: 14, color: 'rgba(255,255,255,.72)' },
   loginFoot: {
-    paddingTop: 8, textAlign: 'center', fontSize: 12.5, lineHeight: 20,
-    color: 'rgba(255,255,255,.45)',
+    paddingTop: 10, textAlign: 'center', fontSize: 13, lineHeight: 22,
+    color: 'rgba(255,255,255,.55)',
   },
+  loginFootLink: { color: '#ff8965' },
 
   center: {
     flex: 1, alignItems: 'center', justifyContent: 'center',

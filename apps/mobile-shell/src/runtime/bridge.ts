@@ -194,3 +194,48 @@ export async function interestsAsked(): Promise<boolean> {
 export async function markInterestsAsked(): Promise<void> {
   try { await SecureStore.setItemAsync(INTERESTS_ASKED, '1'); } catch { /* 存不下就下次再问一次 */ }
 }
+
+/**
+ * 「自动播放动态内容」（设置 · 移动端 v2 稿 09）。
+ *
+ * 开着时，探索里刷到的那一个页面直接跑起来，而不是一张封面。默认开——稿上
+ * 就是开着的，而推荐页的意思本来就是"看看它跑起来什么样"。关掉省流量。
+ * 存本机：这是这台手机、这个网络环境下的偏好，同上面那条首页设置一个道理。
+ */
+const AUTO_PLAY = 'ispace.explore.autoplay';
+
+export async function getAutoPlay(): Promise<boolean> {
+  try { return (await SecureStore.getItemAsync(AUTO_PLAY)) !== '0'; } catch { return true; }
+}
+
+export async function setAutoPlay(on: boolean): Promise<void> {
+  try { await SecureStore.setItemAsync(AUTO_PLAY, on ? '1' : '0'); } catch { /* 存不下就只管这一次 */ }
+}
+
+/**
+ * 最近打开过的页面（「我 · 页面 · 最近」那一栏）。
+ *
+ * 服务端只记访问量、不记"谁最近开了什么"，这一栏本来就是给自己看的回头路，
+ * 记在本机就够了。最多留 9 个，新开的排最前。
+ */
+export interface RecentPage { path: string; name: string; cover: string | null }
+const RECENT = 'ispace.recent.pages';
+const RECENT_MAX = 9;
+
+export async function getRecentPages(): Promise<RecentPage[]> {
+  try {
+    const raw = await SecureStore.getItemAsync(RECENT);
+    const list = raw ? (JSON.parse(raw) as RecentPage[]) : [];
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+export async function pushRecentPage(p: RecentPage): Promise<RecentPage[]> {
+  const next = [p, ...(await getRecentPages()).filter((x) => x.path !== p.path)].slice(0, RECENT_MAX);
+  try { await SecureStore.setItemAsync(RECENT, JSON.stringify(next)); } catch { /* 记不下就算了 */ }
+  return next;
+}
+
+export async function clearRecentPages(): Promise<void> {
+  try { await SecureStore.deleteItemAsync(RECENT); } catch { /* 没有就是没有 */ }
+}

@@ -98,6 +98,34 @@ export const api = {
     call<{ ok: boolean }>(`/marketplace/${appId}/install`, t, { method: 'POST' }),
   uninstallFromMarket: (t: string | null, appId: string) =>
     call<{ ok: boolean }>(`/marketplace/${appId}/install`, t, { method: 'DELETE' }),
+
+  /**
+   * 换一张试玩令牌（和门户「为你推荐」同一条路）。探索页「自动播放」拿它
+   * 把页面直接跑在卡片里。返回的 url 是站内路径，前面要补 API_BASE 的源。
+   */
+  playOpen: (t: string | null, owner: string, slug: string) =>
+    call<{ token: string; url: string; expiresAt: number; idleMs: number }>('/play-session', t, {
+      method: 'POST', body: { owner, slug },
+    }),
+
+  /** 助手左上角「历史」：我最近的会话（和电脑端工作台同一份）。 */
+  agentSessions: (t: string | null) =>
+    call<{ items: { id: string; title: string; slug: string | null; updatedAt: number }[] }>(
+      '/agent/sessions', t,
+    ),
+  /** 一条会话给人看的那份对话，点开历史时摆回来接着聊。 */
+  agentSessionView: (t: string | null, id: string) =>
+    call<{ id: string; slug: string | null; title: string; says: { me: boolean; text: string }[] }>(
+      `/agent/session/${encodeURIComponent(id)}`, t,
+    ),
+
+  /** 设置 ·「编辑资料」。和电脑端头像菜单里那个对话框同一条接口。 */
+  updateProfile: (t: string | null, displayName: string) =>
+    call<{ user: { displayName: string } }>('/auth/profile', t, { method: 'PATCH', body: { displayName } }),
+
+  /** 设置 ·「接入 AI」那一行的状态：有没有发过个人令牌、用过没有。 */
+  tokens: (t: string | null) =>
+    call<{ tokens: { id: string; name: string; last_used_at: string | null }[] }>('/tokens', t),
 };
 
 /**

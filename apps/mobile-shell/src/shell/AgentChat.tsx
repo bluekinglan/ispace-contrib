@@ -1,25 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, BackHandler, Dimensions, Keyboard, KeyboardAvoidingView, Platform, Pressable,
+  ActivityIndicator, BackHandler, Dimensions, Image, Keyboard, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { pickImage, session } from '../runtime/bridge';
 import { useVoiceInput } from '../runtime/voice';
 import { VoicePanel } from './VoicePanel';
-import { Icon } from './Icon';
+import { BrandMark, Icon } from './Icon';
 import { API_BASE } from '../config';
+import { absCover, api, type Listing } from '../api';
 
 /**
- * 开发者身份的首页：与 Coding Agent 的对话页（设计稿第 04–06 屏）。
+ * 助手（移动端 v2 稿 · 07，底栏左边那颗圆钮）。
  *
- * 「使用者身份：只看到自己的应用，看不到任何开发入口。在设置里可以切成
- * 开发者。」——切成开发者后，首页就变成这个页面。
+ * ┌─ 和改版前的差别 ──────────────────────────────────────────────────┐
+ * │ 旧：一屏对话页，顶上写「做个新页面 / 要做的是」，中间一句「说一句你  │
+ * │     想改什么」。打开它的人得先想好要说什么。                        │
+ * │ 新：先问一句「今天想做点什么」，给两条路（做一个 / 找一个），再摆几  │
+ * │     个同事做过的页面当灵感——点一个就把它的做法带进输入框。说了第一  │
+ * │     句之后，这一块才换成对话。                                      │
+ * │                                                                    │
+ * │ 它是整屏的，不压底栏：稿上这一屏没有底栏，右上角那颗 ⌄ 收起回去。   │
+ * │ 底栏浮在上面时，输入框正好被它盖住（实测荣耀机上就是这样）。       │
+ * └────────────────────────────────────────────────────────────────────┘
  *
- * 三件设计稿要求、且都影响可用性的事：
+ * 三件改版前就有、照旧保留的事：
  *   - 改动摘要而非 diff 原文：手机屏太小，贴 diff 没人看
  *   - 部署必须二次确认：Agent 只能拿到待确认令牌，点「部署上线」才生效
- *   - 截图随 prompt 传：门店走动时拍一张比打字快，这是要在手机上开发的主要理由
+ *   - 截图随 prompt 传：门店走动时拍一张比打字快
  */
 
 interface Msg {
@@ -42,17 +51,21 @@ export interface EditTarget {
 }
 
 export function AgentChat({
-  username, target, targets, onPickTarget, onKeyboard, onBack, seed, onSeedUsed,
+  token, displayName, target, onClearTarget, onKeyboard, onClose, onOpenPage, onExplore,
+  seed, onSeedUsed,
 }: {
-  username: string;
+  token: string | null;
+  displayName: string;
   target: EditTarget | null;
-  /** 可供选择的页面（只含本人的，别人的改不了）。 */
-  targets: EditTarget[];
-  onPickTarget: (t: EditTarget | null) => void;
-  /** 键盘起落。由外层决定要不要把底部 tab 收起来。 */
+  onClearTarget: () => void;
+  /** 键盘起落。外层据此决定别的浮层要不要让开。 */
   onKeyboard?: (up: boolean) => void;
-  /** 退回上一层。助手现在是底栏的一个去处，所以这个是可选的。 */
-  onBack?: (() => void) | undefined;
+  /** 右上角 ⌄ 与实体返回键：收起助手，回到刚才那一格。 */
+  onClose: () => void;
+  /** 灵感卡上的「预览」：在壳里打开那个页面。 */
+  onOpenPage: (path: string, name: string) => void;
+  /** 「找一个」与「从这里开始做同款」：去探索（找一个时顺手打开搜索）。 */
+  onExplore: (search: boolean) => void;
   /**
    * 「照这个做一个」带过来的那句话：填进输入框，**不自动发送**。
    *
@@ -63,7 +76,7 @@ export function AgentChat({
   onSeedUsed?: (() => void) | undefined;
 }) {
   const insets = useSafeAreaInsets();
-  const [picking, setPicking] = useState(false);
+  const inputRef = useRef<TextInput>(null);
 
   /*
     自己盯键盘高度，不靠 KeyboardAvoidingView。
@@ -72,18 +85,8 @@ export function AgentChat({
     缩窗口——窗口尺寸不变，输入框被键盘整个盖住，而 KeyboardAvoidingView
     在安卓上本来就是关着的（behavior undefined）。两边一叠，就是"打字时
     看不见自己在打什么"。
-
-    拿到高度后自己把输入栏顶上去，顺带把底部 tab 收起来：键盘已经占了
-    半屏，那四个 tab 这时候既点不到也没人想点。
   */
   const [kb, setKb] = useState(0);
-  // 实体返回键也要能退回作品，否则一按就退出整个 App
-  useEffect(() => {
-    if (!onBack) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onBack(); return true; });
-    return () => sub.remove();
-  }, [onBack]);
-
   useEffect(() => {
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
@@ -104,6 +107,13 @@ export function AgentChat({
     const b = Keyboard.addListener(hideEvt, () => { setKb(0); onKeyboard?.(false); });
     return () => { a.remove(); b.remove(); };
   }, [onKeyboard]);
+
+  // 实体返回键收起助手，否则一按就退出整个 App
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
+    return () => sub.remove();
+  }, [onClose]);
+
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
 
@@ -118,17 +128,63 @@ export function AgentChat({
 
   // 语音识别结果**追加**而非覆盖：用户可能先打了一半字再改用说的，
   // 覆盖会把已经输入的内容吃掉。
-  // 令牌用于服务端转写兜底（本地没有 ASR 时）。异步取，取到前语音入口按不可用处理。
-  const [voiceToken, setVoiceToken] = useState<string | null>(null);
-  useEffect(() => { void session.get().then(setVoiceToken).catch(() => setVoiceToken(null)); }, []);
-
   const voice = useVoiceInput(
     (text) => setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text)),
-    { apiBase: API_BASE, token: voiceToken },
+    { apiBase: API_BASE, token },
   );
+  /** 点了用不了的话筒才说一句为什么，不常驻占一行。 */
+  const [voiceHint, setVoiceHint] = useState(false);
   const [pending, setPending] = useState<PendingDeploy | null>(null);
   const sessionId = useRef<string | undefined>(undefined);
   const scroller = useRef<ScrollView>(null);
+
+  /* ── 灵感：同事做过、留了做法的页面 ─────────────────────────────── */
+  const [ideas, setIdeas] = useState<Listing[]>([]);
+  useEffect(() => {
+    void api.marketplace(token)
+      .then((r) => {
+        /*
+          有封面的排前面——这一块是看图挑的；有提示词的再往前，点了才有
+          "做法"可带。两样都没有的不摆：一块空卡什么也启发不了。
+        */
+        const score = (l: Listing) => (l.cover_path ? 2 : 0) + (l.source_prompt ? 1 : 0);
+        setIdeas(r.listings.filter((l) => !l.mine && score(l) > 0)
+          .sort((a, b) => score(b) - score(a) || b.like_count - a.like_count)
+          .slice(0, 2));
+      })
+      .catch(() => setIdeas([]));
+  }, [token]);
+
+  const remix = (l: Listing) => {
+    setInput(l.source_prompt ?? `做一个和「${l.name}」类似的页面：`);
+    inputRef.current?.focus();
+  };
+
+  /* ── 历史 ─────────────────────────────────────────────────────── */
+  const [history, setHistory] = useState<{ id: string; title: string; updatedAt: number }[] | null>(null);
+  const openHistory = () => {
+    setHistory([]);
+    void api.agentSessions(token).then((r) => setHistory(r.items)).catch(() => setHistory([]));
+  };
+  const resume = async (id: string) => {
+    setHistory(null);
+    try {
+      const v = await api.agentSessionView(token, id);
+      sessionId.current = v.id;
+      setPending(null);
+      setMsgs(v.says.map((m) => ({ role: m.me ? 'user' : 'assistant', text: m.text })));
+      setTimeout(() => scroller.current?.scrollToEnd({ animated: false }), 60);
+    } catch { /* 拿不回来就停在原地，别把当前的对话清掉 */ }
+  };
+
+  const fresh = () => {
+    sessionId.current = undefined;
+    setMsgs([]);
+    setPending(null);
+    setInput('');
+    setImages([]);
+    onClearTarget();
+  };
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -140,8 +196,8 @@ export function AgentChat({
     const imgs = images;
     setImages([]);
 
-    const token = await session.get();
-    if (!token) {
+    const t = await session.get();
+    if (!t) {
       setMsgs((m) => [...m, { role: 'assistant', text: '登录状态失效，请重新登录。' }]);
       setBusy(false);
       return;
@@ -153,7 +209,7 @@ export function AgentChat({
     try {
       const res = await fetch(`${API_BASE}/deploy/api/agent/ask`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           sessionId: sessionId.current, text, images: imgs,
           // 让模型不必从话里猜「改一改」指的是哪个页面。服务端会把它
@@ -187,7 +243,7 @@ export function AgentChat({
 
       // 拉取待确认的发布请求
       const p = await fetch(`${API_BASE}/deploy/api/agent/pending`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: `Bearer ${t}` },
       }).then((r) => r.json() as Promise<{ items: PendingDeploy[] }>).catch(() => ({ items: [] }));
       setPending(p.items[0] ?? null);
     } catch (e) {
@@ -199,17 +255,17 @@ export function AgentChat({
       setBusy(false);
       setTimeout(() => scroller.current?.scrollToEnd({ animated: true }), 60);
     }
-  }, [input, busy, images]);
+  }, [input, busy, images, target]);
 
   const confirmDeploy = useCallback(async () => {
     if (!pending) return;
-    const token = await session.get();
-    if (!token) return;
+    const t = await session.get();
+    if (!t) return;
     setBusy(true);
     try {
       const r = await fetch(`${API_BASE}/deploy/api/agent/confirm`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' },
         body: JSON.stringify({ confirmToken: pending.confirmToken }),
       }).then((x) => x.json() as Promise<{ ok?: boolean; next?: string; message?: string }>);
       setMsgs((m) => [...m, { role: 'assistant', text: r.ok ? (r.next ?? '已确认') : (r.message ?? '确认失败') }]);
@@ -217,99 +273,31 @@ export function AgentChat({
     } finally { setBusy(false); }
   }, [pending]);
 
+  const talking = msgs.length > 0;
+  const hasText = input.trim().length > 0;
+
   return (
-    <KeyboardAvoidingView
-      style={s.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={insets.top}
-      onLayout={() => scroller.current?.scrollToEnd({ animated: false })}
-    >
-      <View style={[s.header, { paddingTop: insets.top + 8 }]}>
-        {onBack && (
-          <Pressable onPress={onBack} hitSlop={12} style={s.backBtn} accessibilityLabel="返回我的作品">
-            <Icon name="chevronLeft" size={20} color={C.ink} />
-          </Pressable>
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={s.title}>{target ? '改这个页面' : '做个新页面'}</Text>
-          <Text style={s.sub}>u-{username}</Text>
-        </View>
-        {/* 右上角留出壳保留位的宽度 */}
-        <View style={{ width: 40 }} />
+    <View style={[s.root, { paddingTop: insets.top + 14 }]}>
+      <View style={s.topBar}>
+        <Pressable onPress={openHistory} hitSlop={10} accessibilityLabel="历史对话">
+          <Icon name="history" size={24} />
+        </Pressable>
+        <Pressable onPress={fresh} hitSlop={10} accessibilityLabel="新对话">
+          <Icon name="pen" size={24} />
+        </Pressable>
+        <View style={{ flex: 1 }} />
+        <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="收起">
+          <Icon name="chevDown" size={24} />
+        </Pressable>
       </View>
 
-      {/*
-        「在改哪个」。
-
-        这条是整个对话的主语：不指明的话，用户说「把标题改大一点」，
-        模型只能猜他指的是哪一个页面，猜错就发布成了另一个页面。
-        选中之后 slug 随每条消息发给服务端，发布时覆盖同一个 slug ——
-        这才是"编辑"，而不是"又做了一个"。
-      */}
-      <Pressable style={s.targetBar} onPress={() => setPicking(true)}>
-        <View style={[s.targetIcon, !target && s.targetIconNew]}>
-          <Text style={[s.targetLetter, !target && s.targetLetterNew]}>
-            {target ? target.letter : '＋'}
-          </Text>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={s.targetLabel}>{target ? '正在改' : '要做的是'}</Text>
-          <Text style={s.targetName} numberOfLines={1}>
-            {target ? target.name : '一个新页面'}
-          </Text>
-        </View>
-        <Text style={s.targetSwitch}>切换</Text>
-      </Pressable>
-
-      {picking && (
-        <View style={s.pickMask}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPicking(false)} />
-          <View style={[s.pickSheet, { paddingBottom: insets.bottom + 16 }]}>
-            <Text style={s.pickTitle}>这次要改哪个？</Text>
-            <ScrollView style={{ maxHeight: 320 }}>
-              <Pressable
-                style={s.pickRow}
-                onPress={() => { onPickTarget(null); setPicking(false); }}
-              >
-                <View style={[s.targetIcon, s.targetIconNew]}>
-                  <Text style={[s.targetLetter, s.targetLetterNew]}>＋</Text>
-                </View>
-                <Text style={s.pickName}>做一个新页面</Text>
-              </Pressable>
-              {targets.map((t) => (
-                <Pressable
-                  key={t.slug}
-                  style={s.pickRow}
-                  onPress={() => { onPickTarget(t); setPicking(false); }}
-                >
-                  <View style={s.targetIcon}><Text style={s.targetLetter}>{t.letter}</Text></View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.pickName} numberOfLines={1}>{t.name}</Text>
-                    <Text style={s.pickSlug}>/{t.slug}/</Text>
-                  </View>
-                </Pressable>
-              ))}
-              {targets.length === 0 && (
-                <Text style={s.pickEmpty}>
-                  你还没有发布过页面。先说一句想做什么，做出来之后就能在这里选它继续改。
-                </Text>
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      )}
-
-      <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={s.list}>
-        {msgs.length === 0 && (
-          <View style={s.empty}>
-            <Text style={s.emptyTitle}>说一句你想改什么</Text>
-            <Text style={s.emptyBody}>
-              比如「把首页的『排班』tab 换成『今日待办』，逾期的排最上面」。{'\n'}
-              也可以附一张截图，说「照这个样式改一下卡片」。
-            </Text>
-          </View>
-        )}
-        {msgs.map((m, i) =>
+      <ScrollView
+        ref={scroller}
+        style={{ flex: 1 }}
+        contentContainerStyle={talking ? s.list : s.intro}
+        keyboardShouldPersistTaps="handled"
+      >
+        {talking ? msgs.map((m, i) =>
           m.role === 'tool' ? (
             <Text key={i} style={s.toolLine}>· {toolLabel(m.toolName)}</Text>
           ) : (
@@ -319,6 +307,52 @@ export function AgentChat({
               </Text>
             </View>
           ),
+        ) : (
+          <>
+            <Text style={s.hello}>{displayName}，今天想做点什么？</Text>
+            <View style={s.paths}>
+              <Pressable style={s.path} onPress={() => { onClearTarget(); inputRef.current?.focus(); }}>
+                <Icon name="plusCircle" size={20} color="#181715" />
+                <Text style={s.pathLabel}>做一个</Text>
+                <Text style={s.pathHint} numberOfLines={1}>做个小工具解决手头的事</Text>
+              </Pressable>
+              <Pressable style={s.path} onPress={() => onExplore(true)}>
+                <Icon name="compass" size={20} color="#181715" />
+                <Text style={s.pathLabel}>找一个</Text>
+                <Text style={s.pathHint} numberOfLines={1}>订会议室、查工位、算报销…</Text>
+              </Pressable>
+            </View>
+
+            <Text style={s.ideasTitle}>做同款灵感</Text>
+            <View style={s.ideas}>
+              <View style={s.ideasCol}>
+                <Pressable style={s.startCard} onPress={() => onExplore(false)}>
+                  <BrandMark size={38} />
+                  <Text style={s.startText}>从这里开始{'\n'}做同款</Text>
+                </Pressable>
+                {ideas[1] && (
+                  <IdeaCard
+                    item={ideas[1]} height={150}
+                    onRemix={() => remix(ideas[1]!)}
+                    onPreview={() => onOpenPage(`/${ideas[1]!.owner_username}/${ideas[1]!.slug}/`, ideas[1]!.name)}
+                  />
+                )}
+              </View>
+              <View style={s.ideasCol}>
+                {ideas[0] ? (
+                  <IdeaCard
+                    item={ideas[0]} height={310}
+                    onRemix={() => remix(ideas[0]!)}
+                    onPreview={() => onOpenPage(`/${ideas[0]!.owner_username}/${ideas[0]!.slug}/`, ideas[0]!.name)}
+                  />
+                ) : (
+                  <View style={[s.ideaCard, s.ideaEmpty, { height: 310 }]}>
+                    <Text style={s.ideaEmptyText}>同事分享到全公司的页面会出现在这里</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </>
         )}
       </ScrollView>
 
@@ -338,72 +372,103 @@ export function AgentChat({
         </View>
       )}
 
-      <View style={[
-        s.composer,
-        // 键盘弹起时贴着键盘顶；收起时留安全区
-        { paddingBottom: kb > 0 ? 8 : insets.bottom || 10, marginBottom: kb },
-      ]}>
-        {images.length > 0 && (
-          <Text style={s.imgHint}>已附 {images.length} 张截图</Text>
+      <View style={{ paddingBottom: kb > 0 ? 8 : insets.bottom + 18, marginBottom: kb }}>
+        {/*
+          「在改哪个」。这条是整段对话的主语：不指明的话，用户说「把标题改大
+          一点」，模型只能猜他指的是哪个页面。选中之后 slug 随每条消息发给
+          服务端，发布时覆盖同一个 slug——这才是"编辑"，而不是"又做了一个"。
+        */}
+        {target && (
+          <View style={s.targetChip}>
+            <Text style={s.targetText} numberOfLines={1}>正在改「{target.name}」</Text>
+            <Pressable onPress={onClearTarget} hitSlop={10} accessibilityLabel="不改它了，做新的">
+              <Icon name="x" size={15} color="#72706a" />
+            </Pressable>
+          </View>
         )}
-        {/* 设备没有识别服务时给一句说明，别让灰按钮变成哑谜 */}
-        {!voice.available && (
-          <Text style={s.voiceHint}>这台设备没有可用的语音识别服务，语音输入不可用</Text>
-        )}
-        <View style={s.composerRow}>
+        {images.length > 0 && <Text style={s.note}>已附 {images.length} 张截图</Text>}
+        {voiceHint && <Text style={s.note}>这台设备没有可用的语音识别服务，语音输入不可用</Text>}
+
+        <View style={s.bar}>
           <Pressable
-            style={s.plus}
+            hitSlop={8}
+            accessibilityLabel="附截图"
             onPress={() => {
               void pickImage().then((r) => {
                 if (r?.base64) setImages((x) => [...x, { mimeType: 'image/jpeg', dataBase64: r.base64! }]);
               }).catch(() => { /* 闸门关闭或用户取消，静默 */ });
             }}
           >
-            <Icon name="plus" size={21} color={C.sub} />
+            <Icon name="plus" size={22} color="#181715" />
           </Pressable>
           <TextInput
+            ref={inputRef}
             style={s.input}
             value={input}
             onChangeText={setInput}
-            placeholder="描述你想改什么"
-            placeholderTextColor="#909599"
+            placeholder="说说你想做什么…"
+            placeholderTextColor="#a2a09b"
             multiline
             editable={!busy}
           />
-          {/* 设备没有识别服务时置灰并说明，不静默失效——
-              实测两家国产机型都有，但不保证全覆盖。 */}
+          {/*
+            右边那颗黑钮：没字时是话筒（稿上就是它），有字了换成发送——
+            不再另摆一颗发送键，两颗挤在胶囊里谁都点不准。
+          */}
           <Pressable
-            style={[
-              s.mic,
-              voice.listening && s.micOn,
-              (!voice.available || busy) && { opacity: 0.35 },
-            ]}
-            disabled={!voice.available || busy}
+            style={[s.go, voice.listening && s.goOn, (busy || (!hasText && !voice.available)) && { opacity: 0.35 }]}
+            disabled={busy}
+            accessibilityLabel={hasText ? '发送' : '语音输入'}
             onPress={() => {
-              if (!voice.available) return;
+              if (hasText) { void send(); return; }
+              if (!voice.available) { setVoiceHint(true); setTimeout(() => setVoiceHint(false), 3000); return; }
               void voice.start();
             }}
           >
-            <Icon
-              name={voice.listening ? 'stop' : 'mic'}
-              size={18}
-              color={voice.listening ? '#fff' : C.sub}
-            />
-          </Pressable>
-          <Pressable
-            style={[s.send, (!input.trim() || busy) && { opacity: 0.4 }]}
-            disabled={!input.trim() || busy}
-            onPress={() => void send()}
-          >
             {busy
               ? <ActivityIndicator color="#fff" size="small" />
-              : <Icon name="send" size={18} color="#fff" />}
+              : <Icon name={hasText ? 'send' : voice.listening ? 'stop' : 'mic'} size={21} color="#fff" />}
           </Pressable>
         </View>
       </View>
 
       <VoicePanel voice={voice} />
-    </KeyboardAvoidingView>
+
+      <Modal visible={history !== null} transparent animationType="slide" onRequestClose={() => setHistory(null)}>
+        <Pressable style={s.sheetMask} onPress={() => setHistory(null)} />
+        <View style={[s.sheet, { paddingBottom: insets.bottom + 16 }]}>
+          <Text style={s.sheetTitle}>最近的对话</Text>
+          <ScrollView style={{ maxHeight: 420 }}>
+            {history?.length === 0 && <Text style={s.sheetEmpty}>还没有对话。说一句想做什么就开始了。</Text>}
+            {history?.map((h) => (
+              <Pressable key={h.id} style={s.sheetRow} onPress={() => void resume(h.id)}>
+                <Icon name="history" size={18} color="#72706a" />
+                <Text style={s.sheetRowText} numberOfLines={1}>{h.title}</Text>
+                <Text style={s.sheetRowWhen}>{ago(h.updatedAt)}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+/** 灵感卡：整张点下去是"照这个做"，右上角那颗才是"先看看"。 */
+function IdeaCard({
+  item, height, onRemix, onPreview,
+}: { item: Listing; height: number; onRemix: () => void; onPreview: () => void }) {
+  const cover = absCover(item.cover_path);
+  return (
+    <Pressable style={[s.ideaCard, { height }]} onPress={onRemix} accessibilityLabel={`照「${item.name}」做一个`}>
+      {cover
+        ? <Image source={{ uri: cover }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        : <Text style={s.ideaName}>{item.name}</Text>}
+      <Pressable style={s.previewChip} onPress={onPreview} hitSlop={6} accessibilityLabel={`预览 ${item.name}`}>
+        <Icon name="expand" size={13} color="#181715" />
+        <Text style={s.previewText}>预览</Text>
+      </Pressable>
+    </Pressable>
   );
 }
 
@@ -421,108 +486,102 @@ function toolLabel(name?: string): string {
   }
 }
 
-const C = {
-  canvas: '#fcfcf8', surface: '#fff', ink: '#1c1f23', sub: '#545659',
-  tertiary: '#787c80', border: 'rgba(0,0,0,.08)', orange: '#fb923c',
-  orangeSubtle: '#fff6ed',
-};
+function ago(ms: number): string {
+  const min = Math.floor((Date.now() - ms) / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return `${min} 分钟前`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} 小时前`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? '昨天' : `${d} 天前`;
+}
 
 const s = StyleSheet.create({
-  backBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', marginLeft: -6 },
-  targetBar: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 14, paddingVertical: 9,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,.06)',
+  root: { flex: 1, backgroundColor: '#fff', paddingHorizontal: 18 },
+  topBar: { flexDirection: 'row', alignItems: 'center', gap: 20 },
+
+  intro: { flexGrow: 1, justifyContent: 'flex-end', paddingTop: 40 },
+  hello: { fontSize: 26, fontWeight: '700', color: '#181715', letterSpacing: -0.3 },
+  paths: { gap: 10, paddingTop: 18, paddingBottom: 22 },
+  path: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, height: 54, paddingHorizontal: 18,
+    borderRadius: 27, backgroundColor: '#f3f1ec', overflow: 'hidden',
   },
-  targetIcon: {
-    width: 32, height: 32, borderRadius: 9, backgroundColor: '#fb923c',
+  pathLabel: { fontSize: 16, fontWeight: '700', color: '#181715' },
+  pathHint: { flex: 1, fontSize: 14, color: '#72706a' },
+
+  ideasTitle: { fontSize: 22, fontWeight: '800', color: '#181715', paddingBottom: 12 },
+  ideas: { flexDirection: 'row', gap: 10 },
+  ideasCol: { flex: 1, gap: 10 },
+  startCard: {
+    height: 150, padding: 16, borderRadius: 24, backgroundColor: '#f3f1ec',
+    justifyContent: 'space-between',
+  },
+  startText: { fontSize: 19, fontWeight: '800', lineHeight: 25, color: '#181715' },
+  ideaCard: {
+    borderRadius: 24, overflow: 'hidden', backgroundColor: '#ffede0',
     alignItems: 'center', justifyContent: 'center',
   },
-  targetIconNew: {
-    backgroundColor: '#f4f5f6',
-    borderWidth: 1, borderColor: 'rgba(0,0,0,.08)', borderStyle: 'dashed',
+  ideaName: { fontSize: 15, fontWeight: '700', color: 'rgba(24,23,21,.55)', padding: 12, textAlign: 'center' },
+  ideaEmpty: { backgroundColor: '#f6f4ee', padding: 18 },
+  ideaEmptyText: { fontSize: 13, lineHeight: 20, color: '#a2a09b', textAlign: 'center' },
+  previewChip: {
+    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
+    height: 30, paddingHorizontal: 10, borderRadius: 15, backgroundColor: 'rgba(255,255,255,.88)',
   },
-  targetLetter: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  targetLetterNew: { color: '#787c80' },
-  targetLabel: { fontSize: 10, color: '#909599' },
-  targetName: { fontSize: 14, fontWeight: '600', color: '#001217' },
-  targetSwitch: { fontSize: 12.5, color: '#fb923c', fontWeight: '600' },
+  previewText: { fontSize: 13, fontWeight: '700', color: '#181715' },
 
-  pickMask: {
-    ...StyleSheet.absoluteFillObject, zIndex: 50,
-    backgroundColor: 'rgba(0,0,0,.42)', justifyContent: 'flex-end',
-  },
-  pickSheet: {
-    backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    padding: 18, gap: 6,
-  },
-  pickTitle: { fontSize: 16, fontWeight: '800', color: '#001217', marginBottom: 6 },
-  pickRow: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 10 },
-  pickName: { fontSize: 14.5, color: '#001217', fontWeight: '500' },
-  pickSlug: { fontSize: 11, color: '#909599', marginTop: 1 },
-  pickEmpty: { fontSize: 13, color: '#787c80', lineHeight: 21, paddingVertical: 14 },
-
-  root: { flex: 1, backgroundColor: C.canvas },
-  mic: {
-    width: 36, height: 36, borderRadius: 18, marginRight: 6,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: C.surface, borderWidth: 1, borderColor: C.border,
-  },
-  micOn: { backgroundColor: C.orange, borderColor: C.orange },
-  micText: { fontSize: 15, color: C.sub },
-  voiceHint: { fontSize: 12, color: C.tertiary, marginBottom: 6 },
-  voiceErr: { fontSize: 12, color: '#d1493f', marginBottom: 6 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 10 },
-  title: { fontSize: 20, fontWeight: '700', color: '#001217' },
-  sub: { fontSize: 11, color: C.tertiary, marginTop: 1 },
-
-  list: { padding: 16, gap: 10 },
-  empty: { paddingTop: 60, alignItems: 'center', gap: 8 },
-  emptyTitle: { fontSize: 16, fontWeight: '600', color: C.ink },
-  emptyBody: { fontSize: 13, color: C.sub, textAlign: 'center', lineHeight: 21 },
-
-  bubble: { maxWidth: '86%', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10 },
-  bubbleUser: { alignSelf: 'flex-end', backgroundColor: C.ink },
-  bubbleBot: { alignSelf: 'flex-start', backgroundColor: C.surface, borderWidth: 1, borderColor: C.border },
-  bubbleUserText: { color: '#fff', fontSize: 14, lineHeight: 21 },
-  bubbleBotText: { color: C.ink, fontSize: 14, lineHeight: 21 },
-  toolLine: { fontSize: 12, color: C.tertiary, marginLeft: 4 },
+  list: { paddingVertical: 16, gap: 10 },
+  bubble: { maxWidth: '86%', borderRadius: 20, paddingHorizontal: 15, paddingVertical: 11 },
+  bubbleUser: { alignSelf: 'flex-end', backgroundColor: '#181715' },
+  bubbleBot: { alignSelf: 'flex-start', backgroundColor: '#f3f1ec' },
+  bubbleUserText: { color: '#fff', fontSize: 15, lineHeight: 22 },
+  bubbleBotText: { color: '#181715', fontSize: 15, lineHeight: 22 },
+  toolLine: { fontSize: 12.5, color: '#a2a09b', marginLeft: 4 },
 
   confirm: {
-    margin: 12, padding: 14, borderRadius: 16,
-    backgroundColor: C.orangeSubtle, borderWidth: 1, borderColor: C.orange, gap: 4,
+    marginTop: 8, padding: 16, borderRadius: 22, backgroundColor: '#fbe4da', gap: 4,
   },
-  confirmTitle: { fontSize: 15, fontWeight: '600', color: C.ink },
-  confirmBody: { fontSize: 13, color: C.sub, lineHeight: 20 },
+  confirmTitle: { fontSize: 15, fontWeight: '700', color: '#181715' },
+  confirmBody: { fontSize: 13, color: '#54524e', lineHeight: 20 },
   confirmActions: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  btn: { flex: 1, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  btnGhost: { backgroundColor: 'rgba(255,255,255,.7)' },
-  btnGhostText: { fontSize: 14, color: C.ink },
-  btnPrimary: { backgroundColor: C.ink },
-  btnPrimaryText: { fontSize: 14, color: '#fff', fontWeight: '500' },
+  btn: { flex: 1, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  btnGhost: { backgroundColor: 'rgba(255,255,255,.75)' },
+  btnGhostText: { fontSize: 14, fontWeight: '600', color: '#181715' },
+  btnPrimary: { backgroundColor: '#ee5c2a' },
+  btnPrimaryText: { fontSize: 14, color: '#fff', fontWeight: '700' },
 
-  composer: {
-    borderTopWidth: 1, borderTopColor: C.border,
-    backgroundColor: 'rgba(255,255,255,.96)', paddingHorizontal: 12, paddingTop: 8,
+  targetChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start',
+    height: 32, paddingHorizontal: 12, marginBottom: 8, borderRadius: 16, backgroundColor: '#f3f1ec',
   },
-  imgHint: { fontSize: 12, color: C.orange, marginBottom: 6, marginLeft: 4 },
-  composerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  plus: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: '#f5f5f3',
-    alignItems: 'center', justifyContent: 'center',
+  targetText: { maxWidth: 240, fontSize: 13, fontWeight: '600', color: '#54524e' },
+  note: { fontSize: 12.5, color: '#ee5c2a', marginBottom: 8, marginLeft: 6 },
+
+  bar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, minHeight: 60,
+    paddingLeft: 18, paddingRight: 6, paddingVertical: 6, borderRadius: 30, backgroundColor: '#fff',
+    boxShadow: '0 10px 26px -14px rgba(24,23,21,.35), 0 0 0 1px rgba(24,23,21,.06)',
   },
-  plusText: { fontSize: 20, color: C.sub, lineHeight: 22 },
   input: {
-    // 一行高度按 32 收窄：原先 36 配上下 9 的内边距，空了一圈。
-    // textAlignVertical 是安卓 multiline 垂直居中的唯一开关，缺了就顶在上边。
-    flex: 1, minHeight: 32, maxHeight: 108, borderRadius: 16,
-    backgroundColor: '#f5f5f3', paddingHorizontal: 13, paddingVertical: 6,
-    fontSize: 14, lineHeight: 19, color: C.ink, textAlignVertical: 'center',
+    flex: 1, maxHeight: 120, paddingVertical: 6, fontSize: 16, lineHeight: 22, color: '#181715',
+    // 安卓 multiline 垂直居中的唯一开关，缺了就顶在上边
+    textAlignVertical: 'center',
   },
-  send: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: C.ink,
-    alignItems: 'center', justifyContent: 'center',
+  go: {
+    width: 48, height: 48, borderRadius: 24, backgroundColor: '#181715',
+    alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-end',
   },
-  sendText: { color: '#fff', fontSize: 15 },
+  goOn: { backgroundColor: '#ee5c2a' },
+
+  sheetMask: { flex: 1, backgroundColor: 'rgba(0,0,0,.42)' },
+  sheet: {
+    backgroundColor: '#fff', borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    paddingHorizontal: 20, paddingTop: 20, gap: 6,
+  },
+  sheetTitle: { fontSize: 18, fontWeight: '800', color: '#181715', marginBottom: 6 },
+  sheetEmpty: { fontSize: 14, color: '#72706a', lineHeight: 22, paddingVertical: 14 },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13 },
+  sheetRowText: { flex: 1, fontSize: 15, color: '#181715' },
+  sheetRowWhen: { fontSize: 12.5, color: '#a2a09b' },
 });
