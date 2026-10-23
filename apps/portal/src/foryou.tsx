@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { exploreBucket, type Interest } from '@ispace/contracts';
-import { Icon, copyText } from '@ispace/ui';
+import { Icon, MarkLoading, copyText } from '@ispace/ui';
 import { api, type Listing } from './api';
 import { Segment } from './detail';
-import { PHONE_RATIO, appHref, deviceOf, fmt, initial, usePlayUrl, warmPlayUrl, washOf, type Device } from './wall';
+import { PHONE_RATIO, appHref, deviceOf, fmt, initial, usePlay, warmPlayUrl, washOf, type Device } from './wall';
 import { Cover } from './wall';
 
 /**
@@ -306,20 +306,38 @@ export function ForYou({
  *
  * 翻到下一个时原来是：上一个页面还挂着 → 换成封面 → 换到令牌后新建一个空
  * iframe（白的）→ 页面一点点画出来。四个画面接连换，看上去就是在几个页面
- * 之间闪。现在：调用方按 app_id 给 key（换一个就是全新的，不会先露出上一个），
- * 封面一直垫在底下，iframe 加载完才淡入盖上去——中间没有白屏那一下。
+ * 之间闪。后来改成封面一直垫在底下、iframe 加载完才淡入——白屏没了，可封面
+ * 是发布那一刻的截图，和真页面常常对不上（尺寸、内容、甚至已经改过版），
+ * 淡入那一下还是像换了一张图。
+ *
+ * 现在底下垫的是一枚开关门的品牌标记：加载就是加载，不冒充页面。调用方按
+ * app_id 给 key（换一个就是全新的，不会先露出上一个），iframe 加载完淡入。
+ * 换不到试玩地址（没共享给你、已下线）才退回封面——那时页面本身打不开，
+ * 截图是唯一能看的东西。
  */
 function Frame({ item, tint }: { item: Listing; tint: string }) {
   /* 试玩走令牌地址，不是 /{owner}/{slug}/——见 wall.tsx 的 usePlayUrl */
-  const play = usePlayUrl(item);
+  const { url: play, failed } = usePlay(item);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(false); }, [play]);
   if (item.status === 'stopped') {
     return <Cover src={item.cover_path} label={`${item.name} · 已停用`} tint={tint} radius={0} />;
   }
+  if (failed && !play) {
+    return <Cover src={item.cover_path} label={item.name} tint={tint} radius={0} />;
+  }
   return (
     <>
-      <Cover src={item.cover_path} label={item.name} tint={tint} radius={0} />
+      {!loaded && (
+        <div
+          style={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'var(--surface-1)',
+          }}
+        >
+          <MarkLoading size={56} />
+        </div>
+      )}
       {play && (
         <iframe
           key={play}

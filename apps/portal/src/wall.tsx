@@ -139,8 +139,22 @@ export function warmPlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status
 }
 
 export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'> | null): string | null {
+  return usePlay(l).url;
+}
+
+/**
+ * 同 usePlayUrl，另外说出"换不到"。
+ *
+ * 只要地址的调用方拿 null 当"还在换"就够了——它们底下垫着封面。为你推荐
+ * 底下不再垫封面、换成加载动画，就得分得清"还在换"和"换不到了"（没共享
+ * 给你、已下线），否则动画会一直转下去。
+ */
+export function usePlay(
+  l: Pick<Listing, 'owner_username' | 'slug' | 'status'> | null,
+): { url: string | null; failed: boolean } {
   const key0 = l ? `${l.owner_username}/${l.slug}` : '';
   const [url, setUrl] = useState<string | null>(() => (key0 ? cachedPlay(key0) : null));
+  const [failed, setFailed] = useState(false);
   const key = l ? `${l.owner_username}/${l.slug}` : '';
   const status = l?.status ?? '';
 
@@ -160,6 +174,7 @@ export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'
     重跑），换了作品才重新换——守卫也就不需要了。
   */
   useEffect(() => {
+    setFailed(false);
     if (!key || status === 'stopped') { setUrl(null); return; }
     let alive = true;
     /* 记着的直接用，不先置空——置空那一下就是框里闪一下 */
@@ -167,11 +182,11 @@ export function usePlayUrl(l: Pick<Listing, 'owner_username' | 'slug' | 'status'
     const [owner, slug] = key.split('/');
     void openPlay(owner!, slug!)
       .then((u) => { if (alive) setUrl(u); })
-      .catch(() => { /* 换不到就不渲染，调用方退回封面 */ });
+      .catch(() => { if (alive) setFailed(true); /* 换不到：调用方退回封面 */ });
     return () => { alive = false; };
   }, [key, status]);
 
-  return url;
+  return { url, failed };
 }
 
 export const appHref = (l: Pick<Listing, 'owner_username' | 'slug'>): string =>

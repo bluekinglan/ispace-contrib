@@ -66,6 +66,39 @@ export function Mark({ size = 26, style }: { size?: number; style?: CSSPropertie
 }
 
 /**
+ * 加载中的品牌标记：两扇门一开一合。
+ *
+ * 标记本来就是两扇对开的门（两张打开的页面）。等一个页面加载时，让这两扇
+ * 门绕着各自外侧的门轴往里收、再合上——「正在打开」这件事就用它自己的形状
+ * 说出来，而不是先摆一张旧截图（截图和真页面对不上，切过去那一下像闪了）。
+ *
+ * 门轴靠 CSS（ispace-door-l / -r，见 GlobalKeyframes）：transform-box 取门板
+ * 自己的包围盒，左门的轴在左边、右门在右边。系统开了「减少动态效果」时不开
+ * 合，整枚标记只做明暗呼吸。
+ */
+export function MarkLoading({ size = 56, style }: { size?: number; style?: CSSProperties }) {
+  return (
+    <svg
+      viewBox="0 0 1024 1024"
+      className="ispace-door"
+      style={{ width: size, height: size, flex: 'none', ...style }}
+      role="img"
+      aria-label="正在加载"
+    >
+      <rect width="1024" height="1024" rx="276" fill="#ee5c2a" />
+      <g className="ispace-door-l">
+        <path d="M216 304Q216 280 239 272L464 208Q488 201 488 226V766Q488 787 468 794L239 858Q216 865 216 840Z" fill="#ffffff" />
+        <path d="M280 350L424 309V711L280 752Z" fill="#ee5c2a" />
+      </g>
+      <g className="ispace-door-r">
+        <path d="M536 226Q536 201 560 208L785 272Q808 280 808 304V840Q808 865 785 858L556 794Q536 787 536 766Z" fill="#ffffff" />
+        <path d="M600 309L744 350V752L600 711Z" fill="#ee5c2a" />
+      </g>
+    </svg>
+  );
+}
+
+/**
  * 字标。700 字重、字距收紧。
  *
  * 稿上标的是 600，但那是 Outfit 的 600——它本身就比 Manrope 同一档粗一些。
@@ -978,6 +1011,22 @@ export function GlobalKeyframes() {
       @keyframes ispace-dialog-scale {
         from { opacity: 0; transform: scale(.96) translateY(6px) }
         to   { opacity: 1; transform: none }
+      }
+      /* MarkLoading：门板绕外侧门轴收到一条窄缝再合上，两头各停一拍 */
+      @keyframes ispace-door {
+        0%, 12%   { transform: scaleX(1) }
+        45%, 58%  { transform: scaleX(.16) }
+        90%, 100% { transform: scaleX(1) }
+      }
+      .ispace-door-l, .ispace-door-r {
+        transform-box: fill-box;
+        animation: ispace-door 1.6s cubic-bezier(.45, 0, .25, 1) infinite;
+      }
+      .ispace-door-l { transform-origin: 0% 50% }
+      .ispace-door-r { transform-origin: 100% 50%; animation-delay: .06s }
+      @media (prefers-reduced-motion: reduce) {
+        .ispace-door-l, .ispace-door-r { animation: none }
+        .ispace-door { animation: ispace-pulse 1.6s ease-in-out infinite }
       }
     `}</style>
   );
