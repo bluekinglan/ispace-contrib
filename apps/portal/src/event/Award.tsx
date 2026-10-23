@@ -7,6 +7,7 @@ import { api } from '../api';
 import { EVENT_JUDGES } from './judges';
 import { registerEventEffects } from './effects';
 import { LotteryStage, type LotteryHandle } from './Lottery';
+import { AwardAudio, type Cue } from './award-audio';
 import {
   BinaryTen, Caret, DOTS_ON_SCREEN, DotMatrix, dots1024, EIcon, EventKeyframes, Mark,
   type EventIconName,
@@ -256,6 +257,38 @@ export function Award() {
   // 键盘要能用，焦点就得在舞台上；主持人多半是点一下然后用遥控笔翻页
   useEffect(() => { stage.current?.focus(); }, []);
 
+  /*
+    背景音乐，按这一屏是什么切（见 award-audio.ts）。M 静音/取消静音，
+    给现场调音台没接好、需要临时关掉的时候用。
+  */
+  const music = useRef<AwardAudio | null>(null);
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    const m = new AwardAudio();
+    music.current = m;
+    const kick = () => m.kick();
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault(); setMuted(m.toggleMute()); return;
+      }
+      kick();
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('pointerdown', kick);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', kick);
+      m.dispose();
+      music.current = null;
+    };
+  }, []);
+  const cueStep = awards?.length ? steps[clamp(at)] : undefined;
+  const cue: Cue = !cueStep ? null
+    : cueStep.t === 'award' ? (cueStep.reveal ? 'fanfare' : 'roll')
+    : cueStep.t === 'end' || cueStep.t === 'lottery' || cueStep.t === 'cake' ? 'party'
+    : 'theme';
+  useEffect(() => { music.current?.set(cue); }, [cue]);
+
   if (err) {
     return (
       <Fullscreen>
@@ -327,6 +360,21 @@ export function Award() {
         }}
       >
         {fs ? '退出全屏 · Esc' : '全屏 · F'}
+      </button>
+      <button
+        type="button"
+        onClick={() => { const m = music.current; if (m) setMuted(m.toggleMute()); }}
+        aria-label={muted ? '打开音乐' : '静音'}
+        style={{
+          position: 'absolute', right: 150, bottom: 16, zIndex: 100,
+          height: 34, padding: '0 14px', borderRadius: 100, cursor: 'pointer',
+          border: '1px solid rgba(255,255,255,.28)', background: 'rgba(0,18,23,.72)',
+          color: '#fff', fontSize: 13, fontWeight: 600,
+          opacity: awake ? 1 : 0, pointerEvents: awake ? 'auto' : 'none',
+          transition: 'opacity .3s ease',
+        }}
+      >
+        {muted ? '已静音 · M' : '音乐 · M'}
       </button>
       <div
         ref={stage}
@@ -1012,6 +1060,11 @@ function Summary({ awards, judgeCount }: { awards: EventAward[]; judgeCount: num
 
       <span style={{ fontSize: 28, fontWeight: 600, opacity: 0.75 }}>
         入围奖随后颁发 · 感谢 {judgeCount} 位评委和所有参赛同事
+      </span>
+
+      {/* 背景音乐是 CC-BY 4.0，必须署名（见 award-audio.ts）。换曲子时这行跟着改 */}
+      <span style={{ position: 'absolute', right: 0, bottom: -60, fontSize: 14, opacity: 0.5 }}>
+        Music: “Heroic Age” “Fanfare for Space” “Winner Winner!” by Kevin MacLeod (incompetech.com) · CC BY 4.0
       </span>
     </div>
   );
