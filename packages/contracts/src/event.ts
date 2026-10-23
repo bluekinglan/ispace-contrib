@@ -369,6 +369,11 @@ export interface EventAward {
   no: string | null;
   ideaName: string;
   who: string;
+  /**
+   * 获奖人在平台上传的头像（带内容指纹的地址），没传过为 null。
+   * 颁奖大屏揭晓时粒子聚成「头像 + 名字」；null 时那块圆片画名字首字。
+   */
+  avatarUrl: string | null;
   url: string | null;
   /** 评委平均分，一位小数。by='votes' 的奖项为 null。 */
   judgeScore: number | null;

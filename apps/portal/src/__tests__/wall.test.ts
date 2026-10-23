@@ -8,7 +8,7 @@ import type { Listing } from '../api';
 const L = (over: Partial<Listing>): Listing => ({
   id: 'l1', app_id: 'a1', published_at: '2026-10-01T00:00:00Z', install_count: 0,
   slug: 'x', name: 'X', description: null, icon_letter: 'X', cover_path: null,
-  type: 'static', status: 'running', owner_username: 'lixiao', owner_name: '李骁',
+  type: 'static', status: 'running', owner_username: 'lixiao', owner_name: '李骁', owner_avatar: null,
   installed: false, mine: false, category: null, visit_count: 0,
   like_count: 0, comment_count: 0, liked: false, source_prompt: null,
   ...over,

@@ -324,7 +324,8 @@ export function WallCard({
       )}
 
       <AuthorChip
-        name={item.owner_name} username={item.owner_username} onClick={onAuthor}
+        name={item.owner_name} username={item.owner_username} avatarUrl={item.owner_avatar}
+        onClick={onAuthor}
       />
     </div>
   );

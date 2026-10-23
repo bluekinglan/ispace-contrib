@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  API_BASE, ERROR_CODES, IspaceError, marketplaceCategorySchema, type User,
+  API_BASE, ERROR_CODES, IspaceError, avatarUrlFor, marketplaceCategorySchema, type User,
 } from '@ispace/contracts';
 import { getPlatformPolicy, writeAudit, type Sql } from '@ispace/db';
 import { z } from 'zod';
@@ -35,6 +35,7 @@ export function registerMarketplaceRoutes(
              a.slug, a.name, a.description, a.icon_letter, a.cover_path, a.type, a.status,
              a.source_prompt, a.visit_count, a.like_count, a.comment_count,
              u.username AS owner_username, u.display_name AS owner_name,
+             av.etag AS owner_avatar_etag,
              EXISTS (
                SELECT 1 FROM ispace.app_installs i
                 WHERE i.app_id = m.app_id AND i.user_id = ${me.id}
@@ -49,10 +50,17 @@ export function registerMarketplaceRoutes(
         FROM ispace.marketplace_listings m
         JOIN ispace.apps  a ON a.id = m.app_id
         JOIN ispace.users u ON u.id = a.owner_id
+        LEFT JOIN ispace.user_avatars av ON av.user_id = u.id
        WHERE a.status <> 'stopped'
        ORDER BY m.install_count DESC, m.published_at DESC
     `;
-    return { listings: rows };
+    // 卡片左下角的作者头像。etag 只用来拼地址，不往外送
+    return {
+      listings: rows.map(({ owner_avatar_etag, ...r }) => ({
+        ...r,
+        owner_avatar: avatarUrlFor(r.owner_username as string, owner_avatar_etag as string | null),
+      })),
+    };
   });
 
   // ── 上架 ──────────────────────────────────────────────────────────

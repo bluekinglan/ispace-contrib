@@ -101,6 +101,8 @@ export interface Listing {
   cover_path: string | null;
   type: string; status: string;
   owner_username: string; owner_name: string;
+  /** 作者头像地址（带内容指纹），没传过为 null，卡片回落到首字底板 */
+  owner_avatar: string | null;
   installed: boolean; mine: boolean;
   category: string | null;
   /** 页面被打开过多少次（shell.js 每次加载打一下，不去重）。 */

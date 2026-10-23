@@ -371,7 +371,10 @@ function AboutCard({
         display: 'flex', flexDirection: 'column', gap: 18,
       }}
     >
-      <AuthorChip name={item.owner_name} username={item.owner_username} onClick={onAuthor} size={34} />
+      <AuthorChip
+        name={item.owner_name} username={item.owner_username} avatarUrl={item.owner_avatar}
+        onClick={onAuthor} size={34}
+      />
       {item.description && (
         <span style={{ fontSize: 15, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
           {item.description}

@@ -6,7 +6,7 @@ import { join, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  API_BASE, ERROR_CODES, IspaceError,
+  API_BASE, ERROR_CODES, IspaceError, avatarUrlFor,
   eventAdminSchema, ideaInputSchema, scoreInputSchema, workInputSchema,
   derivePhase, phaseAtLeast,
   type EventAdminIdea, type EventAward, type EventConfig, type EventFile, type EventFinalist, type EventOpenWork,
@@ -1531,14 +1531,17 @@ export async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[
   const meta = await sql<{
     idea_id: string; kind: string | null; app_slug: string | null;
     app_owner: string | null; note: string | null; plan: string; pitch: string | null;
+    author: string; avatar: string | null;
   }[]>`
     SELECT i.id AS idea_id, w.kind, a.slug AS app_slug, au.username AS app_owner,
-           i.plan, w.pitch,
+           i.plan, w.pitch, iu.username AS author, ua.etag AS avatar,
            (SELECT s.note FROM ispace.event_scores s
              WHERE s.idea_id = i.id AND s.submitted_at IS NOT NULL
                AND s.note IS NOT NULL AND length(trim(s.note)) > 0
              ORDER BY s.submitted_at LIMIT 1) AS note
       FROM ispace.event_ideas i
+      JOIN ispace.users iu ON iu.id = i.user_id
+      LEFT JOIN ispace.user_avatars ua ON ua.user_id = i.user_id
       LEFT JOIN ispace.event_works w ON w.idea_id = i.id
       LEFT JOIN ispace.apps a ON a.id = w.app_id
       LEFT JOIN ispace.users au ON au.id = a.owner_id
@@ -1599,6 +1602,7 @@ export async function computeAwards(sql: Sql, ev: EventRow): Promise<EventAward[
       no: row.no,
       ideaName: row.name,
       who: row.who,
+      avatarUrl: m ? avatarUrlFor(m.author, m.avatar) : null,
       url: workUrl(m?.kind ?? null, m?.app_owner ?? null, m?.app_slug ?? null),
       judgeScore: rule.by === 'judge' ? row.judgeScore : null,
       votes: row.votes,

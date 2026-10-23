@@ -327,7 +327,8 @@ export function registerSocialRoutes(
           posts: Number(counts?.posts ?? 0),
         },
       },
-      apps,
+      // 和 /marketplace 的卡片对齐：作者页上每张卡都是他本人，头像同一个
+      apps: apps.map((a) => ({ ...a, owner_avatar: avatarUrlFor(u.username, u.avatar_etag) })),
     };
   });
 

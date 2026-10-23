@@ -805,6 +805,7 @@ function AwardStage({
         key={award.key}
         text={award.who}
         initial={award.who.charAt(0)}
+        img={award.avatarUrl ?? undefined}
         ink={theme.fg}
         disc={theme.chip}
         discink={theme.chipFg}
