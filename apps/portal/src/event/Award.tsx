@@ -867,7 +867,15 @@ function AwardStage({
             获奖作品 · {noTag(award.no)}
           </span>
           <span style={{ fontSize: 44, fontWeight: 900, lineHeight: 1.1 }}>{award.ideaName}</span>
-          <span style={{ fontSize: 21, fontWeight: 500, lineHeight: 1.5, opacity: 0.72 }}>
+          {/*
+            最多 5 行。介绍是作者自己填的，长短没人管——本届人气奖那件写了
+            三百多字，17 行把面板撑出屏幕，底下的票数整块看不见。5 行是评委
+            奖里最长那段的行数，所以只截超长的，正常长度的一个字都不少。
+          */}
+          <span style={{
+            fontSize: 21, fontWeight: 500, lineHeight: 1.5, opacity: 0.72,
+            display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 5, overflow: 'hidden',
+          }}>
             {award.desc}
           </span>
         </div>
