@@ -9,9 +9,14 @@ import { Cover } from './wall';
 /**
  * 为你推荐（改版稿 §为你推荐）。
  *
- * 整屏深色、一次只看一个页面、上下键翻——探索是「逛」，这一屏是「刷」。
- * 它是全站唯一一处自带顶栏的屏（外壳的 chrome=false），因为深色背景下
- * 再压一条浅色顶栏会把这一屏切成两半。
+ * 一次只看一个页面、上下键翻——探索是「逛」，这一屏是「刷」。
+ * 它是全站唯一一处自带顶栏的屏（外壳的 chrome=false）：计数和「手机 / 电脑」
+ * 那一行就是它的顶栏，外壳那条再压上去就是两层。
+ *
+ * 底色和全站一样是浅色画布。原先整屏深色，是照改版稿那一张"沉浸式"的图；
+ * 可是框里装的是真页面，大多数页面自己就是浅底，深底上摆一块亮框，眼睛
+ * 在两种亮度之间来回跳，从侧栏点进来也像换了一个产品。框、按钮的画法和
+ * 详情页那一屏取同一套。
  *
  * 预览同详情页：装的是真页面，sandbox 不给 allow-same-origin（理由见
  * detail.tsx 那段方框注释）。
@@ -62,7 +67,7 @@ export function ForYou({
       <div
         style={{
           flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'var(--dark-bg)', color: 'rgba(255,255,255,.7)', fontSize: 'var(--text-md)',
+          background: 'var(--surface-canvas)', color: 'var(--text-tertiary)', fontSize: 'var(--text-md)',
         }}
       >
         还没有可以推荐的页面。先去探索看看，或者自己做一个。
@@ -100,7 +105,7 @@ export function ForYou({
   const pad = (v: number) => (v < 10 ? `0${v}` : String(v));
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dark-bg)', color: '#fff' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface-canvas)', color: 'var(--text-heading)' }}>
       <div
         style={{
           height: 64, flex: 'none', display: 'grid',
@@ -110,12 +115,11 @@ export function ForYou({
       >
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <span style={{ fontSize: 'var(--text-card-title)', fontWeight: 'var(--weight-semibold)' }}>为你推荐</span>
-          <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'rgba(255,255,255,.45)' }}>
+          <span className="mono" style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
             {pad((((i % n) + n) % n) + 1)} / {pad(n)}
           </span>
         </span>
         <Segment
-          dark
           options={[
             { k: 'phone', label: '手机', icon: 'phone' },
             { k: 'pc', label: '电脑', icon: 'monitor' },
@@ -123,7 +127,7 @@ export function ForYou({
           value={d}
           onPick={(k) => setDev(k as Device)}
         />
-        <span style={{ justifySelf: 'end', fontSize: 'var(--text-base)', color: 'rgba(255,255,255,.45)' }}>
+        <span style={{ justifySelf: 'end', fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
           ↑ ↓ 键切换
         </span>
       </div>
@@ -164,7 +168,7 @@ export function ForYou({
                 <span
                   style={{
                     height: 26, padding: '0 11px', borderRadius: 'var(--radius-pill)',
-                    background: 'rgba(255,255,255,.08)', color: 'rgba(255,255,255,.8)',
+                    background: 'var(--surface-2)', color: 'var(--text-secondary)',
                     fontSize: 'var(--text-base)', display: 'flex', alignItems: 'center',
                   }}
                 >
@@ -177,25 +181,25 @@ export function ForYou({
                   /* 稿上是定死的 42。那是一张定宽画布，真实窗口窄下来时
                      左栏会跟着窄，42 的作品名就断成两行 */
                   fontSize: 'clamp(28px, 2.4vw, 42px)',
-                  lineHeight: 1.1, color: '#fff',
+                  lineHeight: 1.1, color: 'var(--text-heading)',
                 }}
               >
                 {cur.name}
               </h2>
               {cur.description && (
-                <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.7, color: 'rgba(255,255,255,.7)', textWrap: 'pretty' }}>
+                <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.7, color: 'var(--text-secondary)', textWrap: 'pretty' }}>
                   {cur.description}
                 </p>
               )}
-              <span style={{ fontSize: 'var(--text-base)', color: 'rgba(255,255,255,.6)' }}>
+              <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>
                 {cur.owner_name} · {fmt(cur.install_count)} 人在用
               </span>
               <button
                 onClick={() => onDetail(cur)}
                 style={{
                   alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 6, height: 40,
-                  padding: '0 12px 0 16px', border: '1px solid rgba(255,255,255,.22)', borderRadius: 12,
-                  background: 'transparent', color: '#fff', fontSize: 'var(--text-base)',
+                  padding: '0 12px 0 16px', border: '1px solid var(--border-hover)', borderRadius: 12,
+                  background: 'var(--surface-1)', color: 'var(--text-primary)', fontSize: 'var(--text-base)',
                   fontWeight: 'var(--weight-semibold)', cursor: 'pointer',
                 }}
               >
@@ -211,8 +215,8 @@ export function ForYou({
               style={{
                 /* 纵向占满；比例按真手机屏（PHONE_RATIO），34 的圆角取自新版设计稿 */
                 height: '100%', aspectRatio: PHONE_RATIO, boxSizing: 'border-box',
-                borderRadius: 34, overflow: 'hidden', background: '#000',
-                boxShadow: '0 0 0 1px rgba(255,255,255,.12), 0 50px 100px -30px rgba(0,0,0,.8)',
+                borderRadius: 34, overflow: 'hidden', background: 'var(--surface-1)',
+                boxShadow: '0 30px 60px -36px rgba(24,23,21,.45), 0 0 0 1px var(--border-subtle)',
               }}
             >
               <div style={{ position: 'relative', width: '100%', height: '100%', borderRadius: 34, overflow: 'hidden' }}>
@@ -223,26 +227,26 @@ export function ForYou({
             <div
               style={{
                 width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-                borderRadius: 14, overflow: 'hidden', background: 'var(--dark-surface)',
-                boxShadow: '0 0 0 1px rgba(255,255,255,.1), 0 50px 100px -30px rgba(0,0,0,.8)',
+                borderRadius: 14, overflow: 'hidden', background: 'var(--surface-1)',
+                boxShadow: '0 30px 60px -36px rgba(24,23,21,.45), 0 0 0 1px var(--border-subtle)',
               }}
             >
               <div
                 style={{
                   height: 38, display: 'flex', alignItems: 'center', gap: 12, padding: '0 14px',
-                  borderBottom: '1px solid rgba(255,255,255,.08)',
+                  background: 'var(--surface-2)',
                 }}
               >
                 <div style={{ display: 'flex', gap: 6, width: 46 }}>
                   {[0, 1, 2].map((k) => (
-                    <span key={k} style={{ width: 10, height: 10, borderRadius: 'var(--radius-pill)', background: 'rgba(255,255,255,.18)' }} />
+                    <span key={k} style={{ width: 10, height: 10, borderRadius: 'var(--radius-pill)', background: 'var(--border-hover)' }} />
                   ))}
                 </div>
                 <span
                   className="mono"
                   style={{
                     flex: 1, textAlign: 'center', fontSize: 'var(--text-base)',
-                    color: 'rgba(255,255,255,.5)', whiteSpace: 'nowrap', overflow: 'hidden',
+                    color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden',
                   }}
                 >
                   {location.host}{appHref(cur)}
@@ -270,7 +274,7 @@ export function ForYou({
             onClick={() => onAuthor(cur.owner_username)}
             title={cur.owner_name}
             style={{
-              width: 46, height: 46, border: '2px solid rgba(255,255,255,.9)',
+              width: 46, height: 46, border: 0,
               borderRadius: 'var(--radius-pill)', background: washOf(cur.owner_username),
               color: 'var(--text-heading)', fontSize: 'var(--text-lg)',
               fontWeight: 'var(--weight-bold)', cursor: 'pointer',
@@ -280,16 +284,16 @@ export function ForYou({
           </button>
           <Rail
             icon="heart" filled={cur.liked} label={fmt(cur.like_count)} title="喜欢"
-            color={cur.liked ? '#ee5c2a' : '#fff'} onClick={() => void toggleLike()}
+            color={cur.liked ? 'var(--tabby-orange)' : 'var(--text-primary)'} onClick={() => void toggleLike()}
           />
           <Rail
             icon={cur.mine ? 'grid' : cur.installed ? 'check' : 'plus'}
             label={cur.mine ? '我的' : cur.installed ? '已添加' : '添加'}
-            title="添加到我的作品" color="#fff" onClick={() => void toggleAdd()}
+            title="添加到我的作品" color="var(--text-primary)" onClick={() => void toggleAdd()}
           />
-          <Rail icon="link" label="分享" title="复制链接" color="#fff" onClick={() => void share()} />
+          <Rail icon="link" label="分享" title="复制链接" color="var(--text-primary)" onClick={() => void share()} />
           {cur.source_prompt && (
-            <Rail icon="remix" label="做同款" title="做同款" color="#fff" onClick={() => onRemix(cur)} />
+            <Rail icon="remix" label="做同款" title="做同款" color="var(--text-primary)" onClick={() => onRemix(cur)} />
           )}
         </div>
       </div>
@@ -339,8 +343,8 @@ function Round({ title, icon, onClick }: { title: string; icon: 'chevUp' | 'chev
       onClick={onClick}
       title={title}
       style={{
-        width: 44, height: 44, border: '1px solid rgba(255,255,255,.16)',
-        borderRadius: 'var(--radius-pill)', background: 'transparent', color: '#fff',
+        width: 44, height: 44, border: '1px solid var(--border-hover)',
+        borderRadius: 'var(--radius-pill)', background: 'var(--surface-1)', color: 'var(--text-primary)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
       }}
     >
@@ -365,19 +369,19 @@ function Rail({
       title={title}
       style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
-        padding: 0, border: 0, background: 'transparent', color: '#fff', cursor: 'pointer',
+        padding: 0, border: 0, background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer',
       }}
     >
       <span
         style={{
           width: 46, height: 46, borderRadius: 'var(--radius-pill)',
-          background: 'rgba(255,255,255,.08)', color, display: 'flex',
+          background: 'var(--surface-1)', boxShadow: '0 0 0 1px var(--border-subtle)', color, display: 'flex',
           alignItems: 'center', justifyContent: 'center',
         }}
       >
         <Icon name={icon} size={20} filled={filled} />
       </span>
-      <span style={{ fontSize: 'var(--text-base)', color: 'rgba(255,255,255,.72)' }}>{label}</span>
+      <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-tertiary)' }}>{label}</span>
     </button>
   );
 }
