@@ -199,8 +199,50 @@ export function Award() {
     setAt((n) => clamp(n - 1));
   }, [clamp]);
 
+  /*
+    浏览器全屏（演示模式）。
+
+    舞台本身是 position:fixed 铺满的，但那只铺满「浏览器窗口」——标签栏、
+    地址栏、书签栏是浏览器的，网页藏不掉。主持人按 ⌃⌘F 进全屏也不一定
+    干净：Mac 上的 Chrome 默认「全屏时始终显示工具栏」，地址栏照样挂着。
+    requestFullscreen 走的是另一条路（和看视频点全屏一样），所有工具栏都会
+    收起，不受那个勾选影响。
+
+    必须由一次按键或点击触发（浏览器要求用户手势），所以不能进页面就自动全屏。
+  */
+  const [fs, setFs] = useState(false);
+  useEffect(() => {
+    const on = () => setFs(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', on);
+    return () => document.removeEventListener('fullscreenchange', on);
+  }, []);
+  const toggleFs = useCallback(() => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    else void document.documentElement.requestFullscreen?.().catch(() => undefined);
+  }, []);
+
+  /*
+    右下角那颗按钮：鼠标一动就出来，停 2.5 秒就隐身。投在大屏上时主持人的
+    指针多半不动，屏幕上就不会挂着一颗按钮。
+  */
+  const [awake, setAwake] = useState(true);
+  useEffect(() => {
+    let t = window.setTimeout(() => setAwake(false), 2500);
+    const poke = () => {
+      setAwake(true);
+      window.clearTimeout(t);
+      t = window.setTimeout(() => setAwake(false), 2500);
+    };
+    window.addEventListener('mousemove', poke);
+    return () => { window.removeEventListener('mousemove', poke); window.clearTimeout(t); };
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      /* F 切全屏。带修饰键的放过：⌘F 是浏览器的查找 */
+      if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault(); toggleFs(); return;
+      }
       if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {
         e.preventDefault(); advance();
       } else if (e.key === 'ArrowLeft' || e.key === 'Backspace') {
@@ -209,7 +251,7 @@ export function Award() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [advance, retreat]);
+  }, [advance, retreat, toggleFs]);
 
   // 键盘要能用，焦点就得在舞台上；主持人多半是点一下然后用遥控笔翻页
   useEffect(() => { stage.current?.focus(); }, []);
@@ -271,6 +313,21 @@ export function Award() {
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#000', overflow: 'hidden' }}>
       <EventKeyframes />
+      <button
+        type="button"
+        onClick={toggleFs}
+        aria-label={fs ? '退出全屏' : '全屏'}
+        style={{
+          position: 'absolute', right: 16, bottom: 16, zIndex: 100,
+          height: 34, padding: '0 14px', borderRadius: 100, cursor: 'pointer',
+          border: '1px solid rgba(255,255,255,.28)', background: 'rgba(0,18,23,.72)',
+          color: '#fff', fontSize: 13, fontWeight: 600,
+          opacity: awake ? 1 : 0, pointerEvents: awake ? 'auto' : 'none',
+          transition: 'opacity .3s ease',
+        }}
+      >
+        {fs ? '退出全屏 · Esc' : '全屏 · F'}
+      </button>
       <div
         ref={stage}
         id="award-screen"
