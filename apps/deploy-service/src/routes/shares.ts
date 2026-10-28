@@ -1,3 +1,4 @@
+import { setAppVisibility } from '../services/visibility.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   API_BASE,
@@ -116,60 +117,11 @@ export function registerShareRoutes(
     const { appId } = req.params as { appId: string };
     const body = (req.body ?? {}) as { visibility?: string };
     const vis = body.visibility;
-    if (vis !== 'private' && vis !== 'public' && vis !== 'shared') {
-      throw new IspaceError(ERROR_CODES.INVALID_INPUT, 'visibility 只能是 private / public / shared');
+    if (vis !== 'private' && vis !== 'public' && vis !== 'shared' && vis !== 'link') {
+      throw new IspaceError(ERROR_CODES.INVALID_INPUT, 'visibility 只能是 private / public / shared / link');
     }
 
-    const [owned] = await sql<{ name: string }[]>`
-      SELECT name FROM ispace.apps WHERE id = ${appId} AND owner_id = ${me.id}
-    `;
-    if (!owned) throw new IspaceError(ERROR_CODES.NOT_OWNER, '只能改自己页面的可见范围');
-
-    /*
-      平台可以关掉某一档共享。挡在服务端而不是只在界面上隐藏——
-      隐藏只挡住了点按钮的人，直接调接口的照样能设。
-      「仅自己」永远允许：那是收紧，任何策略下都不该被拦住。
-    */
-    const policy = await getPlatformPolicy(sql);
-    if (vis === 'public' && !policy.allowPublicShare) {
-      throw new IspaceError(ERROR_CODES.FORBIDDEN, '平台已关闭「全公司」共享，请改用「指定同事」。');
-    }
-    if (vis === 'shared' && !policy.allowPeerShare) {
-      throw new IspaceError(ERROR_CODES.FORBIDDEN, '平台已关闭点对点分享。');
-    }
-
-    let revoked = 0;
-    if (vis === 'private') {
-      await sql`DELETE FROM ispace.marketplace_listings WHERE app_id = ${appId}`;
-      await sql`DELETE FROM ispace.app_installs WHERE app_id = ${appId}`;
-      const rows = await sql<{ id: string }[]>`
-        UPDATE ispace.shares SET status = 'revoked', responded_at = now()
-         WHERE app_id = ${appId} AND status IN ('pending','accepted')
-        RETURNING id
-      `;
-      revoked = rows.length;
-    } else if (vis === 'public') {
-      await sql`
-        INSERT INTO ispace.marketplace_listings (app_id, published_by)
-        VALUES (${appId}, ${me.id})
-        ON CONFLICT (app_id) DO UPDATE SET published_at = now()
-      `;
-    } else {
-      // 指定同事：从市场撤下，但保留已有的点对点分享
-      await sql`DELETE FROM ispace.marketplace_listings WHERE app_id = ${appId}`;
-      await sql`
-        DELETE FROM ispace.app_installs WHERE app_id = ${appId} AND source = 'marketplace'
-      `;
-    }
-
-    await sql`UPDATE ispace.apps SET visibility = ${vis}, updated_at = now() WHERE id = ${appId}`;
-    await writeAudit(sql, {
-      actorId: me.id, action: 'app.share', targetType: 'app', targetId: appId,
-      source: 'console', result: 'success',
-      metadata: { visibility: vis, app: owned.name, revoked },
-      ip: req.ip,
-    });
-    return { visibility: vis, revoked };
+    return setAppVisibility(sql, { user: me, appId, visibility: vis, source: 'console', ip: req.ip });
   });
 
   /**

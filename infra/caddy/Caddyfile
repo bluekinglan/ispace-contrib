@@ -1,6 +1,11 @@
 {
 	auto_https off
 	admin off
+	servers {
+		# Space-separated proxy CIDRs. Only ingress proxies belong here, never all clients.
+		trusted_proxies static {$ISPACE_CADDY_TRUSTED_PROXIES:127.0.0.1/32}
+		trusted_proxies_strict
+	}
 }
 
 :8080 {
@@ -119,6 +124,8 @@
 				uri /deploy/api/authz/page
 			}
 
+			# Recheck permissions on every request, including after sharing is revoked.
+			header Cache-Control "no-store"
 			root * /srv/sites/{re.ua.1}/{re.ua.2}
 			uri path_regexp ^/[^/]+/[^/]+ ""
 			try_files {path} {path}/ /index.html

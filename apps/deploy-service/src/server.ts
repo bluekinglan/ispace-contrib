@@ -1,3 +1,5 @@
+import { startLogin, consumeLogin, OAUTH_COOKIE, OAUTH_PATH, OAUTH_TTL } from './services/oauth-state.js';
+import { resolveFeishuAccount } from './services/feishu-account.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -496,11 +498,14 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
 
   app.get(`${API_BASE}/auth/login`, async (req, reply) => {
     const provider = requireProvider();
-    const q = req.query as { redirect?: string; pairing?: string };
-    // pairing 由手机端生成并带上，登录完成后令牌存到它名下供轮询取走
-    const state = Buffer.from(
-      JSON.stringify({ redirect: q.redirect ?? '/', pairing: q.pairing }),
-    ).toString('base64url');
+    const q = req.query as { redirect?: string; pairing?: string; bind?: string };
+    const bindUserId = q.bind === '1' ? (await requireAuth(req)).id : undefined;
+    if (bindUserId && provider.name !== 'feishu') throw new IspaceError(ERROR_CODES.INVALID_INPUT, '未启用飞书绑定');
+    const { state, browser } = await startLogin(sql, provider.name, {
+      redirect: q.redirect ?? '/', pairing: q.pairing, bindUserId,
+    });
+    reply.setCookie(OAUTH_COOKIE, browser, { path: OAUTH_PATH, httpOnly: true,
+      sameSite: 'lax', secure: PUBLIC_BASE.startsWith('https:'), maxAge: OAUTH_TTL });
     const redirectUri = `${PUBLIC_BASE}${API_BASE}/auth/callback`;
     return reply.redirect(provider.authorizeUrl({ state, redirectUri }));
   });
@@ -544,7 +549,14 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
 
   app.get(`${API_BASE}/auth/callback`, async (req, reply) => {
     const provider = requireProvider();
-    const q = req.query as { code?: string; state?: string };
+    const q = req.query as { code?: string; state?: string; error?: string };
+    const context = await consumeLogin(sql, provider.name, q.state, req.cookies[OAUTH_COOKIE]);
+    reply.clearCookie(OAUTH_COOKIE, { path: OAUTH_PATH });
+    if (context.bindUserId && (await requireAuth(req)).id !== context.bindUserId) {
+      throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '绑定期间账号发生变化，请重新发起');
+    }
+    const returnState = Buffer.from(JSON.stringify(context)).toString('base64url');
+    if (q.error) throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '授权未完成，请重新登录');
     if (!q.code) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '缺少授权码');
 
     const claims = await provider.exchange({
@@ -552,7 +564,9 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
       redirectUri: `${PUBLIC_BASE}${API_BASE}/auth/callback`,
     });
 
-    let user = await findUserBySso(sql, claims.sub);
+    let user = provider.name === 'feishu'
+      ? await resolveFeishuAccount(sql, claims, context.bindUserId)
+      : await findUserBySso(sql, claims.sub);
 
     /**
      * 预开通账号的首次登录绑定。
@@ -601,6 +615,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
       await provisionUserSchema(sql, user.username);
     }
 
+    if (user.status !== 'active') throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '账号不可用，请联系管理员');
     const ttl = await sessionTtl();
     const token = await sessions.issue({
       uid: user.id, username: user.username, role: user.role, identity: user.identity,
@@ -608,9 +623,9 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     }, ttl);
     // cookie 的 Max-Age 必须与令牌的 exp 一致：cookie 先过期会让人莫名
     // 被登出，令牌先过期则会让人拿着一个已失效的 cookie 一路 401
-    reply.header('set-cookie', sessionCookie(token, ttl));
+    reply.header('set-cookie', sessionCookie(token, ttl, PUBLIC_BASE.startsWith('https://')));
 
-    const pairingId = readPairingId(q.state);
+    const pairingId = readPairingId(returnState);
     if (pairingId) {
       // 令牌存下等手机来取，然后**停在网页上**，不跳深链。
       //
@@ -622,7 +637,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
       return reply.type('text/html; charset=utf-8').send(nativeDonePage(user.displayName));
     }
 
-    const decision = decideRedirect(q.state, `/${user.username}/`);
+    const decision = decideRedirect(returnState, `/${user.username}/`);
 
     if (decision.kind === 'native') {
       /**
@@ -1128,7 +1143,7 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
     setSessionCookie: async (reply, token) => {
       // 调用方会 await——见 account.ts 里那段注释：不 await 的话
       // header 会设在处理器 return 之后，cookie 根本不下发
-      reply.header('set-cookie', sessionCookie(token, await sessionTtl()));
+      reply.header('set-cookie', sessionCookie(token, await sessionTtl(), PUBLIC_BASE.startsWith('https://')));
     },
     publicBase: PUBLIC_BASE,
   });

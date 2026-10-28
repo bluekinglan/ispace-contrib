@@ -38,8 +38,12 @@ describe('试玩令牌', () => {
     share: [],
   };
   const fakeSql = Object.assign(
-    async (strings: TemplateStringsArray) => {
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = strings.join(' ');
+      if (q.includes('u.token_epoch')) {
+        const user = Object.values(who).find(u => u.id === values.at(-1));
+        return user ? [{ id: user.id, username: user.username, role: user.role, status: user.status, identity: 'user' }] : [];
+      }
       if (q.includes('ispace.shares')) return rows.share;
       if (q.includes('ispace.apps')) return rows.app;
       return [];
@@ -214,6 +218,15 @@ describe('试玩令牌', () => {
     expect(html.headers['content-security-policy']).toBe('sandbox allow-scripts allow-forms allow-popups');
     expect(html.headers['referrer-policy']).toBe('no-referrer');
     expect(html.headers['cache-control']).toBe('no-store');
+  });
+
+  it('撤销分享后，已签发的试玩令牌不再提供文件', async () => {
+    rows.app = [{ app_id: 'a-1', owner_id: 'u-me', visibility: 'public', status: 'running' }];
+    const token = sessions.open(other.id, 'lixiao', 'demo').token;
+    rows.app = [{ app_id: 'a-1', owner_id: 'u-me', visibility: 'private', status: 'running' }];
+    const r = await app.inject({ url: `/deploy/api/play/${token}/` });
+    expect(r.statusCode).toBe(403);
+    expect(r.headers['cache-control']).toBe('no-store');
   });
 
   it('令牌不对、过期的，一律 404', async () => {

@@ -1,7 +1,8 @@
+import { isIntranetRequest } from '../services/intranet.js';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_BASE, appSlugSchema, ERROR_CODES, IspaceError, usernameSchema, type User } from '@ispace/contracts';
-import type { Sql } from '@ispace/db';
+import { findUserForAuth, type Sql } from '@ispace/db';
 import { z } from 'zod';
 import { resolveAppAccess } from '../services/app-access.js';
 import { PLAY_IDLE_MS, type PlaySessions } from '../services/play-session.js';
@@ -48,7 +49,7 @@ export function registerPlayRoutes(
       slug: appSlugSchema,
     }).parse(req.body);
 
-    const access = await resolveAppAccess(sql, owner, slug, { uid: me.id, role: me.role });
+    const access = await resolveAppAccess(sql, owner, slug, { uid: me.id, role: me.role }, isIntranetRequest(req));
     if (access.kind === 'notfound') {
       return reply.status(404).send({ code: ERROR_CODES.NOT_FOUND, message: '没有这个页面。' });
     }
@@ -86,6 +87,13 @@ export function registerPlayRoutes(
         .header('cache-control', 'no-store')
         .header('referrer-policy', 'no-referrer')
         .send(gonePage());
+    }
+    const viewer = (await findUserForAuth(sql, s.viewerId))?.user;
+    const access = await resolveAppAccess(sql, s.owner, s.slug,
+      viewer?.status === 'active' ? { uid: viewer.id, role: viewer.role } : null,
+      isIntranetRequest(req));
+    if (!viewer || viewer.status !== 'active' || access.kind !== 'ok') {
+      return reply.status(403).header('cache-control', 'no-store').send('访问权限已失效，或当前不在公司网络内。');
     }
     sessions.touch(s);
 

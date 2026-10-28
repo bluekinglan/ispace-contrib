@@ -1,7 +1,9 @@
 import { createServer } from 'node:http';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, } from 'vitest';
+import { vi } from 'vitest';
+afterEach(() => vi.unstubAllEnvs());
 import type { Sql } from '@ispace/db';
 import type { SessionClaims } from '@ispace/auth';
 import { registerAuthzRoutes } from '../routes/authz.js';
@@ -121,5 +123,50 @@ describe('proxy credential boundary', () => {
       await app.close();
       await new Promise<void>((resolve) => upstream.close(() => resolve()));
     }
+  });
+});
+
+
+describe('intranet link sharing', () => {
+  it('allows anonymous static resources only from configured company networks and revokes immediately', async () => {
+    vi.stubEnv('ISPACE_INTRANET_CIDRS', '192.0.2.0/24');
+    vi.stubEnv('ISPACE_TRUSTED_PROXY_CIDRS', '10.10.0.1/32');
+    const options = { visibility: 'link', verified: null };
+    const app = await fixture(options);
+    try {
+      const headers = { 'x-forwarded-uri': '/owner/page/assets/app.js' };
+      expect((await app.inject({ url: '/deploy/api/authz/page', headers, remoteAddress: '192.0.2.5' })).statusCode).toBe(200);
+      expect((await app.inject({ url: '/deploy/api/authz/page', headers: { ...headers, 'x-forwarded-for': '192.0.2.5' }, remoteAddress: '203.0.113.5' })).statusCode).toBe(403);
+      options.visibility = 'private';
+      expect((await app.inject({ url: '/deploy/api/authz/page', headers, remoteAddress: '192.0.2.5' })).statusCode).toBe(302);
+    } finally { await app.close(); }
+  });
+
+  it('denies anonymous access when no network allowlist was deployed', async () => {
+    vi.stubEnv('ISPACE_INTRANET_CIDRS', '');
+    const app = await fixture({ visibility: 'link', verified: null });
+    try {
+      expect((await app.inject({ url: '/deploy/api/authz/page', headers: { 'x-forwarded-uri': '/owner/page/' } })).statusCode).toBe(403);
+      expect((await app.inject({ url: '/svc/owner/backend/' })).statusCode).toBe(403);
+    } finally { await app.close(); }
+  });
+
+  it.each([true, false])('supports explicitly link-shared backend exposed=%s, never other private services', async exposed => {
+    vi.stubEnv('ISPACE_INTRANET_CIDRS', '192.0.2.0/24');
+    vi.stubEnv('ISPACE_TRUSTED_PROXY_CIDRS', '');
+    const upstream = createServer((_req, res) => res.end('anonymous application response'));
+    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const port = (upstream.address() as { port: number }).port;
+    const options = { visibility: 'link', exposed, verified: null, port };
+    const app = await fixture(options);
+    try {
+      const response = await app.inject({ url: '/svc/owner/backend/data', remoteAddress: '192.0.2.5' });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe('anonymous application response');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect((await app.inject({ url: '/svc/owner/backend/data', remoteAddress: '203.0.113.5' })).statusCode).toBe(403);
+      options.visibility = 'private';
+      expect((await app.inject({ url: '/svc/owner/backend/data', remoteAddress: '192.0.2.5' })).statusCode).toBe(401);
+    } finally { await app.close(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
   });
 });
