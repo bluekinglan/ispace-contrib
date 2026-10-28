@@ -132,6 +132,59 @@ describe.skipIf(!dsn)('Feishu and link sharing on real PostgreSQL connections', 
     try { expect((await app.inject(request)).statusCode).toBe(403); }
     finally { await sql`UPDATE ispace.platform_policy SET allow_peer_share=true`; }
   });
+  it('rolls back accepting a share when creating its install reference fails', async () => {
+    await setAppVisibility(sql, { user: owner, appId, visibility: 'shared', source: 'console' });
+    const invite = await app.inject({ method: 'POST', url: '/deploy/api/shares', headers: ownerHeaders,
+      payload: { appId, toUsername: colleague.username } });
+    const shareId = invite.json().share.id;
+    await sql.unsafe(`CREATE FUNCTION ispace.test_fail_install() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'intentional test installation failure'; END $$;
+      CREATE TRIGGER test_fail_install BEFORE INSERT ON ispace.app_installs
+      FOR EACH ROW EXECUTE FUNCTION ispace.test_fail_install();`);
+    try {
+      const response = await app.inject({ method: 'POST', url: `/deploy/api/shares/${shareId}/respond`,
+        headers: { 'x-test-user': 'colleague' }, payload: { accept: true } });
+      expect(response.statusCode).toBe(500);
+      expect((await sql`SELECT status FROM ispace.shares WHERE id=${shareId}`)[0]?.status).toBe('pending');
+      expect((await sql`SELECT 1 FROM ispace.app_installs WHERE app_id=${appId} AND user_id=${colleague.id}`).length).toBe(0);
+    } finally {
+      await sql.unsafe('DROP TRIGGER test_fail_install ON ispace.app_installs; DROP FUNCTION ispace.test_fail_install();');
+    }
+  });
+  it('does not leave an install reference when private/link revocation races an accepted share', async () => {
+    await sql.unsafe(`CREATE FUNCTION ispace.test_delay_install() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_sleep(0.4); RETURN NEW; END $$;
+      CREATE TRIGGER test_delay_install BEFORE INSERT ON ispace.app_installs
+      FOR EACH ROW EXECUTE FUNCTION ispace.test_delay_install();`);
+    try {
+      for (const visibility of ['private', 'link'] as const) {
+        await setAppVisibility(sql, { user: owner, appId, visibility: 'shared', source: 'console' });
+        const invite = await app.inject({ method: 'POST', url: '/deploy/api/shares', headers: ownerHeaders,
+          payload: { appId, toUsername: colleague.username } });
+        const accepting = app.inject({ method: 'POST', url: `/deploy/api/shares/${invite.json().share.id}/respond`,
+          headers: { 'x-test-user': 'colleague' }, payload: { accept: true } });
+        // Wait until the INSERT is actually in progress on another connection.
+        let inserting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const active = await sql`SELECT 1 FROM pg_stat_activity WHERE datname=current_database()
+            AND query ILIKE '%INSERT INTO ispace.app_installs%' AND wait_event='PgSleep'`;
+          if (active.length) { inserting = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        if (!inserting) { await accepting; throw new Error('Concurrent INSERT barrier was not reached'); }
+        const [, accepted] = await Promise.all([
+          setAppVisibility(sql, { user: owner, appId, visibility, source: 'console' }), accepting,
+        ]);
+        expect(accepted.statusCode).toBe(200);
+        expect((await sql`SELECT visibility FROM ispace.apps WHERE id=${appId}`)[0]?.visibility).toBe(visibility);
+        expect((await sql`SELECT 1 FROM ispace.app_installs WHERE app_id=${appId}`).length).toBe(0);
+        expect((await sql`SELECT 1 FROM ispace.shares WHERE app_id=${appId} AND status IN ('pending','accepted')`).length).toBe(0);
+      }
+    } finally {
+      await sql.unsafe('DROP TRIGGER test_delay_install ON ispace.app_installs; DROP FUNCTION ispace.test_delay_install();');
+      await setAppVisibility(sql, { user: owner, appId, visibility: 'shared', source: 'console' });
+    }
+  });
   it('fails closed before changing visibility when no network is configured', async () => {
     vi.stubEnv('ISPACE_INTRANET_CIDRS', '');
     try {

@@ -238,33 +238,43 @@ export function registerShareRoutes(
     const { id } = req.params as { id: string };
     const { accept } = respondShareRequestSchema.parse(req.body ?? {});
 
-    // 只有接收方能回应。用 to_user_id 约束而非仅按 id 查——否则知道 id
-    // 的人可以替别人接受。
-    const rows = await sql<{ app_id: string }[]>`
-      UPDATE ispace.shares
-         SET status = ${accept ? 'accepted' : 'rejected'}, responded_at = now()
-       WHERE id = ${id} AND to_user_id = ${me.id} AND status = 'pending'
-      RETURNING app_id
-    `;
-    const row = rows[0];
-    if (!row) {
-      throw new IspaceError(ERROR_CODES.NOT_FOUND, '这条分享不存在或已处理过');
-    }
-
-    if (accept) {
-      // 建立引用而非复制内容：对方访问的仍是原作者空间下的 URL，
-      // 原作者回滚或停用，接收方看到的也随之变化
-      await sql`
-        INSERT INTO ispace.app_installs (app_id, user_id, source)
-        VALUES (${row.app_id}, ${me.id}, 'share')
-        ON CONFLICT (app_id, user_id) DO NOTHING
+    await sql.begin(async transaction => {
+      const tx = transaction as unknown as Sql;
+      // Use the same app-first lock order as visibility changes. The grant, install
+      // reference and audit record must commit together, before a revoke can proceed.
+      const [visible] = await tx`
+        SELECT a.id FROM ispace.apps a JOIN ispace.shares s ON s.app_id = a.id
+        WHERE s.id = ${id} AND s.to_user_id = ${me.id} AND a.visibility IN ('shared', 'public')
+        FOR UPDATE OF a`;
+      if (!visible) throw new IspaceError(ERROR_CODES.NOT_FOUND, '这条分享不存在或已收回');
+      // 只有接收方能回应。用 to_user_id 约束而非仅按 id 查——否则知道 id
+      // 的人可以替别人接受。
+      const rows = await tx<{ app_id: string }[]>`
+        UPDATE ispace.shares
+           SET status = ${accept ? 'accepted' : 'rejected'}, responded_at = now()
+         WHERE id = ${id} AND to_user_id = ${me.id} AND status = 'pending'
+        RETURNING app_id
       `;
-    }
+      const row = rows[0];
+      if (!row) {
+        throw new IspaceError(ERROR_CODES.NOT_FOUND, '这条分享不存在或已处理过');
+      }
 
-    await writeAudit(sql, {
-      actorId: me.id, action: 'app.share_respond', targetType: 'share', targetId: id,
-      source: 'console', result: 'success', metadata: { accept },
-      ip: req.ip,
+      if (accept) {
+        // 建立引用而非复制内容：对方访问的仍是原作者空间下的 URL，
+        // 原作者回滚或停用，接收方看到的也随之变化
+        await tx`
+          INSERT INTO ispace.app_installs (app_id, user_id, source)
+          VALUES (${row.app_id}, ${me.id}, 'share')
+          ON CONFLICT (app_id, user_id) DO NOTHING
+        `;
+      }
+
+      await writeAudit(tx, {
+        actorId: me.id, action: 'app.share_respond', targetType: 'share', targetId: id,
+        source: 'console', result: 'success', metadata: { accept },
+        ip: req.ip,
+      });
     });
     return { ok: true, accepted: accept };
   });
