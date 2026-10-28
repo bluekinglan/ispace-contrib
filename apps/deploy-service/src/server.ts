@@ -586,27 +586,6 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
       ? await resolveFeishuAccount(sql, claims, context.bindUserId)
       : await findUserBySso(sql, claims.sub);
 
-    /**
-     * 预开通账号的首次登录绑定。
-     *
-     * 管理员经 /provision 开通的账号，其 sso_subject 是占位值 `manual|{username}`
-     * ——开通时并不知道该员工在 IdP 里的真实 sub。此人首次 SSO 登录时按用户名
-     * 匹配到该占位账号，把真实 sub 绑上去。
-     *
-     * 安全约束：只绑定 sso_subject 仍是 `manual|` 前缀（即从未登录过）的账号。
-     * 已绑定过的账号不会被再次改写，否则同名冲突会变成账号劫持。
-     */
-    if (!user && claims.preferredUsername) {
-      const byName = await findUserByUsername(sql, claims.preferredUsername);
-      if (byName?.ssoSubject.startsWith('manual|')) {
-        await sql`
-          UPDATE ispace.users SET sso_subject = ${claims.sub} WHERE id = ${byName.id}
-        `;
-        user = { ...byName, ssoSubject: claims.sub };
-        app.log.info(`预开通账号 ${byName.username} 已绑定 SSO subject`);
-      }
-    }
-
     if (!user) {
       // 首次登录自动开通。用 preferredUsername 作为路径标识；冲突或非法则拒绝，
       // 由管理员经 /provision 指定一个合法标识——不自动加数字后缀，

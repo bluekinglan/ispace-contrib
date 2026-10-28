@@ -36,6 +36,13 @@ it('Feishu accounts, OAuth state and link visibility use transactional PostgreSQ
     assert.equal(bound.id,old.id); assert.equal(bound.username,'legacy');
     await assert.rejects(resolveFeishuAccount(sql,claims,old.id),/已绑定其他账号/);
 
+    const preprovisioned=(await db.query("INSERT INTO ispace.users(sso_subject, username, display_name) VALUES('manual|alice','alice','预开通员工') RETURNING *")).rows[0];
+    const reused=await resolveFeishuAccount(sql,{...claims,sub:'feishu|test-app|company|alice',preferredUsername:'alice',email:undefined});
+    assert.equal(reused.id,preprovisioned.id);
+    assert.equal(reused.username,'alice');
+    assert.equal((await db.query('SELECT sso_subject FROM ispace.users WHERE id=$1',[preprovisioned.id])).rows[0].sso_subject,'feishu|test-app|company|alice');
+    assert.equal((await db.query("SELECT user_id FROM ispace.external_identities WHERE subject='feishu|test-app|company|alice'")).rows[0].user_id,preprovisioned.id);
+
     const before=(await db.query('SELECT count(*)::int n FROM ispace.users')).rows[0].n;
     await db.exec('ALTER ROLE anon RENAME TO anon_disabled');
     await assert.rejects(resolveFeishuAccount(sql,{...claims,sub:'feishu|test-app|company|fail',email:'fail@example.invalid'}));

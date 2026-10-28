@@ -29,6 +29,15 @@ export async function resolveFeishuAccount(sql: Sql, claims: IdentityClaims, bin
       if (bound) throw new IspaceError(ERROR_CODES.ALREADY_EXISTS, '这个账号已绑定其他飞书身份');
     }
     if (!user) user = (await findUserBySso(tx, claims.sub)) ?? undefined;
+    if (!user && !bindUserId && claims.preferredUsername) {
+      const manual = await findUserByUsername(tx, claims.preferredUsername);
+      if (manual?.status === 'active' && manual.ssoSubject === `manual|${manual.username}`) {
+        user = manual;
+        await tx`
+          UPDATE ispace.users SET sso_subject = ${claims.sub} WHERE id = ${manual.id}
+        `;
+      }
+    }
     if (!user) {
       // Password registration does not verify mailbox ownership. Never merge by email alone.
       if (claims.email) {
