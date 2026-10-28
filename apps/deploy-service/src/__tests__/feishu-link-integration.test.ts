@@ -6,7 +6,7 @@ import { resolveFeishuAccount } from '../services/feishu-account.js';
 import { startLogin, consumeLogin } from '../services/oauth-state.js';
 import { setAppVisibility } from '../services/visibility.js';
 import { it, vi } from 'vitest';
-import type { Sql } from '@ispace/db';
+import { pgliteSql } from './pglite-sql.js';
 import type { IdentityClaims } from '@ispace/auth';
 
 // Exercises actual PostgreSQL DDL, constraints and rollback in WASM. This does not
@@ -19,28 +19,7 @@ it('Feishu accounts, OAuth state and link visibility use transactional PostgreSQ
     const files = (await readdir(dir)).filter(f => f.endsWith('.sql')).sort();
     for (const file of files) await db.exec(await readFile(new URL(file, dir), 'utf8'));
 
-    // postgres.js compatible tagged queries, including its nested SQL fragments.
-    function adapter(engine: any): Sql {
-      const fragment = (parts: readonly string[], values: any[]): any => ({ parts, values, then(resolve: any, reject: any) {
-        const params: any[]=[];
-        function render(item: any): string {
-          let text=item.parts[0];
-          for(let i=0;i<item.values.length;i++) {
-            const value=item.values[i];
-            text += value?.parts ? render(value) : (params.push(value), '$'+params.length);
-            text += item.parts[i+1];
-          }
-          return text;
-        }
-        return engine.query(render(this), params).then((r: any)=>r.rows).then(resolve,reject);
-      }, catch(reject: any) { return this.then(undefined, reject); }});
-      const sql=(parts: readonly string[],...values: any[])=>fragment(parts,values);
-      sql.json=(v: unknown)=>JSON.stringify(v);
-      sql.unsafe=(text: string)=>fragment([text],[]);
-      sql.begin=(fn: (tx: Sql) => unknown)=>engine.transaction((tx: any)=>fn(adapter(tx)));
-      return sql as unknown as Sql;
-    }
-    const sql=adapter(db);
+    const sql=pgliteSql(db);
     const claims: IdentityClaims={ sub:'feishu|test-app|company|employee-a', name:'测试员工', preferredUsername:'alice', email:'alice@example.invalid', role:'employee', identity:'user', raw:{} };
     const a=await resolveFeishuAccount(sql, claims);
     assert.equal(a.role,'employee');

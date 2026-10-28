@@ -48,7 +48,7 @@ export function registerAuthzRoutes(
     */
     reply.header('cache-control', 'no-store');
     const uri = (req.headers['x-forwarded-uri'] as string | undefined) ?? '';
-    const m = /^\/([a-z0-9][a-z0-9-]{0,30})\/([a-z0-9][a-z0-9-]{0,30})(?:\/|$)/.exec(uri);
+    const m = /^\/([a-z0-9][a-z0-9-]{0,30})\/([a-z0-9][a-z0-9-]{0,30})(?:\/|\?|$)/.exec(uri);
     if (!m) {
       /*
         ⚠️ 认不出路径必须**拒绝**，不能放行。

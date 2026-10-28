@@ -1,4 +1,4 @@
-import { setAppVisibility } from '../services/visibility.js';
+import { setAppVisibility, shareAppWith } from '../services/visibility.js';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -660,24 +660,8 @@ export async function registerMcp(app: FastifyInstance, deps: McpDeps): Promise<
         const { site, toUsername } = args as { site: string; toUsername: string };
         const a = await findApp(sql, user.id, site);
         if (!a) throw new IspaceError(ERROR_CODES.NOT_FOUND, `没有找到应用 /${site}`);
-        const to = await findUserByUsername(sql, toUsername);
-        if (!to) throw new IspaceError(ERROR_CODES.NOT_FOUND, `没有这位同事：${toUsername}`);
-        if (to.id === user.id) {
-          throw new IspaceError(ERROR_CODES.INVALID_INPUT, '不用分享给自己');
-        }
-        await sql`
-          INSERT INTO ispace.shares (app_id, from_user_id, to_user_id, status)
-          VALUES (${a.id}, ${user.id}, ${to.id}, 'pending')
-          ON CONFLICT (app_id, to_user_id) DO UPDATE SET status = 'pending', responded_at = NULL
-        `;
-        // 可见范围仍是"仅自己"的话，分享出去对方也打不开——顺手收紧到 shared
-        if (a.visibility === 'private') {
-          await sql`UPDATE ispace.apps SET visibility = 'shared' WHERE id = ${a.id}`;
-        }
-        await writeAudit(sql, {
-          actorId: user.id, action: 'app.share', targetType: 'app', targetId: a.id,
-          source: 'mcp', result: 'success', metadata: { to: toUsername }, ip: clientIp,
-        });
+        const { target: to } = await shareAppWith(sql, { user, appId: a.id,
+          toUsername, source: 'mcp', ip: clientIp });
         return `已分享 ${a.name} 给 ${to.displayName}（${toUsername}），`
           + '对方主页会出现待接受卡，接受后即可访问。';
       }

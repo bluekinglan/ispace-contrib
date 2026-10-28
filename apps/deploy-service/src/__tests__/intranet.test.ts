@@ -23,7 +23,7 @@ describe('intranet source validation', () => {
   it.each([undefined, '', 'unknown', '192.0.2.12:443', '10.10.0.1', ['192.0.2.12']])('rejects missing/ambiguous proxy origins %j', value => {
     expect(check('10.10.0.2', value)).toBe(false);
   });
-  it.each(['0.0.0.0/99', 'invalid', '::/129', '192.0.2.0/', '192.0.2.0/24/1'])('rejects invalid configuration %s', cidr => {
+  it.each(['0.0.0.0/99', 'invalid', '::/129', '192.0.2.0/', '192.0.2.0/24/1', '0.0.0.0/0', '::/0', ', ,'])('rejects invalid configuration %s', cidr => {
     expect(() => createIntranetPolicy(cidr)).toThrow('CIDR');
   });
 });

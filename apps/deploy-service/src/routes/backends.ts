@@ -226,20 +226,22 @@ export function registerBackendRoutes(
     const me = await requireAuth(req);
     const { id } = req.params as { id: string };
     const { toUsername } = (req.body ?? {}) as { toUsername?: string };
-    const own = await sql`SELECT 1 FROM ispace.backends WHERE id = ${id} AND owner_id = ${me.id}`;
-    if (!own[0]) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个后端，或它不属于你。');
-    const [target] = await sql<{ id: string }[]>`
-      SELECT id FROM ispace.users WHERE username = ${toUsername ?? ''} AND status = 'active'
-    `;
-    if (!target) throw new IspaceError(ERROR_CODES.NOT_FOUND, `找不到同事「${toUsername}」。`);
-    if (target.id === me.id) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '不用分享给自己。');
-    await sql`
-      INSERT INTO ispace.backend_shares (backend_id, to_user_id)
-      VALUES (${id}, ${target.id}) ON CONFLICT DO NOTHING
-    `;
-    await writeAudit(sql, {
-      actorId: me.id, action: 'backend.share', targetType: 'backend', targetId: id,
-      source: 'console', result: 'success', metadata: { toUsername }, ip: req.ip,
+    await sql.begin(async transaction => {
+      const tx = transaction as unknown as Sql;
+      const own = await tx`SELECT 1 FROM ispace.backends WHERE id = ${id} AND owner_id = ${me.id} FOR UPDATE`;
+      if (!own[0]) throw new IspaceError(ERROR_CODES.NOT_FOUND, '没有这个后端，或它不属于你。');
+      const { allowPeerShare } = await getPlatformPolicy(tx);
+      if (!allowPeerShare) throw new IspaceError(ERROR_CODES.FORBIDDEN, '平台已关闭点对点分享');
+      const [target] = await tx<{ id: string }[]>`
+        SELECT id FROM ispace.users WHERE username = ${toUsername ?? ''} AND status = 'active'`;
+      if (!target) throw new IspaceError(ERROR_CODES.NOT_FOUND, `找不到同事「${toUsername}」。`);
+      if (target.id === me.id) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '不用分享给自己。');
+      await tx`INSERT INTO ispace.backend_shares (backend_id, to_user_id)
+        VALUES (${id}, ${target.id}) ON CONFLICT DO NOTHING`;
+      await tx`UPDATE ispace.backends SET visibility = 'shared'
+        WHERE id = ${id} AND visibility IN ('private', 'link')`;
+      await writeAudit(tx, { actorId: me.id, action: 'backend.share', targetType: 'backend', targetId: id,
+        source: 'console', result: 'success', metadata: { toUsername }, ip: req.ip });
     });
     return { ok: true };
   });

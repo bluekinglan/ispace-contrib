@@ -6,13 +6,16 @@ function normalized(ip: string): string {
 }
 function networks(value: string): BlockList {
   const list = new BlockList();
-  for (const entry of value.split(',').map(s => s.trim()).filter(Boolean)) {
+  const entries = value.split(',').map(s => s.trim()).filter(Boolean);
+  if (value.trim() && !entries.length) throw new Error('公司网络 CIDR 不能为空列表');
+  for (const entry of entries) {
     const parts = entry.split('/');
     const ip = parts[0]!;
     const family = isIP(ip);
     const bits = parts[1] === undefined ? (family === 4 ? 32 : 128) : Number(parts[1]);
     if (parts.length > 2 || !family || !/^\d+$/.test(String(parts[1] ?? bits)) || !Number.isInteger(bits)
       || bits < 0 || bits > (family === 4 ? 32 : 128)) throw new Error(`无效的内网/代理 CIDR 配置：${entry}`);
+    if (bits === 0) throw new Error('公司网络与可信代理 CIDR 不允许配置为全网');
     list.addSubnet(ip, bits, family === 4 ? 'ipv4' : 'ipv6');
   }
   return list;

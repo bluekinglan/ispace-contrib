@@ -1,3 +1,4 @@
+import { createIntranetPolicy } from './services/intranet.js';
 import { startLogin, consumeLogin, OAUTH_COOKIE, OAUTH_PATH, OAUTH_TTL } from './services/oauth-state.js';
 import { resolveFeishuAccount } from './services/feishu-account.js';
 import { randomUUID } from 'node:crypto';
@@ -191,7 +192,11 @@ export function decideRedirect(state: string | undefined, fallback: string): Red
     const r = parsed.redirect;
     if (typeof r !== 'string') return { kind: 'web', to: fallback };
     if (r === NATIVE_REDIRECT) return { kind: 'native' };
-    if (r.startsWith('/') && !r.startsWith('//')) return { kind: 'web', to: r };
+    if (r.startsWith('/') && !r.startsWith('//') && !r.includes('\\') && !/[\u0000-\u001f\u007f]/.test(r)) {
+      // Browsers normalize backslashes as slashes: /\\evil.example is an external URL.
+      const base = 'https://ispace.invalid';
+      if (new URL(r, base).origin === base) return { kind: 'web', to: r };
+    }
   } catch {
     // state 损坏（截断、被改过）就当没给
   }
@@ -259,6 +264,7 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
   const storage = storageConfigFromEnv();
   const deployService = new DeployService(sql, storage, PUBLIC_BASE);
   const authProvider = createAuthProvider();
+  createIntranetPolicy(process.env.ISPACE_INTRANET_CIDRS ?? '', process.env.ISPACE_TRUSTED_PROXY_CIDRS ?? '');
   const orchestrator = createOrchestrator();
   const sessions = new SessionService(
     process.env.SESSION_SECRET ?? 'dev-only-secret-at-least-32-characters-long',
@@ -499,6 +505,12 @@ export async function buildServer(opts: BuildOptions = {}): Promise<FastifyInsta
   app.get(`${API_BASE}/auth/login`, async (req, reply) => {
     const provider = requireProvider();
     const q = req.query as { redirect?: string; pairing?: string; bind?: string };
+    if (q.pairing) {
+      const pairing = pairings.get(q.pairing);
+      if (!pairing || pairing.token || pairing.expiresAt <= Date.now()) {
+        throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '手机登录请求无效或已过期，请从 App 重新发起');
+      }
+    }
     const bindUserId = q.bind === '1' ? (await requireAuth(req)).id : undefined;
     if (bindUserId && provider.name !== 'feishu') throw new IspaceError(ERROR_CODES.INVALID_INPUT, '未启用飞书绑定');
     const { state, browser } = await startLogin(sql, provider.name, {
@@ -556,6 +568,12 @@ h1{font-size:20px}li{margin:8px 0}a{color:#1c1f23}code{background:#f3f3f3;paddin
       throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '绑定期间账号发生变化，请重新发起');
     }
     const returnState = Buffer.from(JSON.stringify(context)).toString('base64url');
+    if (context.pairing) {
+      const pairing = pairings.get(context.pairing);
+      if (!pairing || pairing.token || pairing.expiresAt <= Date.now()) {
+        throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '手机登录请求无效或已过期，请从 App 重新发起');
+      }
+    }
     if (q.error) throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '授权未完成，请重新登录');
     if (!q.code) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '缺少授权码');
 

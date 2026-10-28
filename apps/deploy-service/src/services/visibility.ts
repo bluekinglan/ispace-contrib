@@ -1,4 +1,4 @@
-import { getPlatformPolicy, writeAudit, type Sql } from '@ispace/db';
+import { findUserByUsername, getPlatformPolicy, writeAudit, type Sql } from '@ispace/db';
 import { ERROR_CODES, IspaceError, type User } from '@ispace/contracts';
 import { createIntranetPolicy } from './intranet.js';
 
@@ -43,5 +43,32 @@ export async function setAppVisibility(sql: Sql, input: {
     await writeAudit(tx, { actorId: user.id, action: 'app.share', targetType: 'app', targetId: appId,
       source: input.source, result: 'success', metadata: { visibility: vis, app: owned.name, revoked }, ip: input.ip });
     return { visibility: vis, revoked };
+  });
+}
+
+/** Creating a colleague share also closes anonymous link access. Both entry points use this transaction. */
+export async function shareAppWith(sql: Sql, input: {
+  user: User; appId: string; toUsername: string; source: 'console' | 'mcp'; ip?: string;
+}) {
+  return sql.begin(async transaction => {
+    const tx = transaction as unknown as Sql;
+    const [app] = await tx<{ name: string }[]>`
+      SELECT name FROM ispace.apps WHERE id = ${input.appId} AND owner_id = ${input.user.id} FOR UPDATE`;
+    if (!app) throw new IspaceError(ERROR_CODES.NOT_OWNER, '只能分享自己空间下的页面');
+    const { allowPeerShare } = await getPlatformPolicy(tx);
+    if (!allowPeerShare) throw new IspaceError(ERROR_CODES.FORBIDDEN, '平台已关闭点对点分享');
+    const to = await findUserByUsername(tx, input.toUsername);
+    if (!to || to.status !== 'active') throw new IspaceError(ERROR_CODES.NOT_FOUND, `没有找到同事 ${input.toUsername}`);
+    if (to.id === input.user.id) throw new IspaceError(ERROR_CODES.INVALID_INPUT, '不用分享给自己');
+    const [share] = await tx`
+      INSERT INTO ispace.shares (app_id, from_user_id, to_user_id, status)
+      VALUES (${input.appId}, ${input.user.id}, ${to.id}, 'pending')
+      ON CONFLICT (app_id, to_user_id) WHERE status = 'pending'
+      DO UPDATE SET created_at = now() RETURNING *`;
+    await tx`UPDATE ispace.apps SET visibility = 'shared', updated_at = now()
+      WHERE id = ${input.appId} AND visibility IN ('private', 'link')`;
+    await writeAudit(tx, { actorId: input.user.id, action: 'app.share', targetType: 'app', targetId: input.appId,
+      source: input.source, result: 'success', metadata: { to: to.username, app: app.name }, ip: input.ip });
+    return { share, target: to, appName: app.name };
   });
 }

@@ -61,7 +61,9 @@ export function registerPlayRoutes(
       throw new IspaceError(ERROR_CODES.FORBIDDEN, '这个页面没有共享给你。');
     }
 
-    const s = sessions.open(me.id, owner, slug);
+    const current = await findUserForAuth(sql, me.id);
+    if (!current || current.user.status !== 'active') throw new IspaceError(ERROR_CODES.UNAUTHENTICATED, '账号不可用');
+    const s = sessions.open(me.id, owner, slug, current.tokenEpoch);
     return {
       token: s.token,
       url: `${API_BASE}/play/${s.token}/`,
@@ -88,11 +90,12 @@ export function registerPlayRoutes(
         .header('referrer-policy', 'no-referrer')
         .send(gonePage());
     }
-    const viewer = (await findUserForAuth(sql, s.viewerId))?.user;
+    const current = await findUserForAuth(sql, s.viewerId);
+    const viewer = current?.user;
     const access = await resolveAppAccess(sql, s.owner, s.slug,
       viewer?.status === 'active' ? { uid: viewer.id, role: viewer.role } : null,
       isIntranetRequest(req));
-    if (!viewer || viewer.status !== 'active' || access.kind !== 'ok') {
+    if (!viewer || viewer.status !== 'active' || current?.tokenEpoch !== s.epoch || access.kind !== 'ok') {
       return reply.status(403).header('cache-control', 'no-store').send('访问权限已失效，或当前不在公司网络内。');
     }
     sessions.touch(s);

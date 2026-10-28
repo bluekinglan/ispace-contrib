@@ -14,7 +14,7 @@ const claims: SessionClaims = {
 };
 
 async function fixture(options: {
-  status?: string; role?: string; missing?: boolean; visibility?: string;
+  status?: string; role?: string; missing?: boolean; tokenEpoch?: number; visibility?: string;
   owner?: string; exposed?: boolean; shared?: boolean; port?: number;
   verified?: SessionClaims | null;
 } = {}) {
@@ -22,7 +22,7 @@ async function fixture(options: {
     const query = parts.join('?');
     if (query.includes('FROM ispace.users')) return options.missing ? [] : [{
       id: claims.uid, username: claims.username, role: options.role ?? 'employee',
-      identity: 'user', status: options.status ?? 'active',
+      identity: 'user', status: options.status ?? 'active', token_epoch: options.tokenEpoch ?? 0,
     }];
     if (query.includes('FROM ispace.shares') || query.includes('FROM ispace.backend_shares')) {
       return options.shared ? [{}] : [];
@@ -168,5 +168,26 @@ describe('intranet link sharing', () => {
       options.visibility = 'private';
       expect((await app.inject({ url: '/svc/owner/backend/data', remoteAddress: '192.0.2.5' })).statusCode).toBe(401);
     } finally { await app.close(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+  });
+});
+
+
+describe('review regressions for resource access', () => {
+  it('accepts link URLs without a trailing slash when a query string is present', async () => {
+    vi.stubEnv('ISPACE_INTRANET_CIDRS', '192.0.2.0/24');
+    const app = await fixture({ visibility: 'link', verified: null });
+    try {
+      const r = await app.inject({ url: '/deploy/api/authz/page', remoteAddress: '192.0.2.5',
+        headers: { 'x-forwarded-uri': '/owner/page?tab=one' } });
+      expect(r.statusCode).toBe(200);
+    } finally { await app.close(); }
+  });
+  it('rejects revoked sessions for private resources even when the JWT signature still verifies', async () => {
+    const app = await fixture({ owner: claims.uid, tokenEpoch: 1 });
+    try {
+      const headers = { cookie: 'ispace_session=synthetic', 'x-forwarded-uri': '/owner/page/' };
+      expect((await app.inject({ url: '/deploy/api/authz/page', headers })).statusCode).toBe(302);
+      expect((await app.inject({ url: '/svc/owner/backend/', headers })).statusCode).toBe(401);
+    } finally { await app.close(); }
   });
 });

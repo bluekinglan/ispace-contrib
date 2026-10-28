@@ -1,4 +1,4 @@
-import { setAppVisibility } from '../services/visibility.js';
+import { setAppVisibility, shareAppWith } from '../services/visibility.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   API_BASE,
@@ -9,7 +9,7 @@ import {
   respondShareRequestSchema,
   type User,
 } from '@ispace/contracts';
-import { findUserByUsername, getPlatformPolicy, writeAudit, type Sql } from '@ispace/db';
+import { writeAudit, type Sql } from '@ispace/db';
 
 /**
  * 分享给个人（规格 D10，一期实现）。
@@ -227,50 +227,9 @@ export function registerShareRoutes(
     const me = await requireAuth(req);
     const input = createShareRequestSchema.parse(req.body);
 
-    const { allowPeerShare } = await getPlatformPolicy(sql);
-    if (!allowPeerShare) {
-      throw new IspaceError(ERROR_CODES.FORBIDDEN, '平台已关闭点对点分享。');
-    }
-
-    // 只能分享自己的应用。不校验会让任何人把别人的应用推给第三方，
-    // 制造出"看起来是 A 分享的"的假象。
-    const owned = await sql<{ id: string; name: string }[]>`
-      SELECT id, name FROM ispace.apps WHERE id = ${input.appId} AND owner_id = ${me.id}
-    `;
-    const appRow = owned[0];
-    if (!appRow) {
-      throw new IspaceError(ERROR_CODES.NOT_OWNER, '只能分享自己空间下的页面');
-    }
-
-    const to = await findUserByUsername(sql, input.toUsername);
-    if (!to || to.status !== 'active') {
-      throw new IspaceError(ERROR_CODES.NOT_FOUND, `没有找到同事 ${input.toUsername}`);
-    }
-    if (to.id === me.id) {
-      throw new IspaceError(ERROR_CODES.INVALID_INPUT, '不用分享给自己');
-    }
-
-    // shares_one_pending 部分唯一索引保证同一应用对同一人只有一条待处理，
-    // 这里用 ON CONFLICT 把重复分享变成幂等而非报错——用户重复点「分享」
-    // 是常见操作，不该看到错误。
-    const rows = await sql`
-      INSERT INTO ispace.shares (app_id, from_user_id, to_user_id, status)
-      VALUES (${input.appId}, ${me.id}, ${to.id}, 'pending')
-      ON CONFLICT (app_id, to_user_id) WHERE status = 'pending'
-      DO UPDATE SET created_at = now()
-      RETURNING *
-    `;
-    await sql`
-      UPDATE ispace.apps SET visibility = 'shared'
-       WHERE id = ${input.appId} AND visibility = 'private'
-    `;
-    await writeAudit(sql, {
-      actorId: me.id, action: 'app.share', targetType: 'app', targetId: input.appId,
-      source: 'console', result: 'success',
-      metadata: { to: to.username, app: appRow.name },
-      ip: req.ip,
-    });
-    return { share: rows[0] };
+    const { share } = await shareAppWith(sql, { user: me, appId: input.appId,
+      toUsername: input.toUsername, source: 'console', ip: req.ip });
+    return { share };
   });
 
   // ── 接受 / 拒绝 ───────────────────────────────────────────────────
